@@ -108,6 +108,46 @@ final class ConsentServiceTests: XCTestCase {
         }
     }
 
+    func testPersistForImportIdempotentSameHash() throws {
+        let service = try ConsentService.makeInMemory(writeJSONFiles: false)
+        let first = try service.persistForImport(DomainFixtures.goldenConsentRecord)
+        XCTAssertEqual(first.contentHash, DomainFixtures.goldenConsentContentHash)
+
+        // Re-import with identical binding must no-op (not throw duplicate).
+        let second = try service.persistForImport(DomainFixtures.goldenConsentRecord)
+        XCTAssertEqual(second.id, first.id)
+        XCTAssertEqual(
+            ConsentRecord.normalizeHash(second.contentHash),
+            ConsentRecord.normalizeHash(first.contentHash)
+        )
+        XCTAssertEqual(try service.listAll().count, 1)
+    }
+
+    func testPersistForImportRejectsHashConflict() throws {
+        let service = try ConsentService.makeInMemory(writeJSONFiles: false)
+        _ = try service.persistForImport(DomainFixtures.goldenConsentRecord)
+
+        var conflicting = DomainFixtures.goldenConsentRecord
+        conflicting.subjectDisplayName = "Other Subject"
+        conflicting.contentHash = try conflicting.computeContentHash()
+
+        XCTAssertThrowsError(try service.persistForImport(conflicting)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .consentTamper)
+            XCTAssertTrue(bam?.message?.contains("conflicts") == true)
+        }
+    }
+
+    func testPersistStillRejectsDuplicateId() throws {
+        let service = try ConsentService.makeInMemory(writeJSONFiles: false)
+        _ = try service.persist(DomainFixtures.goldenConsentRecord)
+        XCTAssertThrowsError(try service.persist(DomainFixtures.goldenConsentRecord)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .schemaInvalid)
+            XCTAssertTrue(bam?.message?.contains("already exists") == true)
+        }
+    }
+
     func testPersistRejectsThirdPartyWithEmptyDisplayName() throws {
         let service = try ConsentService.makeInMemory(writeJSONFiles: false)
         var record = DomainFixtures.goldenConsentRecord

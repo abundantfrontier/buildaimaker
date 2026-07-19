@@ -95,23 +95,70 @@ public final class ConsentService: Sendable {
         _ record: ConsentRecord,
         skipPolicyCheck: Bool = false
     ) throws -> ConsentRecord {
+        let ready = try prepareForPersist(record, skipPolicyCheck: skipPolicyCheck)
+        try store.save(ready)
+        return ready
+    }
+
+    /// Import-safe consent write for persona pack re-import (and similar repair paths).
+    ///
+    /// Expected behavior:
+    /// - **Missing id** → insert (`store.save`)
+    /// - **Present + same content hash** → no-op (keep existing evidence)
+    /// - **Present + different hash** → `BAM_CONSENT_TAMPER` (do not overwrite)
+    ///
+    /// Product pack import **must** use this (or equivalent), not append-only `persist`,
+    /// so same-machine export→import does not abort on the original consent row.
+    @discardableResult
+    public func persistForImport(
+        _ record: ConsentRecord,
+        skipPolicyCheck: Bool = false
+    ) throws -> ConsentRecord {
+        let ready = try prepareForPersist(record, skipPolicyCheck: skipPolicyCheck)
+
+        if let existing = try store.fetchUnverified(id: ready.id) {
+            let existingHash = ConsentRecord.normalizeHash(existing.contentHash)
+            let incomingHash = ConsentRecord.normalizeHash(ready.contentHash)
+            if existingHash != incomingHash {
+                throw BAMError(
+                    code: .consentTamper,
+                    message:
+                        "Pack consent conflicts with existing record \(ready.id) (contentHash mismatch)"
+                )
+            }
+            // Same binding: refuse to proceed if the stored body is already tampered.
+            guard try existing.verifyContentHash() else {
+                throw BAMError(
+                    code: .consentTamper,
+                    message: "Existing consent record \(ready.id) failed contentHash verification"
+                )
+            }
+            return existing
+        }
+
+        // Fresh id: append-only insert is sufficient (no replace needed).
+        try store.save(ready)
+        return ready
+    }
+
+    /// Validates policy + canonical hash for a record about to be stored.
+    private func prepareForPersist(
+        _ record: ConsentRecord,
+        skipPolicyCheck: Bool
+    ) throws -> ConsentRecord {
         if !skipPolicyCheck {
             try ConsentValidator.validateRecordPolicy(record)
         }
-        let ready: ConsentRecord
         if record.contentHash.isEmpty {
-            ready = try record.withComputedContentHash()
-        } else {
-            ready = record
-            guard try ready.verifyContentHash() else {
-                throw BAMError(
-                    code: .consentTamper,
-                    message: "contentHash does not match canonical serialization"
-                )
-            }
+            return try record.withComputedContentHash()
         }
-        try store.save(ready)
-        return ready
+        guard try record.verifyContentHash() else {
+            throw BAMError(
+                code: .consentTamper,
+                message: "contentHash does not match canonical serialization"
+            )
+        }
+        return record
     }
 
     // MARK: - Read

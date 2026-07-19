@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "BAMRunnersMLX", targets: ["BAMRunnersMLX"]),
         .library(name: "BAMRunnersVoice", targets: ["BAMRunnersVoice"]),
         .library(name: "BAMInference", targets: ["BAMInference"]),
+        .library(name: "BAMPersonas", targets: ["BAMPersonas"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
@@ -37,15 +38,48 @@ let package = Package(
         .target(name: "BAMRunnersMLX", dependencies: ["BAMCore", "BAMModels", "BAMJobs", "BAMRunners", "BAMDatasets", "BAMModelCatalog"], path: "Packages/BAMRunnersMLX/Sources/BAMRunnersMLX"),
         .target(name: "BAMRunnersVoice", dependencies: ["BAMCore", "BAMModels", "BAMPersistence", "BAMJobs", "BAMRunners", "BAMConsent", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMRunnersVoice/Sources/BAMRunnersVoice"),
         .target(name: "BAMInference", dependencies: ["BAMCore", "BAMModels"], path: "Packages/BAMInference/Sources/BAMInference"),
+        .target(
+            name: "BAMPersonas",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Packages/BAMPersonas/Sources/BAMPersonas"
+        ),
         .target(name: "BAMResourcesUI", dependencies: ["BAMCore"], path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"),
-        .executableTarget(name: "BuildAIMaker", dependencies: ["BAMCore", "BAMModels", "BAMPersistence", "BAMDatasets", "BAMModelCatalog", "BAMConsent", "BAMJobs", "BAMRunners", "BAMRunnersMLX", "BAMRunnersVoice", "BAMInference", "BAMResourcesUI"], path: "Apps/BuildAIMaker/Sources"),
+        .executableTarget(
+            name: "BuildAIMaker",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+                "BAMDatasets",
+                "BAMModelCatalog",
+                "BAMConsent",
+                "BAMJobs",
+                "BAMRunners",
+                "BAMRunnersMLX",
+                "BAMRunnersVoice",
+                "BAMInference",
+                "BAMPersonas",
+                "BAMResourcesUI",
+            ],
+            path: "Apps/BuildAIMaker/Sources"
+        ),
         .executableTarget(name: "bam-echo-worker", path: "Workers/bam-echo-worker/Sources"),
         .executableTarget(name: "bam-llm-worker", dependencies: ["BAMCore"], path: "Workers/bam-llm-worker/Sources"),
         .executableTarget(name: "bam-voice-worker", dependencies: ["BAMCore"], path: "Workers/bam-voice-worker/Sources"),
         .testTarget(name: "BAMCoreTests", dependencies: ["BAMCore"], path: "Packages/BAMCore/Tests/BAMCoreTests"),
         .testTarget(name: "BAMModelsTests", dependencies: ["BAMModels", "BAMCore"], path: "Packages/BAMModels/Tests/BAMModelsTests"),
         .testTarget(name: "BAMPersistenceTests", dependencies: ["BAMPersistence", "BAMModels", "BAMCore", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"),
-        .testTarget(name: "BAMDatasetsTests", dependencies: ["BAMDatasets", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMDatasets/Tests/BAMDatasetsTests", resources: [.copy("Fixtures")]),
+        .testTarget(
+            name: "BAMDatasetsTests",
+            dependencies: ["BAMDatasets", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")],
+            path: "Packages/BAMDatasets/Tests/BAMDatasetsTests",
+            resources: [.copy("Fixtures")]
+        ),
         .testTarget(name: "BAMModelCatalogTests", dependencies: ["BAMModelCatalog", "BAMModels", "BAMCore"], path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"),
         .testTarget(name: "BAMConsentTests", dependencies: ["BAMConsent", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMConsent/Tests/BAMConsentTests"),
         .testTarget(name: "BAMJobsTests", dependencies: ["BAMJobs", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMJobs/Tests/BAMJobsTests"),
@@ -53,5 +87,17 @@ let package = Package(
         .testTarget(name: "BAMRunnersMLXTests", dependencies: ["BAMRunnersMLX", "BAMCore", "BAMModels", "BAMJobs", "BAMRunners", "BAMDatasets", "BAMModelCatalog"], path: "Packages/BAMRunnersMLX/Tests/BAMRunnersMLXTests"),
         .testTarget(name: "BAMRunnersVoiceTests", dependencies: ["BAMRunnersVoice", "BAMCore", "BAMModels", "BAMPersistence", "BAMJobs", "BAMConsent", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMRunnersVoice/Tests/BAMRunnersVoiceTests"),
         .testTarget(name: "BAMInferenceTests", dependencies: ["BAMInference", "BAMCore", "BAMModels"], path: "Packages/BAMInference/Tests/BAMInferenceTests"),
+        .testTarget(
+            name: "BAMPersonasTests",
+            dependencies: [
+                "BAMPersonas",
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+                "BAMConsent",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Packages/BAMPersonas/Tests/BAMPersonasTests"
+        ),
     ]
 )

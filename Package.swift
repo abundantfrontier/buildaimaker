@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "BAMJobs", targets: ["BAMJobs"]),
         .library(name: "BAMRunners", targets: ["BAMRunners"]),
         .library(name: "BAMRunnersMLX", targets: ["BAMRunnersMLX"]),
+        .library(name: "BAMInference", targets: ["BAMInference"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
@@ -63,6 +64,11 @@ let package = Package(
             ],
             path: "Packages/BAMRunnersMLX/Sources/BAMRunnersMLX"
         ),
+        .target(
+            name: "BAMInference",
+            dependencies: ["BAMCore"],
+            path: "Packages/BAMInference/Sources/BAMInference"
+        ),
         .target(name: "BAMResourcesUI", dependencies: ["BAMCore"], path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"),
         .executableTarget(
             name: "BuildAIMaker",
@@ -75,6 +81,7 @@ let package = Package(
                 "BAMJobs",
                 "BAMRunners",
                 "BAMRunnersMLX",
+                "BAMInference",
                 "BAMResourcesUI",
             ],
             path: "Apps/BuildAIMaker/Sources"
@@ -118,6 +125,11 @@ let package = Package(
                 "BAMPersistence",
             ],
             path: "Packages/BAMRunnersMLX/Tests/BAMRunnersMLXTests"
+        ),
+        .testTarget(
+            name: "BAMInferenceTests",
+            dependencies: ["BAMInference", "BAMCore"],
+            path: "Packages/BAMInference/Tests/BAMInferenceTests"
         ),
     ]
 )

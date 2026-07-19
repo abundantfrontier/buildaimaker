@@ -88,19 +88,20 @@ with **no network**. Unit tests cover this offline path only.
 
 ## Feature flags
 
-All flags live in `BAMCore.FeatureFlags` and **default to off**:
+Flags live in `BAMCore.FeatureFlags`. Defaults after PR-Play-Text / PR-LLM-LoRA:
 
-| Key | Purpose |
-|-----|---------|
-| `ff.llmTraining` | LLM LoRA training UI/path |
-| `ff.voiceClone` | Voice clone UI/path |
-| `ff.voiceFinetune` | Supervised voice fine-tune (future) |
-| `ff.personaPacks` | Persona pack import/export |
-| `ff.talkMode` | Spoken conversation mode |
-| `ff.cloudRunner` | Remote/cloud runner (kept off in v1) |
-| `ff.knowledgePacks` | Knowledge/RAG packs (Phase 2+) |
-| `ff.telemetryOptIn` | Opt-in diagnostics |
-| `ff.hfHubDownload` | Optional HF Hub model download (dogfood; CI stays offline) |
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `ff.llmTraining` | **on** | LLM LoRA training UI/path |
+| `ff.playground` | **on** | Text playground (base + adapter chat) |
+| `ff.voiceClone` | off | Voice clone UI/path |
+| `ff.voiceFinetune` | off | Supervised voice fine-tune (future) |
+| `ff.personaPacks` | off | Persona pack import/export |
+| `ff.talkMode` | off | Spoken conversation mode |
+| `ff.cloudRunner` | off | Remote/cloud runner (kept off in v1) |
+| `ff.knowledgePacks` | off | Knowledge/RAG packs (Phase 2+) |
+| `ff.telemetryOptIn` | off | Opt-in diagnostics |
+| `ff.hfHubDownload` | off | Optional HF Hub model download (dogfood; CI stays offline) |
 
 ## Library root
 
@@ -127,11 +128,6 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
 - **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
 - **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
-- **BAMRunnersMLX** — LLM job materializer (normalized JSONL + JobPaths), ChatTemplateRegistry, prepare-only dry-run via `MLXWorkerClient` / echo or `bam-llm-worker`. No weight updates. Train wizard: Validate & dry-run.
+- **BAMRunnersMLX** — LLM job materializer (normalized JSONL + JobPaths), ChatTemplateRegistry, prepare-only dry-run via `MLXWorkerClient` / echo or `bam-llm-worker`. LoRA train path with CI-safe fake when mlx-lm is missing.
+- **BAMInference** — Composable `LLMBackend` (echo stub + optional mlx-lm generate), ChatPromptFormatter, playground session, transcript JSONL export. Playground UI under sidebar **Playground**.
 
-## Non-goals (current tree)
-
-No real mlx-lm LoRA training yet (see PR-LLM-LoRA). No F5-TTS training yet (PR-VoiceSpike). `ff.llmTraining` remains off.
-
-## Merged stack note
-This branch base merges Protocol + Datasets + Catalog/Fixture + PyEnv for LLM materialization.

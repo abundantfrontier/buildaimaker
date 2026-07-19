@@ -36,10 +36,15 @@ struct RootView: View {
         case .jobs:
             JobsView()
         case .playground:
-            PlaceholderDetailView(
-                destination: .playground,
-                subtitle: "Chat against base models and adapters."
-            )
+            // Text playground: base + optional adapter, A/B toggle, JSONL export (ff.playground always on).
+            if featureFlags.playground {
+                PlaygroundView()
+            } else {
+                PlaceholderDetailView(
+                    destination: .playground,
+                    subtitle: "Playground is not enabled (ff.playground is off)."
+                )
+            }
         case .voices:
             PlaceholderDetailView(
                 destination: .voices,

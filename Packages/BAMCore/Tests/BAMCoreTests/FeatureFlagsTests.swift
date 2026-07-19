@@ -2,14 +2,19 @@ import XCTest
 import BAMCore
 
 final class FeatureFlagsTests: XCTestCase {
-    func testDefaultFlags_llmTrainingOn_othersOff() {
+    func testDefaultFlags_llmTrainingAndPlaygroundOn_othersOff() {
         let flags = FeatureFlags.default
         // PR-LLM-LoRA enables ff.llmTraining for dogfood.
         XCTAssertTrue(flags.llmTraining)
         XCTAssertTrue(flags.isEnabled(.llmTraining))
         XCTAssertEqual(FeatureFlags.Key.llmTraining.rawValue, "ff.llmTraining")
+        // PR-Play-Text enables ff.playground (always on).
+        XCTAssertTrue(flags.playground)
+        XCTAssertTrue(flags.isEnabled(.playground))
+        XCTAssertEqual(FeatureFlags.Key.playground.rawValue, "ff.playground")
 
-        for key in FeatureFlags.Key.allCases where key != .llmTraining {
+        let alwaysOn: Set<FeatureFlags.Key> = [.llmTraining, .playground]
+        for key in FeatureFlags.Key.allCases where !alwaysOn.contains(key) {
             XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
         }
     }
@@ -18,6 +23,12 @@ final class FeatureFlagsTests: XCTestCase {
         let flags = FeatureFlags(llmTraining: false)
         XCTAssertFalse(flags.llmTraining)
         XCTAssertFalse(flags.isEnabled(.llmTraining))
+    }
+
+    func testExplicitOverrideCanDisablePlayground() {
+        let flags = FeatureFlags(playground: false)
+        XCTAssertFalse(flags.playground)
+        XCTAssertFalse(flags.isEnabled(.playground))
     }
 
     func testLibraryRootUsesApplicationSupport() {

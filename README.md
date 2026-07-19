@@ -22,7 +22,7 @@ buildaimaker/
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
 ├── Workers/                 # Helpers (bam-echo-worker for protocol CI; llm later)
 ├── Catalog/                 # Model catalog (future)
-├── Docs/                    # Design docs
+├── Docs/                    # Design docs + ADRs
 └── Package.swift            # Root SPM package
 ```
 

@@ -1,0 +1,18 @@
+# High-level training runtime dependencies (Apple Silicon).
+# Pin exact versions in requirements.lock — do not install multi-GB wheels in CI.
+#
+# Size budget (documented, not downloaded in this spike): ~3–8 GB total for
+# CPython + mlx / mlx-lm + PyTorch-class deps when voice lands. LLM-only is
+# typically toward the lower end of that range.
+#
+# Install (user machine, post-app-install into Application Support):
+#   python -m venv "$BAM_ENV"
+#   "$BAM_ENV/bin/pip" install -r requirements.lock
+
+mlx>=0.22.0,<0.30.0
+mlx-lm>=0.21.0,<0.30.0
+numpy>=1.26.0,<3.0.0
+huggingface-hub>=0.26.0,<1.0.0
+safetensors>=0.4.0,<1.0.0
+sentencepiece>=0.2.0,<1.0.0
+protobuf>=4.25.0,<6.0.0

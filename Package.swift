@@ -11,8 +11,10 @@ let package = Package(
         .library(name: "BAMModels", targets: ["BAMModels"]),
         .library(name: "BAMPersistence", targets: ["BAMPersistence"]),
         .library(name: "BAMJobs", targets: ["BAMJobs"]),
+        .library(name: "BAMRunners", targets: ["BAMRunners"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
+        .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -47,6 +49,15 @@ let package = Package(
             path: "Packages/BAMJobs/Sources/BAMJobs"
         ),
         .target(
+            name: "BAMRunners",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMJobs",
+            ],
+            path: "Packages/BAMRunners/Sources/BAMRunners"
+        ),
+        .target(
             name: "BAMResourcesUI",
             dependencies: ["BAMCore"],
             path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"
@@ -58,9 +69,14 @@ let package = Package(
                 "BAMModels",
                 "BAMPersistence",
                 "BAMJobs",
+                "BAMRunners",
                 "BAMResourcesUI",
             ],
             path: "Apps/BuildAIMaker/Sources"
+        ),
+        .executableTarget(
+            name: "bam-echo-worker",
+            path: "Workers/bam-echo-worker/Sources"
         ),
         .testTarget(
             name: "BAMCoreTests",
@@ -92,6 +108,19 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Packages/BAMJobs/Tests/BAMJobsTests"
+        ),
+        .testTarget(
+            name: "BAMRunnersTests",
+            dependencies: [
+                "BAMRunners",
+                "BAMJobs",
+                "BAMModels",
+                "BAMCore",
+            ],
+            path: "Packages/BAMRunners/Tests/BAMRunnersTests",
+            resources: [
+                .copy("Fixtures"),
+            ]
         ),
     ]
 )

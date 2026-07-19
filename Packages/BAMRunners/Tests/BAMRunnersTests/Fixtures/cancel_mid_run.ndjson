@@ -1,0 +1,7 @@
+{"v":1,"type":"hello","workerId":"bam-echo-worker","workerVersion":"0.1.0","caps":{"modalities":["llm"],"resume":true,"modelFamilies":["echo"],"maxSeqLen":2048}}
+{"v":1,"type":"log","level":"info","message":"run start","ts":"2026-07-19T00:00:00Z"}
+{"v":1,"type":"heartbeat","rssBytes":268435456,"gpuUtil":0.1,"cpuUtil":0.2,"ts":"2026-07-19T00:00:00Z"}
+{"v":1,"type":"progress","step":1,"epoch":0.2,"loss":1.8,"lr":0.0001,"tokensPerSec":100.0,"etaSec":1.0,"metrics":{"totalSteps":5}}
+{"v":1,"type":"heartbeat","rssBytes":268435456,"gpuUtil":0.1,"cpuUtil":0.2,"ts":"2026-07-19T00:00:01Z"}
+{"v":1,"type":"progress","step":2,"epoch":0.4,"loss":1.5,"lr":0.0001,"tokensPerSec":101.0,"etaSec":0.8,"metrics":{"totalSteps":5}}
+{"v":1,"type":"result","status":"cancelled","artifacts":[],"message":"cancelled"}

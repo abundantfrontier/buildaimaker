@@ -1,3 +1,4 @@
+import AppKit
 import BAMAudioFX
 import BAMCharacterStudio
 import BAMResourcesUI
@@ -7,33 +8,62 @@ import SwiftUI
 struct CreateCharacterWizardView: View {
     @StateObject private var model = CreateCharacterViewModel()
     @Binding var isPresented: Bool
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case name
+        case customSpecies
+        case vibe
+        case story
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             stepHeader
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    switch model.step {
-                    case .meet: meetStep
-                    case .mind: mindStep
-                    case .voice: voiceStep
-                    case .done: doneStep
+            // Avoid ScrollView wrapping primary text fields on macOS — it steals focus.
+            Group {
+                switch model.step {
+                case .meet:
+                    ScrollView {
+                        meetStep
+                            .padding(24)
+                            .frame(maxWidth: 720, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
-                    if let err = model.lastError {
-                        Text(err)
-                            .foregroundStyle(.red)
-                            .font(.callout)
+                case .mind:
+                    mindStep
+                        .padding(24)
+                        .frame(maxWidth: 720, alignment: .leading)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                case .voice:
+                    ScrollView {
+                        voiceStep
+                            .padding(24)
+                            .frame(maxWidth: 720, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
-                    if let status = model.statusMessage {
-                        Text(status)
-                            .foregroundStyle(BAMColors.secondaryLabel)
-                            .font(.callout)
+                case .done:
+                    ScrollView {
+                        doneStep
+                            .padding(24)
+                            .frame(maxWidth: 720, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .center)
                     }
                 }
-                .padding(24)
-                .frame(maxWidth: 720, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let err = model.lastError {
+                Text(err)
+                    .foregroundStyle(.red)
+                    .font(.callout)
+                    .padding(.horizontal, 24)
+            }
+            if let status = model.statusMessage {
+                Text(status)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .font(.callout)
+                    .padding(.horizontal, 24)
             }
             Divider()
             footer
@@ -44,6 +74,28 @@ struct CreateCharacterWizardView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Close") { isPresented = false }
             }
+        }
+        .onAppear {
+            activateKeyWindow()
+            focusedField = model.step == .mind ? .story : .name
+        }
+        .onChange(of: model.step) { _, newStep in
+            activateKeyWindow()
+            switch newStep {
+            case .meet: focusedField = .name
+            case .mind: focusedField = .story
+            case .voice, .done: focusedField = nil
+            }
+        }
+    }
+
+    private func activateKeyWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        // Prefer the sheet/window hosting this view.
+        if let key = NSApp.keyWindow {
+            key.makeKeyAndOrderFront(nil)
+        } else {
+            NSApp.windows.first(where: \.isVisible)?.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -82,6 +134,7 @@ struct CreateCharacterWizardView: View {
 
             TextField("Name", text: $model.draft.name)
                 .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .name)
 
             Text("Species / vibe")
                 .font(.headline)
@@ -107,11 +160,13 @@ struct CreateCharacterWizardView: View {
             if model.draft.speciesPreset == .custom {
                 TextField("Custom species", text: $model.draft.customSpecies)
                     .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .customSpecies)
             }
 
             TextField("Vibe (optional)", text: $model.draft.vibe, axis: .vertical)
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .vibe)
         }
     }
 
@@ -122,10 +177,9 @@ struct CreateCharacterWizardView: View {
             Text("Paste lore, backstory, or sample lines. We’ll turn it into practice dialogues (how they talk).")
                 .foregroundStyle(BAMColors.secondaryLabel)
 
-            TextEditor(text: $model.draft.storyPaste)
-                .font(.body)
-                .frame(minHeight: 140)
-                .border(Color.secondary.opacity(0.3))
+            MacTextEditor(text: $model.draft.storyPaste, minHeight: 160)
+                .frame(minHeight: 160, maxHeight: 220)
+                .focused($focusedField, equals: .story)
 
             Text("How they talk")
                 .font(.headline)
@@ -152,24 +206,29 @@ struct CreateCharacterWizardView: View {
             if !model.draft.examples.isEmpty {
                 Text("Preview (\(model.draft.examples.count) lines)")
                     .font(.headline)
-                ForEach(model.draft.examples.prefix(6)) { ex in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("You: \(ex.user)")
-                            .font(.callout.weight(.semibold))
-                        Text(ex.assistant)
-                            .font(.callout)
-                            .foregroundStyle(BAMColors.secondaryLabel)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(model.draft.examples.prefix(6)) { ex in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("You: \(ex.user)")
+                                    .font(.callout.weight(.semibold))
+                                Text(ex.assistant)
+                                    .font(.callout)
+                                    .foregroundStyle(BAMColors.secondaryLabel)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        if let rules = model.draft.bible?.speechRules, !rules.isEmpty {
+                            Text("Speech rules: \(rules.joined(separator: " "))")
+                                .font(.caption)
+                                .foregroundStyle(BAMColors.secondaryLabel)
+                        }
                     }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                if let rules = model.draft.bible?.speechRules, !rules.isEmpty {
-                    Text("Speech rules: \(rules.joined(separator: " "))")
-                        .font(.caption)
-                        .foregroundStyle(BAMColors.secondaryLabel)
-                }
+                .frame(maxHeight: 200)
             }
         }
     }

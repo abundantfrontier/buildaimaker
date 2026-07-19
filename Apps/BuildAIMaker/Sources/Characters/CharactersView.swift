@@ -80,8 +80,10 @@ struct CharactersView: View {
             .sheet(isPresented: $showCreate, onDismiss: reload) {
                 NavigationStack {
                     CreateCharacterWizardView(isPresented: $showCreate)
-                        .frame(minWidth: 640, minHeight: 520)
                 }
+                .frame(minWidth: 720, minHeight: 580)
+                // Ensure the sheet becomes key so typing hits the fields, not the parent window.
+                .background(SheetKeyWindowActivator())
             }
             .onAppear(perform: reload)
         }

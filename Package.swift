@@ -45,6 +45,7 @@ let package = Package(
             path: "Packages/BAMModelCatalog/Sources/BAMModelCatalog",
             resources: [
                 .copy("Resources/models.json"),
+                .copy("Resources/fixtures"),
             ]
         ),
         .target(

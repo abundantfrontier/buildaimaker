@@ -17,6 +17,8 @@ public struct CatalogEntry: Codable, Sendable, Equatable, Identifiable {
     public var license: String
     /// Weight layout / runtime format (`mlx`, `hf`, …).
     public var format: String
+    /// When true, this is the offline bundled toy fixture (not real train weights).
+    public var isFixture: Bool
 
     public var id: String { sourceKey }
 
@@ -29,7 +31,8 @@ public struct CatalogEntry: Codable, Sendable, Equatable, Identifiable {
         minRamGB: Int,
         chatTemplateId: String,
         license: String,
-        format: String = "mlx"
+        format: String = "mlx",
+        isFixture: Bool = false
     ) {
         self.sourceKey = sourceKey
         self.name = name
@@ -40,6 +43,42 @@ public struct CatalogEntry: Codable, Sendable, Equatable, Identifiable {
         self.chatTemplateId = chatTemplateId
         self.license = license
         self.format = format
+        self.isFixture = isFixture
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceKey, name, archFamily, paramCountB, quantBits
+        case minRamGB, chatTemplateId, license, format, isFixture
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sourceKey = try c.decode(String.self, forKey: .sourceKey)
+        name = try c.decode(String.self, forKey: .name)
+        archFamily = try c.decode(String.self, forKey: .archFamily)
+        paramCountB = try c.decode(Double.self, forKey: .paramCountB)
+        quantBits = try c.decode(Int.self, forKey: .quantBits)
+        minRamGB = try c.decode(Int.self, forKey: .minRamGB)
+        chatTemplateId = try c.decode(String.self, forKey: .chatTemplateId)
+        license = try c.decode(String.self, forKey: .license)
+        format = try c.decodeIfPresent(String.self, forKey: .format) ?? "mlx"
+        isFixture = try c.decodeIfPresent(Bool.self, forKey: .isFixture) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(sourceKey, forKey: .sourceKey)
+        try c.encode(name, forKey: .name)
+        try c.encode(archFamily, forKey: .archFamily)
+        try c.encode(paramCountB, forKey: .paramCountB)
+        try c.encode(quantBits, forKey: .quantBits)
+        try c.encode(minRamGB, forKey: .minRamGB)
+        try c.encode(chatTemplateId, forKey: .chatTemplateId)
+        try c.encode(license, forKey: .license)
+        try c.encode(format, forKey: .format)
+        if isFixture {
+            try c.encode(true, forKey: .isFixture)
+        }
     }
 }
 

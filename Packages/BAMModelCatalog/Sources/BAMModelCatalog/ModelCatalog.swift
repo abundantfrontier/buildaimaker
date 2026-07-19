@@ -19,6 +19,16 @@ public struct ModelCatalog: Sendable {
         document.models.filter { $0.archFamily == archFamily }
     }
 
+    /// Offline fixture catalog entry, if present in the living list.
+    public var fixtureEntry: CatalogEntry? {
+        document.models.first { $0.isFixture || $0.sourceKey == FixtureModel.sourceKey }
+    }
+
+    /// Non-fixture (downloadable / production) catalog entries.
+    public var nonFixtureEntries: [CatalogEntry] {
+        document.models.filter { !$0.isFixture }
+    }
+
     // MARK: - Loading
 
     /// Decodes a catalog document from raw JSON data.

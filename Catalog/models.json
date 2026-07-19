@@ -2,6 +2,18 @@
   "schemaVersion": 1,
   "models": [
     {
+      "sourceKey": "buildaimaker/tiny-qwen-mlx-fixture",
+      "name": "Tiny Qwen MLX Fixture",
+      "archFamily": "qwen2.5",
+      "paramCountB": 0.001,
+      "quantBits": 16,
+      "minRamGB": 8,
+      "chatTemplateId": "qwen2.5-instruct",
+      "license": "Apache-2.0",
+      "format": "mlx",
+      "isFixture": true
+    },
+    {
       "sourceKey": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
       "name": "Qwen2.5 Instruct 0.5B",
       "archFamily": "qwen2.5",

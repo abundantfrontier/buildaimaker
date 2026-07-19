@@ -57,6 +57,10 @@ public struct DatasetImporter: @unchecked Sendable {
     }
 
     /// Validates then imports. Throws `BAMError` with `datasetInvalid` when validation fails.
+    ///
+    /// Atomicity:
+    /// - Copy: filesystem writes cleaned up if DB insert fails.
+    /// - DB: dataset + version + bookmark land in one transaction (or none).
     public func importDataset(_ request: DatasetImportRequest) throws -> DatasetImportResult {
         let name = request.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else {
@@ -64,17 +68,24 @@ public struct DatasetImporter: @unchecked Sendable {
         }
 
         let sourceURL = request.sourceURL.standardizedFileURL
-        guard fileManager.fileExists(atPath: sourceURL.path) else {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory) else {
             throw BAMError(
                 code: .datasetInvalid,
                 message: "Source file not found: \(sourceURL.path)"
             )
         }
+        if isDirectory.boolValue {
+            throw BAMError(
+                code: .datasetInvalid,
+                message: "Source path is a directory; expected a JSONL file: \(sourceURL.path)"
+            )
+        }
 
         let validation = try JSONLChatParser.validate(fileURL: sourceURL)
         guard validation.isValid else {
-            if let first = validation.firstError {
-                throw first
+            if let aggregated = validation.aggregatedError {
+                throw aggregated
             }
             throw BAMError(code: .datasetInvalid, message: "Dataset validation failed.")
         }
@@ -92,75 +103,86 @@ public struct DatasetImporter: @unchecked Sendable {
         )
         let metaJSON = try meta.jsonString()
 
-        let rootPath: String
-        let sourceFilePath: String
-        var bookmarkData: Data?
+        // Ensure parent exists before copy; safe even on failure (empty dir ok).
+        try fileManager.createDirectory(at: datasetsRoot, withIntermediateDirectories: true)
 
-        switch request.importMode {
-        case .copy:
-            let datasetDir = datasetsRoot.appendingPathComponent(
-                LibraryPaths.sanitizedPathComponent(datasetId),
-                isDirectory: true
-            )
-            try fileManager.createDirectory(at: datasetDir, withIntermediateDirectories: true)
-            let dest = datasetDir.appendingPathComponent("source.jsonl", isDirectory: false)
-            if fileManager.fileExists(atPath: dest.path) {
-                try fileManager.removeItem(at: dest)
+        var rootPath: String
+        var sourceFilePath: String
+        var bookmarkInsert: DatasetBookmarkInsert?
+        /// Copy-mode directory removed if DB insert fails after files were written.
+        var copiedDatasetDir: URL?
+
+        do {
+            switch request.importMode {
+            case .copy:
+                let datasetDir = datasetsRoot.appendingPathComponent(
+                    LibraryPaths.sanitizedPathComponent(datasetId),
+                    isDirectory: true
+                )
+                try fileManager.createDirectory(at: datasetDir, withIntermediateDirectories: true)
+                copiedDatasetDir = datasetDir
+                let dest = datasetDir.appendingPathComponent("source.jsonl", isDirectory: false)
+                if fileManager.fileExists(atPath: dest.path) {
+                    try fileManager.removeItem(at: dest)
+                }
+                try fileManager.copyItem(at: sourceURL, to: dest)
+                try Self.excludeFromBackup(dest)
+                try Self.excludeFromBackup(datasetDir)
+                rootPath = datasetDir.path
+                sourceFilePath = dest.path
+
+            case .reference:
+                rootPath = sourceURL.path
+                sourceFilePath = sourceURL.path
+                // Best-effort security-scoped bookmark (may fail outside sandbox — still import).
+                if let data = try? sourceURL.bookmarkData(
+                    options: [.withSecurityScope],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                ) {
+                    bookmarkInsert = DatasetBookmarkInsert(
+                        id: BAMID.generate(),
+                        entityType: "dataset",
+                        entityId: datasetId,
+                        data: data
+                    )
+                }
             }
-            try fileManager.copyItem(at: sourceURL, to: dest)
-            try Self.excludeFromBackup(dest)
-            try Self.excludeFromBackup(datasetDir)
-            rootPath = datasetDir.path
-            sourceFilePath = dest.path
 
-        case .reference:
-            rootPath = sourceURL.path
-            sourceFilePath = sourceURL.path
-            // Best-effort security-scoped bookmark (may fail outside sandbox — still import).
-            bookmarkData = try? sourceURL.bookmarkData(
-                options: [.withSecurityScope],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
+            let dataset = DatasetRecord(
+                id: datasetId,
+                name: name,
+                modality: .text,
+                rootPath: rootPath,
+                importMode: request.importMode,
+                status: .ready,
+                createdAt: createdAt
             )
-            // Ensure library datasets root exists even for reference-only imports.
-            try fileManager.createDirectory(at: datasetsRoot, withIntermediateDirectories: true)
-        }
-
-        let dataset = DatasetRecord(
-            id: datasetId,
-            name: name,
-            modality: .text,
-            rootPath: rootPath,
-            importMode: request.importMode,
-            status: .ready,
-            createdAt: createdAt
-        )
-        let version = DatasetVersionRecord(
-            id: versionId,
-            datasetId: datasetId,
-            version: 1,
-            contentHash: contentHash,
-            rowCount: validation.rowCount,
-            metaJSON: metaJSON
-        )
-
-        try store.insert(dataset: dataset, version: version)
-
-        if let bookmarkData {
-            try store.insertBookmark(
-                id: BAMID.generate(),
-                entityType: "dataset",
-                entityId: datasetId,
-                bookmarkData: bookmarkData
+            let version = DatasetVersionRecord(
+                id: versionId,
+                datasetId: datasetId,
+                version: 1,
+                contentHash: contentHash,
+                rowCount: validation.rowCount,
+                metaJSON: metaJSON
             )
-        }
 
-        return DatasetImportResult(
-            dataset: dataset,
-            version: version,
-            sourceFilePath: sourceFilePath,
-            validation: validation
-        )
+            // Single transaction: dataset + version + optional bookmark.
+            try store.insert(dataset: dataset, version: version, bookmark: bookmarkInsert)
+            copiedDatasetDir = nil // success — do not clean up
+
+            return DatasetImportResult(
+                dataset: dataset,
+                version: version,
+                sourceFilePath: sourceFilePath,
+                validation: validation
+            )
+        } catch {
+            if let dir = copiedDatasetDir, fileManager.fileExists(atPath: dir.path) {
+                try? fileManager.removeItem(at: dir)
+            }
+            throw error
+        }
     }
 
     // MARK: - Helpers

@@ -3,8 +3,8 @@ import Foundation
 
 /// Actionable row-level validation issue for dataset import.
 public struct DatasetValidationIssue: Sendable, Equatable, Identifiable {
-    public var id: String { "L\(line.map(String.init) ?? "?"):\(message)" }
-
+    /// Stable unique id for SwiftUI lists (never derived only from message text).
+    public let id: String
     /// 1-based line number in the source JSONL, when known.
     public let line: Int?
     /// Stable product error code (typically `BAM_DATASET_INVALID`).
@@ -12,7 +12,13 @@ public struct DatasetValidationIssue: Sendable, Equatable, Identifiable {
     /// Human-readable, actionable detail.
     public let message: String
 
-    public init(line: Int?, code: BAMErrorCode = .datasetInvalid, message: String) {
+    public init(
+        line: Int?,
+        code: BAMErrorCode = .datasetInvalid,
+        message: String,
+        id: String = UUID().uuidString
+    ) {
+        self.id = id
         self.line = line
         self.code = code
         self.message = message
@@ -47,5 +53,20 @@ public struct DatasetValidationResult: Sendable, Equatable {
     /// First issue as a `BAMError`, if any.
     public var firstError: BAMError? {
         issues.first?.asBAMError
+    }
+
+    /// Aggregated multi-issue message for API throw sites (bounded).
+    public var aggregatedError: BAMError? {
+        guard !issues.isEmpty else { return nil }
+        if issues.count == 1 { return issues[0].asBAMError }
+        let parts = issues.prefix(5).map { issue -> String in
+            let line = issue.line.map { "line \($0): " } ?? ""
+            return line + issue.message
+        }
+        let suffix = issues.count > 5 ? " (+\(issues.count - 5) more)" : ""
+        return BAMError(
+            code: .datasetInvalid,
+            message: parts.joined(separator: "; ") + suffix
+        )
     }
 }

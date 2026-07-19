@@ -10,7 +10,8 @@ public enum JSONLChatParser: Sendable {
 
     /// Validates a JSONL file without loading every example into memory.
     public static func validate(fileURL: URL) throws -> DatasetValidationResult {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory) else {
             return DatasetValidationResult(
                 isValid: false,
                 format: nil,
@@ -23,9 +24,23 @@ public enum JSONLChatParser: Sendable {
                 ]
             )
         }
+        if isDirectory.boolValue {
+            return DatasetValidationResult(
+                isValid: false,
+                format: nil,
+                rowCount: 0,
+                issues: [
+                    DatasetValidationIssue(
+                        line: nil,
+                        message: "Source path is a directory; expected a JSONL file: \(fileURL.path)"
+                    ),
+                ]
+            )
+        }
 
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
+        let reader = BufferedLineReader(handle: handle)
 
         var issues: [DatasetValidationIssue] = []
         var rowCount = 0
@@ -34,7 +49,7 @@ public enum JSONLChatParser: Sendable {
         var nonEmptyLines = 0
 
         while true {
-            guard let lineData = try readLine(from: handle) else { break }
+            guard let lineData = try reader.readLine() else { break }
             lineNumber += 1
 
             let trimmed = String(data: lineData, encoding: .utf8)?
@@ -177,12 +192,13 @@ public enum JSONLChatParser: Sendable {
         precondition(maxExamples > 0)
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
+        let reader = BufferedLineReader(handle: handle)
 
         var examples: [ChatExample] = []
         var lineNumber = 0
 
         while examples.count < maxExamples {
-            guard let lineData = try readLine(from: handle) else { break }
+            guard let lineData = try reader.readLine() else { break }
             lineNumber += 1
             let trimmed = String(data: lineData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -398,25 +414,48 @@ public enum JSONLChatParser: Sendable {
         default: return String(describing: type(of: value))
         }
     }
+}
 
-    // MARK: - Line reader
+// MARK: - Buffered line reader
 
-    /// Reads one LF/CRLF-terminated line (without the terminator). Returns nil at EOF with no data.
-    private static func readLine(from handle: FileHandle) throws -> Data? {
-        var buffer = Data()
+/// Reads LF/CRLF lines from a `FileHandle` using chunked reads (not 1-byte syscalls).
+final class BufferedLineReader {
+    private let handle: FileHandle
+    private var buffer = Data()
+    private var reachedEOF = false
+    private let chunkSize: Int
+
+    init(handle: FileHandle, chunkSize: Int = 64 * 1024) {
+        self.handle = handle
+        self.chunkSize = max(1, chunkSize)
+    }
+
+    /// Returns the next line without the terminator, or `nil` at EOF with no remaining data.
+    func readLine() throws -> Data? {
         while true {
-            let chunk = try handle.read(upToCount: 1)
-            guard let chunk, !chunk.isEmpty else {
-                return buffer.isEmpty ? nil : buffer
-            }
-            if chunk[0] == 0x0A { // \n
-                // Drop trailing \r if present (CRLF).
-                if buffer.last == 0x0D {
-                    buffer.removeLast()
+            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                var line = buffer.subdata(in: buffer.startIndex..<newlineIndex)
+                let removeThrough = buffer.index(after: newlineIndex)
+                buffer.removeSubrange(buffer.startIndex..<removeThrough)
+                if line.last == 0x0D {
+                    line.removeLast()
                 }
-                return buffer
+                return line
             }
-            buffer.append(chunk)
+
+            if reachedEOF {
+                if buffer.isEmpty { return nil }
+                let line = buffer
+                buffer = Data()
+                return line
+            }
+
+            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            if chunk.isEmpty {
+                reachedEOF = true
+            } else {
+                buffer.append(chunk)
+            }
         }
     }
 }

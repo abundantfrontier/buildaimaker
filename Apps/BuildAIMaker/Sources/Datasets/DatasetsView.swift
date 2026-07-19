@@ -349,13 +349,14 @@ private struct DatasetImportSheet: View {
             HStack {
                 Spacer()
                 Button("Import") {
-                    model.performImport()
-                    if model.importError == nil, model.importValidation?.isValid == true {
-                        dismiss()
+                    Task {
+                        if await model.performImport() {
+                            dismiss()
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.canImport)
+                .disabled(!model.canImport || model.isImporting)
                 .keyboardShortcut(.defaultAction)
             }
             .padding()
@@ -388,8 +389,11 @@ final class DatasetsViewModel: ObservableObject {
     @Published var importValidation: DatasetValidationResult?
     @Published var importError: String?
     @Published var isValidating = false
+    @Published var isImporting = false
 
     private(set) var service: DatasetLibraryService?
+    /// Security-scoped access started for the NSOpenPanel URL (if any).
+    private var importFileScopedAccess = false
 
     var selectedDataset: DatasetRecord? {
         guard let selectedDatasetId else { return nil }
@@ -407,6 +411,7 @@ final class DatasetsViewModel: ObservableObject {
             && importFileURL != nil
             && importValidation?.isValid == true
             && !isValidating
+            && !isImporting
     }
 
     func bootstrap() {
@@ -423,7 +428,29 @@ final class DatasetsViewModel: ObservableObject {
     func reload() {
         guard let service else { return }
         do {
-            datasets = try service.listDatasets()
+            let listed = try service.listDatasets()
+            // Heal availability for displayed rows (reference sources may reappear).
+            var healed: [DatasetRecord] = []
+            for ds in listed {
+                let status = service.refreshAvailability(dataset: ds)
+                if status != ds.status {
+                    var copy = ds
+                    // status is a var on DatasetRecord
+                    copy = DatasetRecord(
+                        id: ds.id,
+                        name: ds.name,
+                        modality: ds.modality,
+                        rootPath: ds.rootPath,
+                        importMode: ds.importMode,
+                        status: status,
+                        createdAt: ds.createdAt
+                    )
+                    healed.append(copy)
+                } else {
+                    healed.append(ds)
+                }
+            }
+            datasets = healed
             var versions: [String: DatasetVersionRecord] = [:]
             for ds in datasets {
                 if let v = try service.latestVersion(datasetId: ds.id) {
@@ -450,12 +477,20 @@ final class DatasetsViewModel: ObservableObject {
         isLoadingPreview = true
         previewError = nil
         preview = nil
-        do {
-            preview = try service.preview(datasetId: datasetId, maxExamples: 5)
-        } catch {
-            previewError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        Task {
+            do {
+                let result = try await Task.detached {
+                    try service.preview(datasetId: datasetId, maxExamples: 5)
+                }.value
+                preview = result
+                reload()
+            } catch {
+                previewError =
+                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                reload()
+            }
+            isLoadingPreview = false
         }
-        isLoadingPreview = false
     }
 
     func delete(at offsets: IndexSet) {
@@ -468,18 +503,20 @@ final class DatasetsViewModel: ObservableObject {
     }
 
     func resetImportForm() {
+        stopImportFileScope()
         importName = ""
         importMode = .copy
         importFileURL = nil
         importValidation = nil
         importError = nil
         isValidating = false
+        isImporting = false
     }
 
     func pickImportFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [
-            .init(filenameExtension: "jsonl")!,
+            UTType(filenameExtension: "jsonl"),
             .json,
             .plainText,
         ].compactMap { $0 }
@@ -487,6 +524,9 @@ final class DatasetsViewModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.message = "Choose a ShareGPT or OpenAI-messages JSONL file"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        stopImportFileScope()
+        importFileScopedAccess = url.startAccessingSecurityScopedResource()
         importFileURL = url
         if importName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             importName = url.deletingPathExtension().lastPathComponent
@@ -501,49 +541,73 @@ final class DatasetsViewModel: ObservableObject {
         }
         isValidating = true
         importError = nil
-        defer { isValidating = false }
-        do {
-            importValidation = try service.validate(fileURL: url)
-        } catch {
-            importValidation = DatasetValidationResult(
-                isValid: false,
-                format: nil,
-                rowCount: 0,
-                issues: [
-                    DatasetValidationIssue(
-                        line: nil,
-                        message: error.localizedDescription
-                    ),
-                ]
-            )
+        Task {
+            let result: DatasetValidationResult
+            do {
+                result = try await Task.detached {
+                    try service.validate(fileURL: url)
+                }.value
+            } catch {
+                result = DatasetValidationResult(
+                    isValid: false,
+                    format: nil,
+                    rowCount: 0,
+                    issues: [
+                        DatasetValidationIssue(
+                            line: nil,
+                            message: error.localizedDescription
+                        ),
+                    ]
+                )
+            }
+            importValidation = result
+            isValidating = false
         }
     }
 
-    func performImport() {
-        guard let service, let url = importFileURL else { return }
+    /// Validates + imports off the main actor. Returns `true` on success (caller may `dismiss()`).
+    @discardableResult
+    func performImport() async -> Bool {
+        guard let service, let url = importFileURL else { return false }
         importError = nil
+        isImporting = true
+        defer { isImporting = false }
+
+        let name = importName
+        let mode = importMode
+
         do {
-            // Re-validate right before import for actionable multi-issue UI.
-            let validation = try service.validate(fileURL: url)
-            importValidation = validation
-            guard validation.isValid else {
-                importError = validation.issues.first.map {
-                    let line = $0.line.map { "Line \($0): " } ?? ""
-                    return "\($0.code.rawValue): \(line)\($0.message)"
-                } ?? "Validation failed"
-                return
-            }
-            let result = try service.importDataset(
-                sourceURL: url,
-                name: importName,
-                importMode: importMode
-            )
+            let result = try await Task.detached {
+                // Re-validate right before import for multi-issue diagnostics.
+                let validation = try service.validate(fileURL: url)
+                guard validation.isValid else {
+                    if let aggregated = validation.aggregatedError {
+                        throw aggregated
+                    }
+                    throw BAMError(code: .datasetInvalid, message: "Validation failed")
+                }
+                return try service.importDataset(
+                    sourceURL: url,
+                    name: name,
+                    importMode: mode
+                )
+            }.value
+
             reload()
             selectedDatasetId = result.dataset.id
             resetImportForm()
             showImportSheet = false
+            return true
         } catch {
             importError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return false
         }
+    }
+
+    private func stopImportFileScope() {
+        if importFileScopedAccess, let url = importFileURL {
+            url.stopAccessingSecurityScopedResource()
+        }
+        importFileScopedAccess = false
     }
 }

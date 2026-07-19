@@ -4,6 +4,21 @@ import BAMPersistence
 import Foundation
 import GRDB
 
+/// Optional bookmark payload written in the same transaction as dataset + version.
+public struct DatasetBookmarkInsert: Sendable, Equatable {
+    public var id: String
+    public var entityType: String
+    public var entityId: String
+    public var data: Data
+
+    public init(id: String, entityType: String, entityId: String, data: Data) {
+        self.id = id
+        self.entityType = entityType
+        self.entityId = entityId
+        self.data = data
+    }
+}
+
 /// GRDB access for `datasets` / `dataset_versions` / `bookmarks`.
 public final class DatasetStore: Sendable {
     public let database: LibraryDatabase
@@ -77,7 +92,12 @@ public final class DatasetStore: Sendable {
 
     // MARK: - Write
 
-    public func insert(dataset: DatasetRecord, version: DatasetVersionRecord) throws {
+    /// Inserts dataset + version (+ optional bookmark) in a **single** write transaction.
+    public func insert(
+        dataset: DatasetRecord,
+        version: DatasetVersionRecord,
+        bookmark: DatasetBookmarkInsert? = nil
+    ) throws {
         try database.dbQueue.write { db in
             try db.execute(
                 sql: """
@@ -108,6 +128,20 @@ public final class DatasetStore: Sendable {
                     version.metaJSON,
                 ]
             )
+            if let bookmark {
+                try db.execute(
+                    sql: """
+                        INSERT INTO bookmarks (id, entity_type, entity_id, bookmark_data)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        bookmark.id,
+                        bookmark.entityType,
+                        bookmark.entityId,
+                        bookmark.data,
+                    ]
+                )
+            }
         }
     }
 

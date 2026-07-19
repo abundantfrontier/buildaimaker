@@ -98,6 +98,43 @@ final class JSONLChatParserTests: XCTestCase {
         XCTAssertEqual(error.message, "line 3: bad row")
     }
 
+    func testMixedFormatFixture() throws {
+        let url = try fixtureURL("invalid_mixed_format.jsonl")
+        let result = try JSONLChatParser.validate(fileURL: url)
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.issues.contains { $0.message.contains("Mixed formats") })
+        XCTAssertEqual(result.issues.first(where: { $0.message.contains("Mixed formats") })?.line, 2)
+    }
+
+    func testValidateRejectsDirectory() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bam-ds-dir-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let result = try JSONLChatParser.validate(fileURL: dir)
+        XCTAssertFalse(result.isValid)
+        XCTAssertTrue(result.issues[0].message.lowercased().contains("directory"))
+    }
+
+    func testValidationIssueIdsAreUnique() {
+        let a = DatasetValidationIssue(line: 1, message: "same")
+        let b = DatasetValidationIssue(line: 1, message: "same")
+        XCTAssertNotEqual(a.id, b.id)
+    }
+
+    func testAggregatedErrorIncludesMultipleIssues() {
+        let result = JSONLChatParser.validate(contents: """
+        not-json
+        {"messages":[]}
+        """)
+        XCTAssertFalse(result.isValid)
+        XCTAssertGreaterThanOrEqual(result.issues.count, 2)
+        let aggregated = result.aggregatedError
+        XCTAssertEqual(aggregated?.code, .datasetInvalid)
+        XCTAssertTrue(aggregated?.message?.contains(";") == true || result.issues.count == 1)
+    }
+
     // MARK: - Helpers
 
     private func fixtureURL(_ name: String) throws -> URL {

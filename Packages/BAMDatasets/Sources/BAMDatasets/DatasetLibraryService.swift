@@ -3,6 +3,30 @@ import BAMModels
 import BAMPersistence
 import Foundation
 
+/// Scoped access to a resolved dataset source file (security-scoped bookmark or plain path).
+public final class ResolvedSourceAccess: @unchecked Sendable {
+    public let url: URL
+    private let didStartScope: Bool
+    private var stopped = false
+
+    public init(url: URL, didStartScope: Bool) {
+        self.url = url
+        self.didStartScope = didStartScope
+    }
+
+    public func stop() {
+        guard !stopped else { return }
+        stopped = true
+        if didStartScope {
+            url.stopAccessingSecurityScopedResource()
+        }
+    }
+
+    deinit {
+        stop()
+    }
+}
+
 /// High-level dataset library API: list, import, validate, preview, delete.
 public final class DatasetLibraryService: @unchecked Sendable {
     public let store: DatasetStore
@@ -99,24 +123,26 @@ public final class DatasetLibraryService: @unchecked Sendable {
         guard let dataset = try store.dataset(id: datasetId) else {
             throw BAMError(code: .datasetInvalid, message: "Dataset not found: \(datasetId)")
         }
-        let fileURL = try resolveSourceFileURL(for: dataset)
-        let availability = checkAvailability(dataset: dataset, sourceFile: fileURL)
+
+        let access = try resolveSourceAccess(for: dataset)
+        defer { access.stop() }
+
+        let availability = refreshAvailability(dataset: dataset, sourceFile: access.url)
         if availability == .unavailable {
-            try? store.updateStatus(datasetId: datasetId, status: .unavailable)
             throw BAMError(
                 code: .datasetInvalid,
                 message: "Dataset source is unavailable (missing file). Re-import or relink."
             )
         }
-        let examples = try JSONLChatParser.preview(fileURL: fileURL, maxExamples: maxExamples)
-        // Flatten message count for UI summary.
+
+        let examples = try JSONLChatParser.preview(fileURL: access.url, maxExamples: maxExamples)
         let messageCount = examples.reduce(0) { $0 + $1.messages.count }
         return DatasetPreview(
             datasetId: datasetId,
             examples: examples,
             exampleCount: examples.count,
             messageCount: messageCount,
-            sourcePath: fileURL.path
+            sourcePath: access.url.path
         )
     }
 
@@ -138,6 +164,7 @@ public final class DatasetLibraryService: @unchecked Sendable {
     public func deleteDataset(id: String) throws {
         guard let dataset = try store.dataset(id: id) else { return }
         try store.deleteDataset(id: id)
+        // Copy mode only: remove library copy. Reference mode never deletes the user file.
         if dataset.importMode == .copy {
             let dir = URL(fileURLWithPath: dataset.rootPath, isDirectory: true)
             if fileManager.fileExists(atPath: dir.path) {
@@ -148,40 +175,94 @@ public final class DatasetLibraryService: @unchecked Sendable {
 
     // MARK: - Resolve
 
-    /// Absolute URL of the JSONL used for training/preview.
+    /// Resolves the JSONL URL, preferring a stored security-scoped bookmark for reference imports.
     public func resolveSourceFileURL(for dataset: DatasetRecord) throws -> URL {
+        try resolveSourceAccess(for: dataset).url
+    }
+
+    /// Resolves source and starts security-scoped access when needed. Caller must `stop()`.
+    public func resolveSourceAccess(for dataset: DatasetRecord) throws -> ResolvedSourceAccess {
         switch dataset.importMode {
         case .copy:
             let dir = URL(fileURLWithPath: dataset.rootPath, isDirectory: true)
             let source = dir.appendingPathComponent("source.jsonl", isDirectory: false)
             if fileManager.fileExists(atPath: source.path) {
-                return source
+                return ResolvedSourceAccess(url: source, didStartScope: false)
             }
-            // Fallback: first *.jsonl in directory.
             if let contents = try? fileManager.contentsOfDirectory(
                 at: dir,
                 includingPropertiesForKeys: nil
-            ) {
-                if let jsonl = contents.first(where: { $0.pathExtension.lowercased() == "jsonl" }) {
-                    return jsonl
+            ),
+                let jsonl = contents.first(where: { $0.pathExtension.lowercased() == "jsonl" })
+            {
+                return ResolvedSourceAccess(url: jsonl, didStartScope: false)
+            }
+            return ResolvedSourceAccess(url: source, didStartScope: false)
+
+        case .reference:
+            if let bookmark = try store.bookmarkData(entityType: "dataset", entityId: dataset.id) {
+                var isStale = false
+                do {
+                    let resolved = try URL(
+                        resolvingBookmarkData: bookmark,
+                        options: [.withSecurityScope],
+                        relativeTo: nil,
+                        bookmarkDataIsStale: &isStale
+                    )
+                    let started = resolved.startAccessingSecurityScopedResource()
+                    if fileManager.fileExists(atPath: resolved.path) {
+                        return ResolvedSourceAccess(url: resolved, didStartScope: started)
+                    }
+                    // Resolved but missing on disk — stop scope and fall through.
+                    if started {
+                        resolved.stopAccessingSecurityScopedResource()
+                    }
+                } catch {
+                    // Bookmark unusable; fall back to stored root path.
                 }
             }
-            return source
-        case .reference:
-            return URL(fileURLWithPath: dataset.rootPath)
+            let pathURL = URL(fileURLWithPath: dataset.rootPath)
+            return ResolvedSourceAccess(url: pathURL, didStartScope: false)
         }
     }
 
+    /// Derives availability from the filesystem (and bookmark resolution), not the last stored status.
+    /// Heals `.unavailable` → `.ready` when the source reappears; persists status changes.
+    @discardableResult
+    public func refreshAvailability(
+        dataset: DatasetRecord,
+        sourceFile: URL? = nil
+    ) -> DatasetStatus {
+        let derived = checkAvailability(dataset: dataset, sourceFile: sourceFile)
+        if derived != dataset.status {
+            try? store.updateStatus(datasetId: dataset.id, status: derived)
+        }
+        return derived
+    }
+
+    /// Pure availability probe: file exists → `.ready` (or keep `.invalid`); missing → `.unavailable`.
     public func checkAvailability(dataset: DatasetRecord, sourceFile: URL? = nil) -> DatasetStatus {
+        // Invalid is a permanent content/schema state — do not auto-heal from existence alone.
+        if dataset.status == .invalid {
+            return .invalid
+        }
+
         let url: URL
         if let sourceFile {
             url = sourceFile
-        } else if let resolved = try? resolveSourceFileURL(for: dataset) {
-            url = resolved
+        } else if let access = try? resolveSourceAccess(for: dataset) {
+            defer { access.stop() }
+            url = access.url
         } else {
             return .unavailable
         }
-        return fileManager.fileExists(atPath: url.path) ? dataset.status : .unavailable
+
+        var isDirectory: ObjCBool = false
+        let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        if exists, !isDirectory.boolValue {
+            return .ready
+        }
+        return .unavailable
     }
 }
 

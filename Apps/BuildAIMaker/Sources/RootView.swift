@@ -23,6 +23,8 @@ struct RootView: View {
         switch destination {
         case .home:
             HomeOnboardingView(selection: $selection)
+        case .characters:
+            CharactersView()
         case .datasets:
             DatasetsView()
 

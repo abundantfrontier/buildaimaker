@@ -43,14 +43,21 @@ struct HomeOnboardingView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(AppIdentity.displayName)
                 .font(.largeTitle.weight(.semibold))
             Text(
-                "Local-first AI fine-tuning on Apple Silicon. Requires \(AppIdentity.minimumUnifiedMemoryGB) GB unified memory."
+                "Create fictional characters: paste a story, shape how they talk, give them a creature voice, then play. Requires \(AppIdentity.minimumUnifiedMemoryGB) GB unified memory for training."
             )
             .font(.body)
             .foregroundStyle(BAMColors.secondaryLabel)
+            Button {
+                selection = .characters
+            } label: {
+                Label("Create a character", systemImage: "theatermasks")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
     }
 
@@ -197,10 +204,10 @@ struct HomeOnboardingView: View {
             Text("Go to")
                 .font(.headline)
             HStack(spacing: 12) {
-                linkButton("Datasets", .datasets, "doc.text")
-                linkButton("Models", .models, "cpu")
-                linkButton("Train", .train, "hammer")
+                linkButton("Characters", .characters, "theatermasks")
                 linkButton("Playground", .playground, "bubble.left.and.bubble.right")
+                linkButton("Datasets", .datasets, "doc.text")
+                linkButton("Train", .train, "hammer")
             }
         }
     }

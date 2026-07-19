@@ -224,9 +224,9 @@ Jargon stays in Advanced tooltips for us and researchers.
 
 | Slice | Outcome |
 |-------|---------|
-| **CS-1** Home + Create Character shell (steps 1–3 UI, stub generators) | Navigable toy |
-| **CS-2** Paste → template/LLM → dataset + preview cards | Mind path real |
-| **CS-3** Voice presets + 3 sliders + preview render | Fun audio |
+| **CS-1** Home + Create Character shell (steps 1–3 UI, stub generators) | **Shipped** — Characters sidebar, wizard shell |
+| **CS-2** Paste → template/LLM → dataset + preview cards | **Shipped** — offline template builder + riff + Datasets import |
+| **CS-3** Voice presets + 3 sliders + preview render | **Shipped** — `BAMAudioFX` creature-fx-v1 + textures |
 | **CS-4** Texture chips + ducking | Buzz/bird wow |
 | **CS-5** Teach button → existing train job | One-stop close |
 | **CS-6** Lab panels (FX graph, raw JSONL, stems) | Research depth |

@@ -17,6 +17,8 @@ let package = Package(
         .library(name: "BAMRunnersVoice", targets: ["BAMRunnersVoice"]),
         .library(name: "BAMInference", targets: ["BAMInference"]),
         .library(name: "BAMPersonas", targets: ["BAMPersonas"]),
+        .library(name: "BAMCharacterStudio", targets: ["BAMCharacterStudio"]),
+        .library(name: "BAMAudioFX", targets: ["BAMAudioFX"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
@@ -48,6 +50,16 @@ let package = Package(
             ],
             path: "Packages/BAMPersonas/Sources/BAMPersonas"
         ),
+        .target(
+            name: "BAMCharacterStudio",
+            dependencies: ["BAMCore"],
+            path: "Packages/BAMCharacterStudio/Sources/BAMCharacterStudio"
+        ),
+        .target(
+            name: "BAMAudioFX",
+            dependencies: [],
+            path: "Packages/BAMAudioFX/Sources/BAMAudioFX"
+        ),
         .target(name: "BAMResourcesUI", dependencies: ["BAMCore"], path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"),
         .executableTarget(
             name: "BuildAIMaker",
@@ -64,6 +76,8 @@ let package = Package(
                 "BAMRunnersVoice",
                 "BAMInference",
                 "BAMPersonas",
+                "BAMCharacterStudio",
+                "BAMAudioFX",
                 "BAMResourcesUI",
             ],
             path: "Apps/BuildAIMaker/Sources"
@@ -98,6 +112,16 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Packages/BAMPersonas/Tests/BAMPersonasTests"
+        ),
+        .testTarget(
+            name: "BAMCharacterStudioTests",
+            dependencies: ["BAMCharacterStudio", "BAMCore"],
+            path: "Packages/BAMCharacterStudio/Tests/BAMCharacterStudioTests"
+        ),
+        .testTarget(
+            name: "BAMAudioFXTests",
+            dependencies: ["BAMAudioFX"],
+            path: "Packages/BAMAudioFX/Tests/BAMAudioFXTests"
         ),
     ]
 )

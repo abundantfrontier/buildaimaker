@@ -11,8 +11,14 @@ public struct SidebarChrome: View {
 
     public var body: some View {
         List(selection: $selection) {
-            Section {
-                ForEach(SidebarDestination.allCases) { destination in
+            Section("Studio") {
+                ForEach(SidebarDestination.allCases.filter { !$0.isAdvanced }) { destination in
+                    Label(destination.title, systemImage: destination.systemImage)
+                        .tag(destination)
+                }
+            }
+            Section("Advanced") {
+                ForEach(SidebarDestination.allCases.filter(\.isAdvanced)) { destination in
                     Label(destination.title, systemImage: destination.systemImage)
                         .tag(destination)
                 }

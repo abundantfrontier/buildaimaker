@@ -562,6 +562,10 @@ final class DatasetsViewModel: ObservableObject {
             }
             importValidation = result
             isValidating = false
+            // M4: validation rejects malformed JSONL with actionable issues.
+            if !result.isValid {
+                MVPMetricsStore.shared.increment(.datasetImportRejected)
+            }
         }
     }
 
@@ -597,9 +601,13 @@ final class DatasetsViewModel: ObservableObject {
             selectedDatasetId = result.dataset.id
             resetImportForm()
             showImportSheet = false
+            // M4: accepted import (ShareGPT / OpenAI-messages path).
+            MVPMetricsStore.shared.increment(.datasetImportOK)
+            OnboardingStore().markCompleted(.importDataset)
             return true
         } catch {
             importError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            MVPMetricsStore.shared.increment(.datasetImportRejected)
             return false
         }
     }

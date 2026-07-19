@@ -164,7 +164,7 @@ public struct ModelCardContent: Sendable, Equatable, Codable {
     }
 }
 
-/// Writes `model_card.md` (+ optional `metrics.json`) under an adapter directory.
+/// Writes / loads `model_card.md` (+ optional `metrics.json`) under an adapter directory.
 public enum ModelCardWriter: Sendable {
     public static let modelCardFileName = "model_card.md"
     public static let metricsFileName = "metrics.json"
@@ -186,5 +186,67 @@ public enum ModelCardWriter: Sendable {
         )
         try metricsData.write(to: metricsURL, options: .atomic)
         return cardURL
+    }
+
+    /// Load model-card content from an adapter directory (`metrics.json` preferred).
+    ///
+    /// Falls back to a minimal card if only `model_card.md` exists (no samples).
+    public static func load(
+        fromDirectory directory: URL,
+        fileManager: FileManager = .default
+    ) -> ModelCardContent? {
+        let metricsURL = directory.appendingPathComponent(metricsFileName, isDirectory: false)
+        if fileManager.fileExists(atPath: metricsURL.path),
+           let data = try? Data(contentsOf: metricsURL),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            return ModelCardContent(metricsDictionary: obj, fallbackTitle: directory.lastPathComponent)
+        }
+        let cardURL = directory.appendingPathComponent(modelCardFileName, isDirectory: false)
+        guard fileManager.fileExists(atPath: cardURL.path) else { return nil }
+        return ModelCardContent(
+            title: directory.lastPathComponent,
+            notes: ["metrics.json missing; only model_card.md present."]
+        )
+    }
+}
+
+extension ModelCardContent {
+    /// Reconstructs from `metrics.json` dictionary shape written by `metricsDictionary()`.
+    public init(metricsDictionary d: [String: Any], fallbackTitle: String = "LoRA Adapter") {
+        let samples: [ModelCardSampleGeneration]
+        if let arr = d["sampleGenerations"] as? [[String: Any]] {
+            samples = arr.compactMap { row in
+                guard let prompt = row["prompt"] as? String,
+                      let completion = row["completion"] as? String
+                else { return nil }
+                return ModelCardSampleGeneration(prompt: prompt, completion: completion)
+            }
+        } else {
+            samples = []
+        }
+        self.init(
+            title: fallbackTitle,
+            baseModelId: d["baseModelId"] as? String,
+            baseModelSourceKey: d["baseModelSourceKey"] as? String,
+            method: (d["method"] as? String) ?? "lora",
+            jobId: d["jobId"] as? String,
+            adapterArtifactId: d["adapterArtifactId"] as? String,
+            holdOutLoss: Self.double(from: d["holdOutLoss"]),
+            trainLoss: Self.double(from: d["trainLoss"]),
+            sampleGenerations: samples,
+            hyperparametersSummary: d["hyperparametersSummary"] as? String,
+            notes: [],
+            fakeTrain: (d["fakeTrain"] as? Bool) ?? false
+        )
+    }
+
+    private static func double(from value: Any?) -> Double? {
+        switch value {
+        case let d as Double: return d
+        case let i as Int: return Double(i)
+        case let n as NSNumber: return n.doubleValue
+        default: return nil
+        }
     }
 }

@@ -22,10 +22,7 @@ struct RootView: View {
     private func detail(for destination: SidebarDestination) -> some View {
         switch destination {
         case .home:
-            PlaceholderDetailView(
-                destination: .home,
-                subtitle: homeSubtitle
-            )
+            HomeOnboardingView(selection: $selection)
         case .datasets:
             DatasetsView()
 
@@ -56,9 +53,6 @@ struct RootView: View {
         }
     }
 
-    private var homeSubtitle: String {
-        "\(AppIdentity.displayName) — local-first AI fine-tuning on Apple Silicon. Requires \(AppIdentity.minimumUnifiedMemoryGB) GB unified memory."
-    }
 }
 
 /// Settings shell: feature flags + managed training runtime install stub + consent.
@@ -200,6 +194,57 @@ struct SettingsPlaceholderView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .navigationTitle(SidebarDestination.settings.title)
             }
+
+            Section {
+                metricsSettingsRows
+                Text("Local UserDefaults counters only (PR-Onboarding). Not remote telemetry.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Reset local metrics") {
+                    MVPMetricsStore.shared.resetAll()
+                }
+                Button("Reset first-run checklist") {
+                    OnboardingStore().reset()
+                }
+            } header: {
+                Text("MVP metrics (M1–M5)")
+            }
+
+            Section {
+                Toggle(
+                    "Write playground_trace.json",
+                    isOn: Binding(
+                        get: {
+                            UserDefaults.standard.object(
+                                forKey: "bam.playgroundTrace.enabled"
+                            ) as? Bool ?? true
+                        },
+                        set: { UserDefaults.standard.set($0, forKey: "bam.playgroundTrace.enabled") }
+                    )
+                )
+                Text(
+                    "Optional BAMInference diagnostics under \(LibraryPaths.libraryRoot.path)/diagnostics/playground_trace.json. Env BAM_PLAYGROUND_TRACE=0 forces off."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } header: {
+                Text("Playground diagnostics")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var metricsSettingsRows: some View {
+        let metrics = MVPMetricsStore.shared.snapshot()
+        ForEach(MVPMetricEvent.allCases) { event in
+            LabeledContent("\(event.metricId) \(event.displayName)") {
+                Text("\(metrics.count(for: event))")
+                    .monospacedDigit()
+            }
+        }
+        LabeledContent("M5 network-free") {
+            Text(metrics.m5Passes ? "Pass" : "Fail")
+                .foregroundStyle(metrics.m5Passes ? Color.primary : Color.red)
         }
     }
 

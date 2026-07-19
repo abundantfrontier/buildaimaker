@@ -36,16 +36,20 @@ final class PlaygroundViewModel: ObservableObject {
     @Published private(set) var lastWasStub: Bool?
     @Published private(set) var playgroundEnabled: Bool = FeatureFlags.default.playground
     @Published var exportMessage: String?
+    @Published private(set) var lastTracePath: String?
 
     private let libraryRoot: URL
     private let featureFlags: FeatureFlags
     private let backend: any LLMBackend
     private let baseScanner: LocalModelScanner
+    private let metricsStore: MVPMetricsStore
+    private var traceRecorder: PlaygroundTraceRecorder
 
     init(
         libraryRoot: URL = LibraryPaths.libraryRoot,
         featureFlags: FeatureFlags = .default,
-        backend: (any LLMBackend)? = nil
+        backend: (any LLMBackend)? = nil,
+        metricsStore: MVPMetricsStore = .shared
     ) {
         self.libraryRoot = libraryRoot
         self.featureFlags = featureFlags
@@ -54,6 +58,11 @@ final class PlaygroundViewModel: ObservableObject {
         self.backendId = self.backend.backendId
         self.baseScanner = LocalModelScanner(
             modelsBaseURL: libraryRoot.appendingPathComponent("models/base", isDirectory: true)
+        )
+        self.metricsStore = metricsStore
+        self.traceRecorder = PlaygroundTraceRecorder.underLibraryRoot(
+            libraryRoot,
+            enabled: PlaygroundTraceRecorder.isEnabled()
         )
     }
 
@@ -110,10 +119,13 @@ final class PlaygroundViewModel: ObservableObject {
         isGenerating = true
         errorMessage = nil
         exportMessage = nil
+        // Re-read enablement each send (Settings toggle / env).
+        traceRecorder.enabled = PlaygroundTraceRecorder.isEnabled()
 
         Task {
             defer { isGenerating = false }
             do {
+                let formatStarted = Date()
                 var session = PlaygroundSession(
                     systemPrompt: systemPrompt,
                     messages: messages,
@@ -121,7 +133,9 @@ final class PlaygroundViewModel: ObservableObject {
                     adapterPath: selectedAdapterPath,
                     adapterEnabled: adapterEnabled
                 )
+                let completeStarted = Date()
                 let result = try await session.send(userText: text, backend: backend)
+                let completeEnded = Date()
                 messages = session.messages
                 lastLatencyMs = result.latencyMs
                 lastWasStub = result.isStub
@@ -129,6 +143,28 @@ final class PlaygroundViewModel: ObservableObject {
                 statusMessage = result.isStub
                     ? "Echo reply (\(Int(result.latencyMs)) ms) — adapter \(adapterEnabled && selectedAdapterPath != nil ? "on" : "off")"
                     : "Reply via \(result.backendId) (\(Int(result.latencyMs)) ms)"
+
+                // M3: playground produced a coherent reply (subjective quality not scored).
+                metricsStore.increment(.playgroundReply)
+                OnboardingStore().markCompleted(.playgroundChat)
+
+                let stages = PlaygroundTraceRecorder.stagesForCompletion(
+                    formatStarted: formatStarted,
+                    completeStarted: completeStarted,
+                    completeEnded: completeEnded,
+                    totalEnded: completeEnded
+                )
+                if let url = try? traceRecorder.recordTurn(
+                    stages: stages,
+                    backendId: result.backendId,
+                    latencyMs: result.latencyMs,
+                    isStub: result.isStub,
+                    baseModelPath: base,
+                    adapterPath: selectedAdapterPath,
+                    adapterEnabled: adapterEnabled
+                ) {
+                    lastTracePath = url.path
+                }
             } catch {
                 draft = text
                 errorMessage = error.localizedDescription

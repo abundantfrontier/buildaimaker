@@ -6,7 +6,7 @@ import Foundation
 public struct ScannedLocalModel: Sendable, Equatable, Identifiable {
     /// Directory name under `models/base` (typically a UUID or folder slug).
     public var directoryName: String
-    /// Absolute path to the model directory.
+    /// Absolute path to the model directory (symlink-resolved when possible).
     public var localPath: String
     /// True when `config.json` is present (HF / MLX layout).
     public var hasConfigJSON: Bool
@@ -61,6 +61,8 @@ public struct ScannedLocalModel: Sendable, Equatable, Identifiable {
 ///
 /// Missing root directories yield an empty list (not an error) so first-launch
 /// and unit tests against empty temps work without setup.
+///
+/// Symlinks that resolve outside `modelsBaseURL` are skipped (path jail).
 public struct LocalModelScanner: Sendable {
     public let modelsBaseURL: URL
 
@@ -81,11 +83,13 @@ public struct LocalModelScanner: Sendable {
             return []
         }
 
+        let resolvedBase = modelsBaseURL.resolvingSymlinksInPath().standardizedFileURL
+
         let contents: [URL]
         do {
             contents = try fm.contentsOfDirectory(
                 at: modelsBaseURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
                 options: [.skipsHiddenFiles]
             )
         } catch {
@@ -97,15 +101,33 @@ public struct LocalModelScanner: Sendable {
 
         var results: [ScannedLocalModel] = []
         for url in contents {
-            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
-            guard values?.isDirectory == true else { continue }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            // Accept real directories and directory symlinks (latter jailed after resolve).
+            let isDir = values?.isDirectory == true
+            let isSymlink = values?.isSymbolicLink == true
+            guard isDir || isSymlink else { continue }
 
             let name = url.lastPathComponent
             // Reject path-escape style folder names even if present on disk.
             guard LibraryPaths.validatedPathComponent(name) != nil else { continue }
 
-            let configURL = url.appendingPathComponent("config.json", isDirectory: false)
-            let adapterURL = url.appendingPathComponent("adapter_config.json", isDirectory: false)
+            let resolvedChild = url.resolvingSymlinksInPath().standardizedFileURL
+
+            // After resolve, must still be a directory.
+            var childIsDir: ObjCBool = false
+            guard fm.fileExists(atPath: resolvedChild.path, isDirectory: &childIsDir),
+                  childIsDir.boolValue
+            else {
+                continue
+            }
+
+            // Path jail: resolved child must stay under resolved base.
+            guard Self.isPath(resolvedChild, under: resolvedBase) else {
+                continue
+            }
+
+            let configURL = resolvedChild.appendingPathComponent("config.json", isDirectory: false)
+            let adapterURL = resolvedChild.appendingPathComponent("adapter_config.json", isDirectory: false)
             let hasConfig = fm.fileExists(atPath: configURL.path)
             let hasAdapter = fm.fileExists(atPath: adapterURL.path)
 
@@ -124,7 +146,7 @@ public struct LocalModelScanner: Sendable {
             results.append(
                 ScannedLocalModel(
                     directoryName: name,
-                    localPath: url.path,
+                    localPath: resolvedChild.path,
                     hasConfigJSON: hasConfig,
                     hasAdapterConfigJSON: hasAdapter,
                     displayName: displayName,
@@ -135,6 +157,17 @@ public struct LocalModelScanner: Sendable {
         }
 
         return results.sorted { $0.directoryName.localizedCaseInsensitiveCompare($1.directoryName) == .orderedAscending }
+    }
+
+    // MARK: - Path jail
+
+    /// True when `child` is exactly `base` or a path under `base` (prefix + path separator).
+    public static func isPath(_ child: URL, under base: URL) -> Bool {
+        let childPath = child.resolvingSymlinksInPath().standardizedFileURL.path
+        let basePath = base.resolvingSymlinksInPath().standardizedFileURL.path
+        if childPath == basePath { return true }
+        let prefix = basePath.hasSuffix("/") ? basePath : basePath + "/"
+        return childPath.hasPrefix(prefix)
     }
 
     // MARK: - config.json hints

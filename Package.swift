@@ -41,7 +41,6 @@ let package = Package(
             dependencies: [
                 "BAMCore",
                 "BAMModels",
-                "BAMPersistence",
             ],
             path: "Packages/BAMModelCatalog/Sources/BAMModelCatalog",
             resources: [

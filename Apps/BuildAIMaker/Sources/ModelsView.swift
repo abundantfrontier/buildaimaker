@@ -7,7 +7,10 @@ import BAMResourcesUI
 struct ModelsView: View {
     @State private var catalogEntries: [CatalogEntry] = []
     @State private var localModels: [ScannedLocalModel] = []
-    @State private var loadError: String?
+    /// Full-page error only when the living catalog fails to load.
+    @State private var catalogError: String?
+    /// Section-local banner when local scan fails; catalog still shown.
+    @State private var scanError: String?
     @State private var isLoading = true
 
     var body: some View {
@@ -15,14 +18,14 @@ struct ModelsView: View {
             if isLoading {
                 ProgressView("Loading models…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let loadError {
+            } else if let catalogError {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 36, weight: .light))
                         .foregroundStyle(BAMColors.secondaryLabel)
                     Text("Could not load model catalog")
                         .font(.title3.weight(.semibold))
-                    Text(loadError)
+                    Text(catalogError)
                         .font(.callout)
                         .foregroundStyle(BAMColors.tertiaryLabel)
                         .multilineTextAlignment(.center)
@@ -67,9 +70,18 @@ struct ModelsView: View {
             }
 
             Section {
+                if let scanError {
+                    Label(scanError, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
                 if localModels.isEmpty {
-                    Text("No local models under models/base.")
-                        .foregroundStyle(BAMColors.secondaryLabel)
+                    Text(
+                        scanError == nil
+                            ? "No local models under models/base."
+                            : "Local scan failed; catalog is still available."
+                    )
+                    .foregroundStyle(BAMColors.secondaryLabel)
                 } else {
                     ForEach(localModels) { model in
                         LocalModelRow(model: model)
@@ -88,25 +100,26 @@ struct ModelsView: View {
 
     private func reload() {
         isLoading = true
-        loadError = nil
+        catalogError = nil
+        scanError = nil
         defer { isLoading = false }
 
         do {
             let catalog = try ModelCatalog.loadBundled()
             catalogEntries = catalog.entries
         } catch {
-            loadError = error.localizedDescription
+            catalogError = error.localizedDescription
             catalogEntries = []
+            // Still attempt scan so a later retry of catalog alone is not the only path.
         }
 
         do {
             let scanner = LocalModelScanner()
             localModels = try scanner.scan()
+            scanError = nil
         } catch {
-            // Keep catalog if only scan fails.
-            if loadError == nil {
-                loadError = error.localizedDescription
-            }
+            // Keep catalog if only scan fails — section-local error, not full-page.
+            scanError = error.localizedDescription
             localModels = []
         }
     }

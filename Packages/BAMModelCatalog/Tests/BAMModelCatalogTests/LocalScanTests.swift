@@ -60,6 +60,92 @@ final class LocalScanTests: XCTestCase {
         XCTAssertEqual(record.license, "Apache-2.0")
     }
 
+    func testScanDiscoversAdapterOnlyLayout() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bam-scan-adapter-\(UUID().uuidString)", isDirectory: true)
+        let modelDir = tmp.appendingPathComponent("adapter-only", isDirectory: true)
+        try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        try Data("{}".utf8).write(to: modelDir.appendingPathComponent("adapter_config.json"))
+
+        let scanner = LocalModelScanner(modelsBaseURL: tmp)
+        let results = try scanner.scan()
+        XCTAssertEqual(results.count, 1)
+        let hit = try XCTUnwrap(results.first)
+        XCTAssertEqual(hit.directoryName, "adapter-only")
+        XCTAssertFalse(hit.hasConfigJSON)
+        XCTAssertTrue(hit.hasAdapterConfigJSON)
+        XCTAssertEqual(hit.displayName, "adapter-only")
+        XCTAssertNil(hit.modelType)
+    }
+
+    func testScanSkipsInvalidPathComponents() throws {
+        // validatedPathComponent rejects "", ".", "..", separators — pin that filter.
+        XCTAssertNil(LibraryPaths.validatedPathComponent(""))
+        XCTAssertNil(LibraryPaths.validatedPathComponent("."))
+        XCTAssertNil(LibraryPaths.validatedPathComponent(".."))
+        XCTAssertNil(LibraryPaths.validatedPathComponent("a/b"))
+        XCTAssertNil(LibraryPaths.validatedPathComponent("a\\b"))
+        XCTAssertNil(LibraryPaths.validatedPathComponent("a\0b"))
+        XCTAssertEqual(LibraryPaths.validatedPathComponent("ok-model"), "ok-model")
+
+        // On-disk: create a real model next to a "." name cannot be created as child
+        // (FS treats "." as self). Use a symlink-named escape instead is covered elsewhere.
+        // Create a valid peer and ensure only it is returned.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bam-scan-names-\(UUID().uuidString)", isDirectory: true)
+        let good = tmp.appendingPathComponent("good-model", isDirectory: true)
+        try FileManager.default.createDirectory(at: good, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let scanner = LocalModelScanner(modelsBaseURL: tmp)
+        let results = try scanner.scan()
+        XCTAssertEqual(results.map(\.directoryName), ["good-model"])
+    }
+
+    func testScanSkipsSymlinkEscapingModelsBase() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("bam-scan-symlink-\(UUID().uuidString)", isDirectory: true)
+        let modelsBase = root.appendingPathComponent("models-base", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        let inside = modelsBase.appendingPathComponent("local-ok", isDirectory: true)
+
+        try fm.createDirectory(at: modelsBase, withIntermediateDirectories: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        try fm.createDirectory(at: inside, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try Data("{\"model_type\":\"outside\"}".utf8)
+            .write(to: outside.appendingPathComponent("config.json"))
+        try Data("{\"model_type\":\"inside\"}".utf8)
+            .write(to: inside.appendingPathComponent("config.json"))
+
+        let escapeLink = modelsBase.appendingPathComponent("escape-link", isDirectory: false)
+        try fm.createSymbolicLink(at: escapeLink, withDestinationURL: outside)
+
+        let scanner = LocalModelScanner(modelsBaseURL: modelsBase)
+        let results = try scanner.scan()
+
+        // Outside symlink must be omitted; only the in-base directory remains.
+        XCTAssertEqual(results.map(\.directoryName), ["local-ok"])
+        XCTAssertEqual(results.first?.modelType, "inside")
+        XCTAssertFalse(results.contains { $0.directoryName == "escape-link" })
+    }
+
+    func testIsPathUnderBase() {
+        let base = URL(fileURLWithPath: "/tmp/models/base", isDirectory: true)
+        let child = URL(fileURLWithPath: "/tmp/models/base/abc", isDirectory: true)
+        let sibling = URL(fileURLWithPath: "/tmp/models/base-evil", isDirectory: true)
+        let outside = URL(fileURLWithPath: "/tmp/other", isDirectory: true)
+
+        XCTAssertTrue(LocalModelScanner.isPath(child, under: base))
+        XCTAssertTrue(LocalModelScanner.isPath(base, under: base))
+        XCTAssertFalse(LocalModelScanner.isPath(sibling, under: base))
+        XCTAssertFalse(LocalModelScanner.isPath(outside, under: base))
+    }
+
     func testDefaultScannerUsesLibraryPathsModelsBase() {
         let scanner = LocalModelScanner()
         XCTAssertEqual(scanner.modelsBaseURL.path, LibraryPaths.modelsBase.path)

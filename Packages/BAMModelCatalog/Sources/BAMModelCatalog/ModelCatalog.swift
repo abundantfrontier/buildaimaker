@@ -22,6 +22,9 @@ public struct ModelCatalog: Sendable {
     // MARK: - Loading
 
     /// Decodes a catalog document from raw JSON data.
+    ///
+    /// Rejects unsupported `schemaVersion` and entries with empty/whitespace
+    /// `sourceKey`, `license`, or `chatTemplateId` (`BAM_SCHEMA_INVALID`).
     public static func decode(_ data: Data) throws -> ModelCatalog {
         let decoder = JSONDecoder()
         do {
@@ -32,6 +35,7 @@ public struct ModelCatalog: Sendable {
                     message: "Unsupported catalog schemaVersion \(document.schemaVersion)"
                 )
             }
+            try validateEntries(document.models)
             return ModelCatalog(document: document)
         } catch let error as BAMError {
             throw error
@@ -57,6 +61,11 @@ public struct ModelCatalog: Sendable {
         return try decode(data)
     }
 
+    /// URL of the `models.json` resource embedded in the `BAMModelCatalog` module bundle.
+    public static var bundledResourceURL: URL? {
+        Bundle.module.url(forResource: "models", withExtension: "json")
+    }
+
     /// Loads the catalog embedded in the `BAMModelCatalog` module bundle.
     public static func loadBundled() throws -> ModelCatalog {
         try loadBundled(from: .module)
@@ -64,12 +73,43 @@ public struct ModelCatalog: Sendable {
 
     /// Loads catalog JSON from an explicit resource bundle (tests / alternate hosts).
     public static func loadBundled(from bundle: Bundle) throws -> ModelCatalog {
-        guard let url = bundle.url(forResource: "models", withExtension: "json") else {
+        let url: URL?
+        if bundle == .module {
+            url = bundledResourceURL
+        } else {
+            url = bundle.url(forResource: "models", withExtension: "json")
+        }
+        guard let url else {
             throw BAMError(
                 code: .modelNotFound,
                 message: "Bundled Catalog/models.json not found in module resources"
             )
         }
         return try load(from: url)
+    }
+
+    // MARK: - Validation
+
+    private static func validateEntries(_ entries: [CatalogEntry]) throws {
+        for (index, entry) in entries.enumerated() {
+            if entry.sourceKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw BAMError(
+                    code: .schemaInvalid,
+                    message: "Catalog entry[\(index)] has empty sourceKey"
+                )
+            }
+            if entry.license.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw BAMError(
+                    code: .schemaInvalid,
+                    message: "Catalog entry[\(index)] has empty license (SPDX required)"
+                )
+            }
+            if entry.chatTemplateId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw BAMError(
+                    code: .schemaInvalid,
+                    message: "Catalog entry[\(index)] has empty chatTemplateId"
+                )
+            }
+        }
     }
 }

@@ -82,4 +82,96 @@ final class CatalogDecodeTests: XCTestCase {
             XCTAssertEqual(bam?.code, .schemaInvalid)
         }
     }
+
+    func testEmptyLicenseRejected() {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "models": [
+            {
+              "sourceKey": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+              "name": "Qwen2.5 Instruct 0.5B",
+              "archFamily": "qwen2.5",
+              "paramCountB": 0.5,
+              "quantBits": 4,
+              "minRamGB": 8,
+              "chatTemplateId": "qwen2.5-instruct",
+              "license": "   ",
+              "format": "mlx"
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        XCTAssertThrowsError(try ModelCatalog.decode(json)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .schemaInvalid)
+            XCTAssertTrue(bam?.message?.contains("license") == true)
+        }
+    }
+
+    func testEmptySourceKeyRejected() {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "models": [
+            {
+              "sourceKey": "",
+              "name": "Broken",
+              "archFamily": "qwen2.5",
+              "paramCountB": 0.5,
+              "quantBits": 4,
+              "minRamGB": 8,
+              "chatTemplateId": "qwen2.5-instruct",
+              "license": "Apache-2.0",
+              "format": "mlx"
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        XCTAssertThrowsError(try ModelCatalog.decode(json)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .schemaInvalid)
+            XCTAssertTrue(bam?.message?.contains("sourceKey") == true)
+        }
+    }
+
+    /// Living list at repo `Catalog/models.json` must match the module resource copy.
+    func testLivingCatalogMatchesBundledResource() throws {
+        let livingURL = try XCTUnwrap(Self.repoCatalogModelsJSONURL())
+        let bundledURL = try XCTUnwrap(ModelCatalog.bundledResourceURL)
+
+        let livingData = try Data(contentsOf: livingURL)
+        let bundledData = try Data(contentsOf: bundledURL)
+
+        // Canonicalize via decode so structural drift is caught even if formatting differs.
+        let living = try ModelCatalog.decode(livingData)
+        let bundled = try ModelCatalog.loadBundled()
+        XCTAssertEqual(
+            living.document,
+            bundled.document,
+            "Catalog/models.json must stay in sync with Packages/BAMModelCatalog/.../Resources/models.json"
+        )
+
+        // Also require identical file bytes so CI fails on accidental drift.
+        XCTAssertEqual(
+            livingData,
+            bundledData,
+            "Catalog/models.json byte content must match bundled Resources/models.json"
+        )
+    }
+
+    /// Walks up from this test file to find repo-root `Catalog/models.json`.
+    private static func repoCatalogModelsJSONURL() -> URL? {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<8 {
+            url = url.deletingLastPathComponent()
+            let candidate = url.appendingPathComponent("Catalog/models.json")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
 }

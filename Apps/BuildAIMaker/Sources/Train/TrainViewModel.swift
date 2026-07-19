@@ -22,6 +22,8 @@ final class TrainViewModel: ObservableObject {
     @Published var hardwareMessage: String?
     @Published var hardwareOK = true
     @Published private(set) var llmTrainingEnabled: Bool = FeatureFlags.default.llmTraining
+    /// Set when last failure was `BAM_RUNTIME_INTEGRITY` (Settings → Repair CTA).
+    @Published var needsRuntimeRepair = false
 
     private var datasetService: DatasetLibraryService?
     private let libraryRoot: URL
@@ -172,9 +174,9 @@ final class TrainViewModel: ObservableObject {
                 ]
                 resultSummary = lines.joined(separator: "\n")
                 statusMessage = "Validate & dry-run succeeded."
+                needsRuntimeRepair = false
             } catch {
-                statusMessage = "Dry-run failed"
-                resultSummary = error.localizedDescription
+                applyFailure(error, status: "Dry-run failed")
             }
         }
     }
@@ -268,10 +270,21 @@ final class TrainViewModel: ObservableObject {
                 statusMessage = result.status == "succeeded"
                     ? "LoRA train succeeded — adapter under models/adapters/."
                     : "LoRA train finished with status \(result.status)."
+                needsRuntimeRepair = false
             } catch {
-                statusMessage = "LoRA train failed"
-                resultSummary = error.localizedDescription
+                applyFailure(error, status: "LoRA train failed")
             }
+        }
+    }
+
+    /// Map integrity failures onto Settings → Repair recovery copy.
+    private func applyFailure(_ error: Error, status: String) {
+        needsRuntimeRepair = RuntimeRecovery.isIntegrityFailure(error)
+        statusMessage = RuntimeRecovery.augmentStatus(status, error: error)
+        if let recovery = RuntimeRecovery.userMessage(for: error) {
+            resultSummary = recovery
+        } else {
+            resultSummary = error.localizedDescription
         }
     }
 

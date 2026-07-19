@@ -184,6 +184,9 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
 extension JobQueueController {
     /// Optional real-supervisor wiring. Default production/UI path still uses
     /// `FakeTrainingRunner` via the primary initializer / `makeInMemoryForTesting`.
+    ///
+    /// `executableURL` must be a `bam-*-worker` helper; L1 is enforced again in
+    /// `ProcessSupervisor.start`.
     public static func makeWithSupervisedRunner(
         store: JobStore,
         executableURL: URL,
@@ -191,9 +194,11 @@ extension JobQueueController {
         libraryRoot: URL = LibraryPaths.libraryRoot,
         supervisorConfig: ProcessSupervisorConfig = ProcessSupervisorConfig(),
         heartbeatTimeout: TimeInterval = HeartbeatMonitor.defaultTimeoutSeconds
-    ) -> JobQueueController {
+    ) throws -> JobQueueController {
+        // Fail closed at construction when the URL is not a policy helper.
+        let prepared = try WorkerSpawn.prepareExecutableURL(executableURL)
         let runner = SupervisedTrainingRunner(
-            executableURL: executableURL,
+            executableURL: prepared.url,
             arguments: arguments,
             config: supervisorConfig
         )

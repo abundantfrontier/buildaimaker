@@ -3,11 +3,13 @@ import Foundation
 /// Supervisor-facing spawn gate: resolve a `bam-*-worker` helper and run L1
 /// `WorkerTrust` **before** any `Process` launch.
 ///
-/// Real process supervision lands in a later PR; all UI/supervisor paths must
-/// call `prepareHelperLaunch` so L1 cannot be skipped by accident.
+/// All UI / supervisor paths **must** call `prepareHelperLaunch` (or
+/// `prepareExecutableURL`) so L1 cannot be skipped. Never TeamID-check the
+/// managed venv / CPython — only `Helpers/bam-*-worker` entry binaries.
 public enum WorkerSpawn: Sendable {
     public static let llmWorkerName = "bam-llm-worker"
     public static let voiceWorkerName = "bam-voice-worker"
+    public static let echoWorkerName = "bam-echo-worker"
 
     /// Result of a successful L1 prepare: URL ready for `Process.executableURL`.
     public struct PreparedHelper: Sendable, Equatable {
@@ -62,6 +64,15 @@ public enum WorkerSpawn: Sendable {
             )
         }
 
+        // Basename on disk must match policy (blocks python3 / arbitrary paths).
+        let basename = helperURL.lastPathComponent
+        guard WorkerTrust.isAllowedHelperBasename(basename) else {
+            throw BAMError(
+                code: .runtimeIntegrity,
+                message: "refusing non-helper executable: \(basename) (only bam-*-worker; never venv/CPython)"
+            )
+        }
+
         try WorkerTrust.verifyHelperLaunch(
             helperURL: helperURL,
             mode: mode,
@@ -72,6 +83,46 @@ public enum WorkerSpawn: Sendable {
         )
 
         return PreparedHelper(url: helperURL, name: helperName, mode: mode)
+    }
+
+    /// L1-verify an already-resolved helper URL (e.g. from env override).
+    ///
+    /// Rejects non-`bam-*-worker` basenames so callers cannot pass managed
+    /// Python or system interpreters.
+    public static func prepareExecutableURL(
+        _ executableURL: URL,
+        mode: WorkerTrust.Mode = WorkerTrust.defaultMode,
+        bundleURL: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) throws -> PreparedHelper {
+        let name = executableURL.lastPathComponent
+        return try prepareHelperLaunch(
+            helperName: name,
+            bundleURL: bundleURL,
+            explicitHelperURL: executableURL,
+            mode: mode,
+            environment: environment,
+            fileManager: fileManager
+        )
+    }
+
+    /// Environment overlay every worker process should inherit.
+    ///
+    /// Always sets `BAM_REDACT_SAMPLES=1` unless the caller already set it
+    /// (including explicit `0` for debug).
+    public static func workerEnvironment(
+        base: [String: String] = ProcessInfo.processInfo.environment,
+        extra: [String: String] = [:]
+    ) -> [String: String] {
+        var env = base
+        if env[LibraryPaths.EnvironmentKey.redactSamples] == nil {
+            env[LibraryPaths.EnvironmentKey.redactSamples] = "1"
+        }
+        for (k, v) in extra {
+            env[k] = v
+        }
+        return env
     }
 
     /// Development-only resolution: `.build/debug|release/<name>`, env override,

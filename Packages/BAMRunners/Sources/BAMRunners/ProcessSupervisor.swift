@@ -104,9 +104,20 @@ public actor ProcessSupervisor {
     // MARK: - Lifecycle
 
     /// Spawns the worker with `cwd = jobDir`, waits for `hello`, replies `hello_ok`.
+    ///
+    /// **L1 gate:** only `bam-*-worker` helpers are launched; TeamID / validity
+    /// checked via `WorkerTrust` (never applied to venv/CPython). Prefer
+    /// resolving executables through `WorkerSpawn.prepareHelperLaunch` first.
     @discardableResult
     public func start(paths: JobPaths) async throws -> RunnerCapabilities {
         try PathJail.validate(paths: paths)
+
+        // L1: refuse non-helper executables (e.g. system/managed python).
+        let prepared = try WorkerSpawn.prepareExecutableURL(
+            executableURL,
+            mode: WorkerTrust.defaultMode
+        )
+        let launchURL = prepared.url
 
         // Reset cancel escalation from any prior generation (reuse hazard).
         clearCancelEscalation()
@@ -123,16 +134,19 @@ public actor ProcessSupervisor {
             .appendingPathComponent("worker.stderr.log", isDirectory: false)
 
         let proc = Process()
-        proc.executableURL = executableURL
+        proc.executableURL = launchURL
         proc.arguments = arguments
         proc.currentDirectoryURL = jobDirURL
         proc.qualityOfService = .utility
 
-        var env = ProcessInfo.processInfo.environment
+        // BAM_REDACT_SAMPLES defaults to 1; extraEnvironment may override for debug.
+        var env = WorkerSpawn.workerEnvironment(
+            base: ProcessInfo.processInfo.environment,
+            extra: config.extraEnvironment
+        )
         env[LibraryPaths.EnvironmentKey.libraryRoot] = paths.libraryRoot
-        env[LibraryPaths.EnvironmentKey.redactSamples] = "1"
-        for (k, v) in config.extraEnvironment {
-            env[k] = v
+        if env[LibraryPaths.EnvironmentKey.redactSamples] == nil {
+            env[LibraryPaths.EnvironmentKey.redactSamples] = "1"
         }
         proc.environment = env
 
@@ -356,8 +370,10 @@ public actor ProcessSupervisor {
                                 continue
                             }
                             if let event = message.asRunnerEvent() {
-                                continuation.yield(event)
-                                if case .result = event {
+                                // Defense-in-depth: never surface raw sample text in queue logs.
+                                let redacted = Self.redactEvent(event)
+                                continuation.yield(redacted)
+                                if case .result = redacted {
                                     _ = await self.waitUntilExit(timeout: 2)
                                     await self.clearCancelEscalation()
                                     continuation.finish()
@@ -600,6 +616,29 @@ public actor ProcessSupervisor {
 
     private func markHeartbeat() {
         lastHeartbeatAt = Date()
+    }
+
+    /// Apply `LogRedaction` to worker log/error/result messages (default on).
+    private static func redactEvent(_ event: RunnerEvent) -> RunnerEvent {
+        switch event {
+        case let .log(level, message, ts):
+            return .log(
+                level: level,
+                message: LogRedaction.redactMessage(message, level: level),
+                ts: ts
+            )
+        case let .error(code, message, retriable):
+            return .error(
+                code: code,
+                message: LogRedaction.redactForDefaultLog(message),
+                retriable: retriable
+            )
+        case let .result(status, artifacts, message):
+            let redacted = message.map { LogRedaction.redactForDefaultLog($0) }
+            return .result(status: status, artifacts: artifacts, message: redacted)
+        default:
+            return event
+        }
     }
 
     private func lastHeartbeatDate() -> Date? { lastHeartbeatAt }

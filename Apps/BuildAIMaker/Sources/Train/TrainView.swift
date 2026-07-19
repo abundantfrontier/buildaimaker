@@ -144,6 +144,16 @@ struct TrainView: View {
                         .foregroundStyle(BAMColors.secondaryLabel)
                 }
 
+                if model.needsRuntimeRepair {
+                    Label(
+                        RuntimeRecovery.shortCTA,
+                        systemImage: "exclamationmark.shield"
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .help(RuntimeRecovery.fullGuidance)
+                }
+
                 if let summary = model.resultSummary {
                     Text(summary)
                         .font(.system(.caption, design: .monospaced))

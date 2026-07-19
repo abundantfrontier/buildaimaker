@@ -70,13 +70,62 @@ def emit_heartbeat() -> None:
     )
 
 
+def _redact_samples_enabled() -> bool:
+    """BAM_REDACT_SAMPLES defaults on; set 0/false/off to disable."""
+    raw = os.environ.get("BAM_REDACT_SAMPLES", "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
+def _looks_like_sample(message: str) -> bool:
+    lower = message.lower()
+    if '"role"' in lower and '"content"' in lower:
+        return True
+    if '"messages"' in lower and '"content"' in lower:
+        return True
+    markers = (
+        "sample:",
+        "sample=",
+        "example:",
+        "prompt:",
+        "completion:",
+        "content:",
+        "user:",
+        "assistant:",
+        "training sample",
+        "dataset row",
+        "jsonl:",
+    )
+    for m in markers:
+        if m in lower:
+            if "samplegeneration" in lower or "sample gen" in lower:
+                continue
+            return True
+    stripped = message.strip()
+    if len(stripped) >= 240 and stripped.startswith("{") and (
+        '"conversations"' in stripped or '"messages"' in stripped or '"text"' in stripped
+    ):
+        return True
+    return False
+
+
+def redact_log_message(message: str) -> str:
+    """Never emit full dataset samples at info level when BAM_REDACT_SAMPLES=1."""
+    if not _redact_samples_enabled():
+        return message
+    if _looks_like_sample(message):
+        return "[REDACTED_SAMPLE]"
+    return message
+
+
 def emit_log(message: str, level: str = "info") -> None:
     emit(
         {
             "v": PROTOCOL_V,
             "type": "log",
             "level": level,
-            "message": message,
+            "message": redact_log_message(message),
             "ts": _iso_now(),
         }
     )

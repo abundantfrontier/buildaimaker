@@ -64,6 +64,11 @@ public struct RuntimeInstallStatus: Sendable, Equatable {
 }
 
 /// Spike installer: probes paths, reports size budget, never downloads wheels.
+///
+/// **Repair path:** delete managed env root, then re-run install stub / future
+/// real install. Pin mismatches surface as `BAM_RUNTIME_INTEGRITY` via
+/// `recheckIntegrity()` / `status().lastError` — Settings CTA is always
+/// ``RuntimeRecovery/repairActionTitle``.
 public struct RuntimeInstaller: Sendable {
     public var appVersion: String
     public var pinsRoot: URL?
@@ -93,22 +98,9 @@ public struct RuntimeInstaller: Sendable {
         let installed = fileManager.fileExists(atPath: interpreter.path)
 
         var lastError: String?
-        if let pins, let pinsRoot = pinsRoot ?? RuntimePaths.resolvePinsRoot() {
-            do {
-                try RuntimeIntegrity.verify(
-                    pins: pins,
-                    pinsRoot: pinsRoot,
-                    options: RuntimeIntegrity.VerificationOptions(
-                        requireInterpreterPresent: installed,
-                        managedEnvRoot: root
-                    ),
-                    fileManager: fileManager
-                )
-            } catch let error as BAMError {
-                lastError = error.errorDescription
-            } catch {
-                lastError = String(describing: error)
-            }
+        let recheck = recheckIntegrity(fileManager: fileManager)
+        if !recheck.isOK {
+            lastError = recheck.detail
         }
 
         return RuntimeInstallStatus(
@@ -119,6 +111,121 @@ public struct RuntimeInstaller: Sendable {
             sizeBudgetBytes: budgetBytes,
             lastError: lastError
         )
+    }
+
+    /// Explicit L2 re-check for Settings / recovery UX.
+    ///
+    /// When pins are missing (dev tree not present), returns OK with a soft
+    /// detail so install CTA still works. Hard failures use
+    /// `BAM_RUNTIME_INTEGRITY`.
+    public func recheckIntegrity(
+        fileManager: FileManager = .default
+    ) -> RuntimeIntegrityRecheckResult {
+        let root = envRoot()
+        let pins = loadPins()
+        guard let pins else {
+            return RuntimeIntegrityRecheckResult(
+                isOK: true,
+                detail: "runtime-pins.json not resolved (dev / not bundled yet)"
+            )
+        }
+        guard let pinsRoot = pinsRoot ?? RuntimePaths.resolvePinsRoot() else {
+            return RuntimeIntegrityRecheckResult(
+                isOK: true,
+                detail: "pins root not resolved"
+            )
+        }
+
+        let interpreterRel = pins.interpreterRelativePath
+        let interpreter = root.appendingPathComponent(interpreterRel, isDirectory: false)
+        let installed = fileManager.fileExists(atPath: interpreter.path)
+
+        do {
+            try RuntimeIntegrity.verify(
+                pins: pins,
+                pinsRoot: pinsRoot,
+                options: RuntimeIntegrity.VerificationOptions(
+                    requireInterpreterPresent: installed,
+                    managedEnvRoot: root
+                ),
+                fileManager: fileManager
+            )
+            return .ok
+        } catch let error as BAMError {
+            return RuntimeIntegrityRecheckResult(
+                isOK: false,
+                detail: error.errorDescription ?? error.code.rawValue,
+                code: error.code
+            )
+        } catch {
+            return RuntimeIntegrityRecheckResult(
+                isOK: false,
+                detail: String(describing: error),
+                code: .runtimeIntegrity
+            )
+        }
+    }
+
+    /// Delete the managed env root for this app version (repair step 1).
+    ///
+    /// Safe to call when the env is missing. Does **not** touch pins under the
+    /// app / repo tree.
+    public func wipeManagedEnv(fileManager: FileManager = .default) throws {
+        let root = envRoot()
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: root.path, isDirectory: &isDir) else {
+            return
+        }
+        // Refuse to wipe anything outside Application Support envs tree.
+        let envsRoot = LibraryPaths.pythonEnvs.resolvingSymlinksInPath().standardizedFileURL
+        let rootReal = root.resolvingSymlinksInPath().standardizedFileURL
+        guard RuntimeIntegrity.isPath(rootReal, under: envsRoot) else {
+            throw BAMError(
+                code: .pathEscape,
+                message: "refusing to wipe env outside managed python envs: \(root.path)"
+            )
+        }
+        try fileManager.removeItem(at: root)
+    }
+
+    /// Repair = wipe managed env + reinstall from lock (stub install in CI).
+    ///
+    /// Real multi-GB download still deferred; this wires the product recovery
+    /// path end-to-end so UI / tests can exercise wipe + re-check.
+    public func repair(
+        onProgress: @Sendable (RuntimeInstallProgress) -> Void = { _ in },
+        fileManager: FileManager = .default
+    ) async -> Result<Void, BAMError> {
+        let pins = loadPins()
+        let budget = pins?.effectiveSizeBudgetBytes ?? RuntimePins.defaultSizeBudgetBytes
+        let label = pins?.effectiveSizeBudgetLabel ?? "3–8 GB"
+
+        onProgress(RuntimeInstallProgress(
+            phase: .preparing,
+            bytesReceived: 0,
+            bytesExpected: budget,
+            message: "Repair: removing managed environment…"
+        ))
+
+        do {
+            try wipeManagedEnv(fileManager: fileManager)
+        } catch let error as BAMError {
+            return .failure(error)
+        } catch {
+            return .failure(BAMError(
+                code: .runtimeIntegrity,
+                message: "repair wipe failed: \(error.localizedDescription)"
+            ))
+        }
+
+        onProgress(RuntimeInstallProgress(
+            phase: .downloading,
+            bytesReceived: 0,
+            bytesExpected: budget,
+            message: "Repair: reinstalling managed Python (\(label))…"
+        ))
+
+        return await installStub(onProgress: onProgress)
     }
 
     /// Simulated install for UI wiring. Does not download.

@@ -5,7 +5,7 @@
   "sizeBudgetLabel": "3\u20138 GB",
   "lockfile": {
     "relativePath": "requirements.lock",
-    "sha256": "b05c1dc945fcdcd2fb94d8c045d82a4d7062b3f1654379fa3b962bbeebe02b00"
+    "sha256": "8af9383dbb23edf8ec89fccfaae82f112800eb95cbbf6c64fee4e672a7eb259b"
   },
   "interpreterRelativePath": "bin/python3",
   "entries": [

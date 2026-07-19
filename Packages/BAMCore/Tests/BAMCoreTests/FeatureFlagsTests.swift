@@ -17,6 +17,8 @@ final class FeatureFlagsTests: XCTestCase {
         for key in FeatureFlags.Key.allCases where !alwaysOn.contains(key) {
             XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
         }
+        XCTAssertTrue(flags.voiceClone)
+        XCTAssertFalse(flags.talkMode)
     }
 
     func testExplicitOverrideCanDisableLLMTraining() {

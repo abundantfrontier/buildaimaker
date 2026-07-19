@@ -3,9 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "BuildAIMaker",
-    platforms: [
-        .macOS(.v14),
-    ],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "BAMCore", targets: ["BAMCore"]),
         .library(name: "BAMModels", targets: ["BAMModels"]),

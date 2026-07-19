@@ -118,7 +118,7 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMJobs, BAMRunners (no GPU)
+- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMJobs, BAMRunners, BAMRunnersVoice (no GPU)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 

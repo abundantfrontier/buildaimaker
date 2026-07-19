@@ -1,6 +1,6 @@
 # Managed Python training runtime (spike)
 
-This directory owns the **lockfile** and **entry modules** for the LLM (and later voice) managed environment.
+This directory owns the **lockfile** and **entry modules** for the LLM and voice managed environment.
 
 ## Layout
 
@@ -11,16 +11,30 @@ This directory owns the **lockfile** and **entry modules** for the LLM (and late
 | `runtime-pins.json` | L2 integrity pins (lock + entry hashes) |
 | `runtime-pins.schema.json` | JSON Schema for `runtime-pins.json` |
 | `llm_worker/main.py` | Python entry for `bam-llm-worker` |
+| `voice_worker/main.py` | Python entry for `bam-voice-worker` + stub clone CLI |
 
 ## Size budget
 
 | Scenario | Expected download | Notes |
 |----------|-------------------|-------|
 | LLM-only (mlx + mlx-lm + deps) | **~3–5 GB** | Apple Silicon wheels |
-| LLM + voice stack (future) | **~5–8 GB** | Adds PyTorch MPS / F5-TTS class deps |
+| LLM + voice stack (F5-TTS) | **~5–8 GB** | Adds PyTorch MPS / F5-TTS class deps |
 | CI | **0 GB** | Never install multi-GB wheels in CI |
 
 Progress UI must show estimated size and bytes transferred (Settings → Install training runtime).
+
+## Voice stub CLI (CI-safe)
+
+No torch / F5-TTS download — copies a reference WAV and writes `profile.json`:
+
+```bash
+python -m voice_worker clone \
+  --ref-wav /path/to/ref-15s.wav \
+  --out-dir "$HOME/Library/Application Support/BuildAIMaker/voices/<id>" \
+  --engine-id f5-tts
+```
+
+XTTS is rejected (`BAM_LICENSE_BLOCK`). See `Docs/adr/0002-voice-engine.md`.
 
 ## Two-layer trust (summary)
 

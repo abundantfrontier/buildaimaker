@@ -108,7 +108,7 @@ Settings → **Validate helper (L1)** exercises this gate without starting a wor
 | markupsafe | 3.0.2 | BSD-3-Clause | Jinja dependency |
 | regex | 2024.11.6 | Apache-2.0 | Tokenization helper |
 
-Voice pins (F5-TTS, etc.) land in a separate ADR after PR-VoiceSpike.
+Voice pins (F5-TTS primary, XTTS non-default) are recorded in `Docs/adr/0002-voice-engine.md` (PR-VoiceSpike).
 
 ## Consequences
 

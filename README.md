@@ -15,6 +15,8 @@ buildaimaker/
 ├── Apps/BuildAIMaker/       # macOS SwiftUI app shell
 ├── Packages/
 │   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
+│   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
+│   ├── BAMPersistence/      # GRDB library.sqlite + migrations
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
 ├── Workers/                 # Training workers (future)
 ├── Catalog/                 # Model catalog (future)
@@ -92,10 +94,15 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore tests
+- `swift test` — BAMCore, BAMModels, BAMPersistence (no GPU)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
-## Non-goals (this scaffold)
+## Domain packages
 
-No GRDB, no training runners, no Python env, no real datasets. Domain packages arrive in subsequent PRs.
+- **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
+- **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
+
+## Non-goals (current tree)
+
+No training runners, no Python env, no real dataset import UI yet.

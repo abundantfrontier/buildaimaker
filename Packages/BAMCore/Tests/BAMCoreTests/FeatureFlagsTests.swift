@@ -37,4 +37,14 @@ final class FeatureFlagsTests: XCTestCase {
             "_invalid"
         )
     }
+
+    func testDomainErrorCodesPresent() {
+        XCTAssertEqual(BAMErrorCode.personaUnresolved.rawValue, "BAM_PERSONA_UNRESOLVED")
+        XCTAssertEqual(BAMErrorCode.tccMicDenied.rawValue, "BAM_TCC_MIC_DENIED")
+        XCTAssertEqual(BAMErrorCode.capabilityUnsupported.rawValue, "BAM_CAPABILITY_UNSUPPORTED")
+        XCTAssertEqual(BAMErrorCode.licenseBlock.rawValue, "BAM_LICENSE_BLOCK")
+        XCTAssertEqual(BAMErrorCode.migrationFailed.rawValue, "BAM_MIGRATION_FAILED")
+        XCTAssertEqual(BAMErrorCode.schemaInvalid.rawValue, "BAM_SCHEMA_INVALID")
+        XCTAssertTrue(BAMErrorCode.allCases.count >= 19)
+    }
 }

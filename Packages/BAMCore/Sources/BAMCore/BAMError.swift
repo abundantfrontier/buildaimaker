@@ -1,7 +1,6 @@
 import Foundation
 
 /// Stable error-code namespace for BuildAIMaker.
-/// Full domain models and localized messages land in later PRs; this is a light stub.
 public enum BAMErrorCode: String, Codable, Sendable, CaseIterable {
     case pathEscape = "BAM_PATH_ESCAPE"
     case runtimeIntegrity = "BAM_RUNTIME_INTEGRITY"
@@ -16,6 +15,13 @@ public enum BAMErrorCode: String, Codable, Sendable, CaseIterable {
     case modelNotFound = "BAM_MODEL_NOT_FOUND"
     case consentRequired = "BAM_CONSENT_REQUIRED"
     case consentTamper = "BAM_CONSENT_TAMPER"
+    case personaUnresolved = "BAM_PERSONA_UNRESOLVED"
+    case tccMicDenied = "BAM_TCC_MIC_DENIED"
+    case capabilityUnsupported = "BAM_CAPABILITY_UNSUPPORTED"
+    case licenseBlock = "BAM_LICENSE_BLOCK"
+    case migrationFailed = "BAM_MIGRATION_FAILED"
+    case unknownKey = "BAM_UNKNOWN_KEY"
+    case schemaInvalid = "BAM_SCHEMA_INVALID"
 }
 
 /// Lightweight error carrying a stable code plus optional detail.

@@ -25,8 +25,8 @@ jobs:
       - name: Build packages and app target
         run: swift build
 
-      - name: Test BAMCore
-        run: swift test --filter BAMCoreTests
+      - name: Test packages
+        run: swift test
 
   # Documented path for a full app bundle build once an .xcodeproj is added.
   # Packages compile via `swift build` above without codesign secrets.

@@ -14,11 +14,13 @@ Native macOS app for **local-first AI fine-tuning** (LLM + voice later) on Apple
 buildaimaker/
 ├── Apps/BuildAIMaker/       # macOS SwiftUI app shell
 ├── Packages/
-│   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
+│   ├── BAMCore/             # Feature flags, paths, errors, runtime integrity
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/                 # Training workers (future)
+├── Workers/
+│   ├── python/              # Lockfile, runtime-pins.json, entry modules
+│   └── bam-llm-worker/      # Thin L1 helper stub (TeamID-signed in release)
 ├── Catalog/                 # Model catalog (future)
-├── Docs/                    # Design docs
+├── Docs/                    # Design docs + ADRs
 └── Package.swift            # Root SPM package
 ```
 
@@ -96,6 +98,13 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
-## Non-goals (this scaffold)
+## Managed Python (PR-PyEnv spike)
 
-No GRDB, no training runners, no Python env, no real datasets. Domain packages arrive in subsequent PRs.
+- Pins: `Workers/python/runtime-pins.json` (lockfile + entry SHA-256)
+- Helper: `swift run bam-llm-worker` (set `BAM_SKIP_INTERPRETER_CHECK=1` without a venv)
+- ADR: `Docs/adr/0001-llm-runtime.md` (two-layer trust, notarization, SPDX, 3–8 GB budget)
+- CI does **not** download multi-GB wheels
+
+## Non-goals (current tree)
+
+No real mlx-lm training, no F5-TTS, no multi-GB CI installs. Domain packages and GRDB arrive in adjacent PRs.

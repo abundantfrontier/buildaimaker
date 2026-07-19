@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "appVersion": "0.1.0",
+  "sizeBudgetBytes": 8589934592,
+  "sizeBudgetLabel": "3–8 GB",
+  "lockfile": {
+    "relativePath": "requirements.lock",
+    "sha256": "b05c1dc945fcdcd2fb94d8c045d82a4d7062b3f1654379fa3b962bbeebe02b00"
+  },
+  "interpreterRelativePath": "bin/python3",
+  "entries": [
+    {
+      "id": "llm_worker.main",
+      "relativePath": "llm_worker/main.py",
+      "sha256": "48e50d923fe244710586fec5ab38e04820ee1dca561a157e7cdb46b86d0c23e1"
+    }
+  ]
+}

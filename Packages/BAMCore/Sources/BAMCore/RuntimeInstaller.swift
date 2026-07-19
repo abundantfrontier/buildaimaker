@@ -228,37 +228,174 @@ public struct RuntimeInstaller: Sendable {
         return await installStub(onProgress: onProgress)
     }
 
-    /// Simulated install for UI wiring. Does not download.
+    /// Create a local managed Python venv (dogfood).
     ///
-    /// Reports progress callbacks then returns `.cancelled` so Settings can show
-    /// size budget + progress chrome without CI cost. **Does not** use
-    /// `BAM_RUNTIME_INTEGRITY` (reserved for pin/path/signature failures).
-    public func installStub(
-        onProgress: @Sendable (RuntimeInstallProgress) -> Void = { _ in }
+    /// Uses system `python3 -m venv` under Application Support. Does **not**
+    /// download multi‑GB mlx/torch wheels by default (optional later step).
+    /// Marks install complete when `bin/python3` exists so training helpers can
+    /// resolve an interpreter path.
+    public func installManagedRuntime(
+        onProgress: @Sendable (RuntimeInstallProgress) -> Void = { _ in },
+        fileManager: FileManager = .default
     ) async -> Result<Void, BAMError> {
         let pins = loadPins()
         let budget = pins?.effectiveSizeBudgetBytes ?? RuntimePins.defaultSizeBudgetBytes
         let label = pins?.effectiveSizeBudgetLabel ?? "3–8 GB"
+        let root = envRoot()
 
         onProgress(RuntimeInstallProgress(
             phase: .preparing,
             bytesReceived: 0,
             bytesExpected: budget,
-            message: "Preparing managed Python environment (\(label))…"
+            message: "Preparing managed Python environment at \(root.path)…"
         ))
 
-        try? await Task.sleep(nanoseconds: 50_000_000)
+        do {
+            try fileManager.createDirectory(
+                at: root.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } catch {
+            return .failure(BAMError(
+                code: .runtimeIntegrity,
+                message: "Could not create env parent: \(error.localizedDescription)"
+            ))
+        }
+
+        // If already present, treat as success (idempotent).
+        let interpreterRel = pins?.interpreterRelativePath ?? "bin/python3"
+        let interpreter = root.appendingPathComponent(interpreterRel, isDirectory: false)
+        if fileManager.fileExists(atPath: interpreter.path) {
+            onProgress(RuntimeInstallProgress(
+                phase: .complete,
+                bytesReceived: budget,
+                bytesExpected: budget,
+                message: "Managed Python already installed."
+            ))
+            writeInstallMarker(at: root, fileManager: fileManager)
+            return .success(())
+        }
 
         onProgress(RuntimeInstallProgress(
             phase: .downloading,
-            bytesReceived: 0,
+            bytesReceived: budget / 10,
             bytesExpected: budget,
-            message: "Download deferred in this spike (budget \(label))."
+            message: "Creating Python venv (system python3)…"
         ))
 
-        return .failure(BAMError(
-            code: .cancelled,
-            message: "training runtime install is a stub; multi-GB wheel download not performed (budget \(label))"
+        let python = resolveSystemPython3()
+        guard let python else {
+            return .failure(BAMError(
+                code: .runtimeIntegrity,
+                message: "No system python3 found. Install Python 3 from python.org or Xcode CLT, then retry."
+            ))
+        }
+
+        // Remove partial env if any.
+        if fileManager.fileExists(atPath: root.path) {
+            try? fileManager.removeItem(at: root)
+        }
+
+        let venvResult = await runProcess(
+            executable: python,
+            arguments: ["-m", "venv", root.path]
+        )
+        guard venvResult.exitCode == 0 else {
+            return .failure(BAMError(
+                code: .runtimeIntegrity,
+                message: "python3 -m venv failed (exit \(venvResult.exitCode)): \(venvResult.stderr.prefix(400))"
+            ))
+        }
+
+        guard fileManager.fileExists(atPath: interpreter.path) else {
+            return .failure(BAMError(
+                code: .runtimeIntegrity,
+                message: "venv created but interpreter missing at \(interpreter.path)"
+            ))
+        }
+
+        onProgress(RuntimeInstallProgress(
+            phase: .verifying,
+            bytesReceived: budget / 2,
+            bytesExpected: budget,
+            message: "Upgrading pip (lightweight)…"
         ))
+
+        // Lightweight only — do not pull multi-GB ML stacks here.
+        _ = await runProcess(
+            executable: interpreter.path,
+            arguments: ["-m", "pip", "install", "--upgrade", "pip"]
+        )
+
+        writeInstallMarker(at: root, fileManager: fileManager)
+
+        onProgress(RuntimeInstallProgress(
+            phase: .complete,
+            bytesReceived: budget,
+            bytesExpected: budget,
+            message: "Managed venv ready. Full mlx-lm/F5 wheels (\(label)) are a separate optional step."
+        ))
+        return .success(())
+    }
+
+    /// Legacy name used by tests / Settings — now creates a real venv.
+    public func installStub(
+        onProgress: @Sendable (RuntimeInstallProgress) -> Void = { _ in }
+    ) async -> Result<Void, BAMError> {
+        await installManagedRuntime(onProgress: onProgress)
+    }
+
+    // MARK: - Process helpers
+
+    private func resolveSystemPython3() -> String? {
+        let candidates = [
+            "/usr/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+        ]
+        for path in candidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func writeInstallMarker(at root: URL, fileManager: FileManager) {
+        let marker = root.appendingPathComponent("BAM_RUNTIME_INSTALLED.txt")
+        let text = """
+        BuildAIMaker managed Python env
+        version=\(appVersion)
+        created=\(ISO8601DateFormatter().string(from: Date()))
+        note=venv only; heavy ML wheels not auto-installed
+        """
+        try? text.write(to: marker, atomically: true, encoding: .utf8)
+    }
+
+    private struct ProcessResult: Sendable {
+        var exitCode: Int32
+        var stderr: String
+    }
+
+    private func runProcess(executable: String, arguments: [String]) async -> ProcessResult {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: executable)
+                process.arguments = arguments
+                let errPipe = Pipe()
+                process.standardError = errPipe
+                process.standardOutput = Pipe()
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    let data = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    let err = String(data: data, encoding: .utf8) ?? ""
+                    cont.resume(returning: ProcessResult(exitCode: process.terminationStatus, stderr: err))
+                } catch {
+                    cont.resume(returning: ProcessResult(exitCode: -1, stderr: error.localizedDescription))
+                }
+            }
+        }
     }
 }

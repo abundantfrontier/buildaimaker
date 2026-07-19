@@ -225,25 +225,38 @@ final class RuntimeRepairTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
     }
 
-    func testRepairRunsWipeThenInstallStub() async throws {
-        let installer = RuntimeInstaller(appVersion: "test-repair-stub")
+    func testRepairRunsWipeThenInstall() async throws {
+        let installer = RuntimeInstaller(appVersion: "test-repair-stub-\(UUID().uuidString.prefix(6))")
         let root = installer.envRoot()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: root.appendingPathComponent("marker"))
 
-        var phases: [RuntimeInstallPhase] = []
+        let box = PhaseBox()
         let result = await installer.repair { progress in
-            phases.append(progress.phase)
+            box.append(progress.phase)
         }
-        // Stub install ends cancelled (no multi-GB download).
-        guard case .failure(let error) = result else {
-            XCTFail("expected stub failure")
-            return
+        XCTAssertTrue(box.phases.contains(.preparing) || box.phases.contains(.downloading))
+        switch result {
+        case .success:
+            XCTAssertTrue(installer.status().isInstalled)
+            try? installer.wipeManagedEnv()
+        case .failure(let error):
+            // Wiped then failed if no python3.
+            XCTAssertNotEqual(error.code, .cancelled)
         }
-        XCTAssertEqual(error.code, .cancelled)
-        XCTAssertNotEqual(error.code, .runtimeIntegrity)
-        XCTAssertTrue(phases.contains(.preparing) || phases.contains(.downloading))
-        // Env wiped as first step.
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    private final class PhaseBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _phases: [RuntimeInstallPhase] = []
+        var phases: [RuntimeInstallPhase] {
+            lock.lock(); defer { lock.unlock() }
+            return _phases
+        }
+        func append(_ p: RuntimeInstallPhase) {
+            lock.lock(); defer { lock.unlock() }
+            _phases.append(p)
+        }
     }
 
     func testWorkerSpawnRejectsNonHelperBasename() {

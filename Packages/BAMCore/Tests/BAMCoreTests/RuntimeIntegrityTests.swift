@@ -394,15 +394,21 @@ final class RuntimeIntegrityTests: XCTestCase {
         XCTAssertFalse(status.isInstalled)
     }
 
-    func testInstallStubUsesCancelledNotRuntimeIntegrity() async {
-        let installer = RuntimeInstaller(appVersion: "0.1.0", pinsRoot: nil)
-        let result = await installer.installStub()
-        guard case .failure(let error) = result else {
-            XCTFail("expected failure")
-            return
+    func testInstallManagedRuntimeCreatesOrReportsError() async {
+        let installer = RuntimeInstaller(appVersion: "test-install-\(UUID().uuidString.prefix(8))", pinsRoot: nil)
+        let result = await installer.installManagedRuntime()
+        switch result {
+        case .success:
+            XCTAssertTrue(installer.status().isInstalled)
+            try? installer.wipeManagedEnv()
+        case .failure(let error):
+            // No system python3 in some CI images.
+            XCTAssertNotEqual(error.code, .cancelled)
+            XCTAssertTrue(
+                error.code == .runtimeIntegrity
+                    || (error.message?.contains("python3") == true)
+            )
         }
-        XCTAssertEqual(error.code, .cancelled)
-        XCTAssertNotEqual(error.code, .runtimeIntegrity)
     }
 
     // MARK: - WorkerTrust / WorkerSpawn

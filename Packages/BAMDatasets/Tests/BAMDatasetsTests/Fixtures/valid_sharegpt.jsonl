@@ -1,0 +1,2 @@
+{"conversations":[{"from":"human","value":"Hello, who are you?"},{"from":"gpt","value":"I am a helpful assistant."}]}
+{"conversations":[{"from":"system","value":"Be concise."},{"from":"human","value":"Capital of France?"},{"from":"gpt","value":"Paris."}]}

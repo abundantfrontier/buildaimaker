@@ -14,13 +14,14 @@ Native macOS app for **local-first AI fine-tuning** (LLM + voice later) on Apple
 buildaimaker/
 ├── Apps/BuildAIMaker/       # macOS SwiftUI app shell
 ├── Packages/
-│   ├── BAMCore/             # Feature flags, paths, errors, runtime integrity
+│   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
+│   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
+│   ├── BAMPersistence/      # GRDB library.sqlite + migrations
+│   ├── BAMDatasets/         # Text JSONL import, validate, preview
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/
-│   ├── python/              # Lockfile, runtime-pins.json, entry modules
-│   └── bam-llm-worker/      # Thin L1 helper stub (TeamID-signed in release)
+├── Workers/                 # Training workers (future)
 ├── Catalog/                 # Model catalog (future)
-├── Docs/                    # Design docs + ADRs
+├── Docs/                    # Design docs
 └── Package.swift            # Root SPM package
 ```
 
@@ -94,17 +95,16 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore tests
+- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMDatasets (no GPU)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
-## Managed Python (PR-PyEnv spike)
+## Domain packages
 
-- Pins: `Workers/python/runtime-pins.json` (lockfile + entry SHA-256)
-- Helper: `swift run bam-llm-worker` (set `BAM_SKIP_INTERPRETER_CHECK=1` without a venv)
-- ADR: `Docs/adr/0001-llm-runtime.md` (two-layer trust, notarization, SPDX, 3–8 GB budget)
-- CI does **not** download multi-GB wheels
+- **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
+- **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
+- **BAMDatasets** — ShareGPT / OpenAI-messages JSONL import (copy or reference), validation with `BAM_DATASET_INVALID` line-level errors, preview of first N messages, Datasets UI.
 
 ## Non-goals (current tree)
 
-No real mlx-lm training, no F5-TTS, no multi-GB CI installs. Domain packages and GRDB arrive in adjacent PRs.
+No training runners, no Python env yet.

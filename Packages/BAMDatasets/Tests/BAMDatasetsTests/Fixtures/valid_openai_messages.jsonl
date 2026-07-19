@@ -1,0 +1,2 @@
+{"messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"What is 2+2?"},{"role":"assistant","content":"2+2 equals 4."}]}
+{"messages":[{"role":"user","content":"Name a primary color."},{"role":"assistant","content":"Red is a primary color."}]}

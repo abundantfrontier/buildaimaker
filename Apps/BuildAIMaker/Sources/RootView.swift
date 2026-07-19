@@ -25,10 +25,8 @@ struct RootView: View {
                 subtitle: homeSubtitle
             )
         case .datasets:
-            PlaceholderDetailView(
-                destination: .datasets,
-                subtitle: "Import and manage training datasets."
-            )
+            DatasetsView()
+
         case .models:
             PlaceholderDetailView(
                 destination: .models,

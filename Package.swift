@@ -10,10 +10,9 @@ let package = Package(
         .library(name: "BAMCore", targets: ["BAMCore"]),
         .library(name: "BAMModels", targets: ["BAMModels"]),
         .library(name: "BAMPersistence", targets: ["BAMPersistence"]),
-        .library(name: "BAMDatasets", targets: ["BAMDatasets"]),
+        .library(name: "BAMModelCatalog", targets: ["BAMModelCatalog"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
-        .executable(name: "bam-llm-worker", targets: ["bam-llm-worker"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -38,14 +37,15 @@ let package = Package(
             path: "Packages/BAMPersistence/Sources/BAMPersistence"
         ),
         .target(
-            name: "BAMDatasets",
+            name: "BAMModelCatalog",
             dependencies: [
                 "BAMCore",
                 "BAMModels",
-                "BAMPersistence",
-                .product(name: "GRDB", package: "GRDB.swift"),
             ],
-            path: "Packages/BAMDatasets/Sources/BAMDatasets"
+            path: "Packages/BAMModelCatalog/Sources/BAMModelCatalog",
+            resources: [
+                .copy("Resources/models.json"),
+            ]
         ),
         .target(
             name: "BAMResourcesUI",
@@ -58,15 +58,10 @@ let package = Package(
                 "BAMCore",
                 "BAMModels",
                 "BAMPersistence",
-                "BAMDatasets",
+                "BAMModelCatalog",
                 "BAMResourcesUI",
             ],
             path: "Apps/BuildAIMaker/Sources"
-        ),
-        .executableTarget(
-            name: "bam-llm-worker",
-            dependencies: ["BAMCore"],
-            path: "Workers/bam-llm-worker/Sources"
         ),
         .testTarget(
             name: "BAMCoreTests",
@@ -89,17 +84,13 @@ let package = Package(
             path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"
         ),
         .testTarget(
-            name: "BAMDatasetsTests",
+            name: "BAMModelCatalogTests",
             dependencies: [
-                "BAMDatasets",
+                "BAMModelCatalog",
                 "BAMModels",
                 "BAMCore",
-                "BAMPersistence",
             ],
-            path: "Packages/BAMDatasets/Tests/BAMDatasetsTests",
-            resources: [
-                .copy("Fixtures"),
-            ]
+            path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"
         ),
     ]
 )

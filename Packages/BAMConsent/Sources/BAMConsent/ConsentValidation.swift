@@ -2,7 +2,7 @@ import BAMCore
 import BAMModels
 import Foundation
 
-/// Validation failures when creating or accepting a consent draft.
+/// Validation failures when creating or accepting a consent draft / record policy.
 public enum ConsentValidationError: Error, Equatable, Sendable {
     case missingSubjectDisplayName
     case missingAttestorUserLabel
@@ -21,20 +21,19 @@ extension ConsentValidationError: LocalizedError {
         case .statementsIncomplete:
             return "All consent statements must be accepted."
         case .thirdPartySecondaryConfirmRequired:
-            return "Third-party consent requires secondary confirmation and a subject display name."
+            // Name is already validated when this fires; do not imply name is missing.
+            return "Third-party consent requires secondary confirmation."
         case .emptyStatements:
             return "At least one consent statement is required."
         }
     }
 
-    /// Maps to stable BAM error codes where applicable.
+    /// Maps draft/acceptance failures that block cloning to `BAM_CONSENT_REQUIRED`.
+    /// Structural malformation is still represented as `.emptyStatements` under the same
+    /// product code (missing/invalid consent); encode/decode failures use `BAM_SCHEMA_INVALID`
+    /// at the store layer instead.
     public var bamError: BAMError {
-        switch self {
-        case .thirdPartySecondaryConfirmRequired, .missingSubjectDisplayName:
-            return BAMError(code: .consentRequired, message: errorDescription)
-        default:
-            return BAMError(code: .schemaInvalid, message: errorDescription)
-        }
+        BAMError(code: .consentRequired, message: errorDescription)
     }
 }
 
@@ -103,21 +102,33 @@ public enum ConsentValidator: Sendable {
         }
 
         let name = draft.subjectDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw ConsentValidationError.missingSubjectDisplayName
+        }
 
-        switch draft.subjectType {
-        case .thirdParty:
-            // Design: third_party requires non-empty subjectDisplayName + secondary checkbox.
-            guard !name.isEmpty else {
-                throw ConsentValidationError.missingSubjectDisplayName
-            }
+        if draft.subjectType == .thirdParty {
+            // Design: third_party also requires explicit secondary checkbox (UI-only field).
             guard draft.thirdPartySecondaryConfirmed else {
                 throw ConsentValidationError.thirdPartySecondaryConfirmRequired
             }
-        case .self_, .syntheticOrPublicDomain:
-            // Display name still required for binding/display (self may default later in UI).
-            guard !name.isEmpty else {
-                throw ConsentValidationError.missingSubjectDisplayName
-            }
+        }
+    }
+
+    /// Record-level policy for persist/import paths (secondary confirm is UI-only and not stored).
+    ///
+    /// Enforces non-empty `subjectDisplayName` and `attestorUserLabel`, and non-empty `statements`,
+    /// for all subject types including `third_party`.
+    public static func validateRecordPolicy(_ record: ConsentRecord) throws {
+        let name = record.subjectDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw ConsentValidationError.missingSubjectDisplayName
+        }
+        let attestor = record.attestorUserLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !attestor.isEmpty else {
+            throw ConsentValidationError.missingAttestorUserLabel
+        }
+        guard !record.statements.isEmpty else {
+            throw ConsentValidationError.emptyStatements
         }
     }
 }

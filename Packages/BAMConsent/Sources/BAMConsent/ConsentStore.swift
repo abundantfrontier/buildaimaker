@@ -32,9 +32,21 @@ public final class ConsentStore: Sendable {
 
     // MARK: - Write
 
-    /// Inserts (or replaces) a consent record. Computes nothing — caller must supply a hashed record.
+    /// Inserts a consent record. Fails if `id` already exists (append-only for product create).
+    ///
+    /// Caller must supply a hashed, policy-valid record. Does not upsert.
     @discardableResult
     public func save(_ record: ConsentRecord) throws -> ConsentIndexRecord {
+        try insert(record, replaceExisting: false)
+    }
+
+    /// Inserts or replaces a consent row. Reserved for admin/import/repair paths only.
+    @discardableResult
+    public func saveReplacing(_ record: ConsentRecord) throws -> ConsentIndexRecord {
+        try insert(record, replaceExisting: true)
+    }
+
+    private func insert(_ record: ConsentRecord, replaceExisting: Bool) throws -> ConsentIndexRecord {
         guard try record.verifyContentHash() else {
             throw BAMError(
                 code: .consentTamper,
@@ -57,17 +69,44 @@ public final class ConsentStore: Sendable {
             createdAt: record.createdAt
         )
 
-        try database.dbQueue.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO consent_records (id, json, content_hash, created_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                      json = excluded.json,
-                      content_hash = excluded.content_hash,
-                      created_at = excluded.created_at
-                    """,
-                arguments: [index.id, index.json, index.contentHash, index.createdAt]
+        do {
+            try database.dbQueue.write { db in
+                if replaceExisting {
+                    try db.execute(
+                        sql: """
+                            INSERT INTO consent_records (id, json, content_hash, created_at)
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET
+                              json = excluded.json,
+                              content_hash = excluded.content_hash,
+                              created_at = excluded.created_at
+                            """,
+                        arguments: [index.id, index.json, index.contentHash, index.createdAt]
+                    )
+                } else {
+                    // Fail on duplicate id — consent rows are binding evidence (append-only).
+                    try db.execute(
+                        sql: """
+                            INSERT INTO consent_records (id, json, content_hash, created_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                        arguments: [index.id, index.json, index.contentHash, index.createdAt]
+                    )
+                }
+            }
+        } catch let error as BAMError {
+            throw error
+        } catch {
+            // SQLite unique constraint / GRDB DatabaseError
+            if let dbError = error as? DatabaseError, dbError.resultCode == .SQLITE_CONSTRAINT {
+                throw BAMError(
+                    code: .schemaInvalid,
+                    message: "Consent record already exists: \(record.id)"
+                )
+            }
+            throw BAMError(
+                code: .schemaInvalid,
+                message: "Could not save consent record: \(error.localizedDescription)"
             )
         }
 
@@ -80,7 +119,9 @@ public final class ConsentStore: Sendable {
 
     // MARK: - Read
 
-    public func fetch(id: String) throws -> ConsentRecord? {
+    /// Decodes a stored record **without** verifying the content hash.
+    /// Prefer `fetchAndVerify` for product binding paths.
+    public func fetchUnverified(id: String) throws -> ConsentRecord? {
         let row: ConsentIndexRecord? = try database.dbQueue.read { db in
             try ConsentIndexRecord.fetchOne(db, id: id)
         }
@@ -100,13 +141,25 @@ public final class ConsentStore: Sendable {
         }
     }
 
-    /// Loads record and verifies stored contentHash matches recomputed canonical hash.
+    /// Loads record, verifies recomputed hash, and cross-checks denormalized `content_hash` column.
     public func fetchAndVerify(id: String) throws -> ConsentRecord {
-        guard let record = try fetch(id: id) else {
+        let row: ConsentIndexRecord? = try database.dbQueue.read { db in
+            try ConsentIndexRecord.fetchOne(db, id: id)
+        }
+        guard let row else {
             throw BAMError(code: .consentRequired, message: "Consent record not found: \(id)")
         }
+        let record = try decodeRecord(from: row)
         guard try record.verifyContentHash() else {
             throw BAMError(code: .consentTamper, message: "Consent contentHash mismatch for \(id)")
+        }
+        let columnHash = ConsentRecord.normalizeHash(row.contentHash)
+        let bodyHash = ConsentRecord.normalizeHash(record.contentHash)
+        guard columnHash == bodyHash else {
+            throw BAMError(
+                code: .consentTamper,
+                message: "Consent content_hash column desync for \(id)"
+            )
         }
         return record
     }
@@ -132,7 +185,14 @@ public final class ConsentStore: Sendable {
         guard let data = index.json.data(using: .utf8) else {
             throw BAMError(code: .schemaInvalid, message: "Consent JSON is not UTF-8")
         }
-        return try JSONDecoder().decode(ConsentRecord.self, from: data)
+        do {
+            return try JSONDecoder().decode(ConsentRecord.self, from: data)
+        } catch {
+            throw BAMError(
+                code: .schemaInvalid,
+                message: "Consent JSON decode failed: \(error.localizedDescription)"
+            )
+        }
     }
 }
 
@@ -174,5 +234,15 @@ extension ConsentIndexRecord: FetchableRecord, PersistableRecord {
         try ConsentIndexRecord
             .order(Columns.createdAt.desc)
             .fetchAll(db)
+    }
+}
+
+// MARK: - Display helpers
+
+extension ConsentIndexRecord {
+    /// Best-effort decode of the stored JSON for list/detail UI.
+    public func decodedRecord() -> ConsentRecord? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ConsentRecord.self, from: data)
     }
 }

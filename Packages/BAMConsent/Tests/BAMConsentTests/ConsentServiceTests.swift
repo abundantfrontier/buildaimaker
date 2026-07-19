@@ -2,6 +2,7 @@ import XCTest
 import BAMCore
 import BAMModels
 import BAMPersistence
+import GRDB
 @testable import BAMConsent
 
 final class ConsentServiceTests: XCTestCase {
@@ -107,6 +108,43 @@ final class ConsentServiceTests: XCTestCase {
         }
     }
 
+    func testPersistRejectsThirdPartyWithEmptyDisplayName() throws {
+        let service = try ConsentService.makeInMemory(writeJSONFiles: false)
+        var record = DomainFixtures.goldenConsentRecord
+        record.subjectType = .thirdParty
+        record.subjectDisplayName = ""
+        record.contentHash = try record.computeContentHash()
+
+        XCTAssertThrowsError(try service.persist(record)) { error in
+            XCTAssertEqual(error as? ConsentValidationError, .missingSubjectDisplayName)
+        }
+        // skipPolicyCheck allows fixture-only store paths that still verify hash.
+        XCTAssertNoThrow(try service.persist(record, skipPolicyCheck: true))
+    }
+
+    func testCreateIsAppendOnlyRejectsDuplicateId() throws {
+        let service = try ConsentService.makeInMemory(
+            writeJSONFiles: false,
+            appVersion: DomainFixtures.goldenAppVersion,
+            idGenerator: { DomainFixtures.consentRecordId },
+            nowISO8601: { DomainFixtures.goldenCreatedAt }
+        )
+        _ = try service.persist(DomainFixtures.goldenConsentRecord)
+
+        var draft = ConsentDraft(
+            subjectType: .self_,
+            subjectDisplayName: "Test Subject",
+            attestorUserLabel: "test-user"
+        )
+        draft.acceptedStatements = draft.acceptedStatements.map { _ in true }
+
+        XCTAssertThrowsError(try service.create(from: draft)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .schemaInvalid)
+            XCTAssertTrue(bam?.message?.contains("already exists") == true)
+        }
+    }
+
     func testFetchAndVerifyDetectsJSONTamper() throws {
         let db = try LibraryDatabase.openInMemory()
         let tmp = FileManager.default.temporaryDirectory
@@ -135,6 +173,60 @@ final class ConsentServiceTests: XCTestCase {
             let bam = error as? BAMError
             XCTAssertEqual(bam?.code, .consentTamper)
         }
+        // Default fetch also verifies.
+        XCTAssertThrowsError(try service.fetch(id: DomainFixtures.consentRecordId)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .consentTamper)
+        }
+        // Unverified path still returns the tampered body without throwing.
+        let unverified = try service.fetchUnverified(id: DomainFixtures.consentRecordId)
+        XCTAssertEqual(unverified?.subjectDisplayName, "TAMPERED")
+    }
+
+    func testFetchAndVerifyDetectsHashColumnDesync() throws {
+        let db = try LibraryDatabase.openInMemory()
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bam-consent-col-\(UUID().uuidString)", isDirectory: true)
+        let store = ConsentStore(database: db, consentDirectory: tmp, writeJSONFiles: false)
+        let service = ConsentService(store: store)
+
+        _ = try service.persist(DomainFixtures.goldenConsentRecord)
+
+        // Leave JSON intact; corrupt denormalized content_hash column only.
+        try db.dbQueue.write { conn in
+            try conn.execute(
+                sql: """
+                    UPDATE consent_records
+                    SET content_hash = ?
+                    WHERE id = ?
+                    """,
+                arguments: ["deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", DomainFixtures.consentRecordId]
+            )
+        }
+
+        XCTAssertThrowsError(try service.fetchAndVerify(id: DomainFixtures.consentRecordId)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .consentTamper)
+            XCTAssertTrue(bam?.message?.contains("desync") == true)
+        }
+    }
+
+    func testIsValidBindingFalseWhenExpectedHashDiffers() throws {
+        let service = try ConsentService.makeInMemory(writeJSONFiles: false)
+        _ = try service.persist(DomainFixtures.goldenConsentRecord)
+
+        // Record verifies but expected binding hash is wrong → false, no throw.
+        let ok = try service.isValidBinding(
+            id: DomainFixtures.consentRecordId,
+            expectedHash: "sha256:" + String(repeating: "0", count: 64)
+        )
+        XCTAssertFalse(ok)
+        XCTAssertTrue(
+            try service.isValidBinding(
+                id: DomainFixtures.consentRecordId,
+                expectedHash: DomainFixtures.goldenConsentContentHash
+            )
+        )
     }
 
     func testWritesOptionalJSONUnderConsentDirectory() throws {
@@ -174,6 +266,10 @@ final class ConsentServiceTests: XCTestCase {
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows[0].id, DomainFixtures.consentRecordId)
         XCTAssertEqual(rows[0].contentHash, DomainFixtures.goldenConsentContentHash)
+        let decoded = rows[0].decodedRecord()
+        XCTAssertEqual(decoded?.subjectDisplayName, "Test Subject")
+        XCTAssertEqual(decoded?.subjectType, .self_)
+        XCTAssertEqual(decoded?.scope, .personalUse)
     }
 
     func testCurrentTimestampStripsFractionalSeconds() {

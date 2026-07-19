@@ -1,7 +1,6 @@
 import SwiftUI
 import BAMCore
 import BAMConsent
-import BAMPersistence
 import BAMResourcesUI
 
 struct RootView: View {
@@ -76,12 +75,11 @@ struct RootView: View {
 struct VoicesPlaceholderView: View {
     let featureFlags: FeatureFlags
     @State private var showConsent = false
-    @State private var consentService: ConsentService?
 
     var body: some View {
         Group {
-            if showConsent, let consentService {
-                ConsentRecordsView(service: consentService)
+            if showConsent {
+                ConsentLibraryShell(onDismiss: { showConsent = false })
             } else {
                 VStack(spacing: 16) {
                     Image(systemName: SidebarDestination.voices.systemImage)
@@ -95,7 +93,7 @@ struct VoicesPlaceholderView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 400)
                     Button("Voice consent attestations…") {
-                        openConsent()
+                        showConsent = true
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -111,39 +109,17 @@ struct VoicesPlaceholderView: View {
         }
         return "Voice cloning is not enabled yet (ff.voiceClone is off). You can still create consent records."
     }
-
-    private func openConsent() {
-        do {
-            if consentService == nil {
-                let db = try BAMPersistence.LibraryDatabase.openDefault()
-                let store = ConsentStore(
-                    database: db,
-                    consentDirectory: LibraryPaths.consent,
-                    writeJSONFiles: true
-                )
-                consentService = ConsentService(store: store)
-            }
-            showConsent = true
-        } catch {
-            // Fall back to in-memory so the form is still reachable if library open fails.
-            if let mem = try? ConsentService.makeInMemory(writeJSONFiles: false) {
-                consentService = mem
-                showConsent = true
-            }
-        }
-    }
 }
 
 /// Settings shell: feature flags + consent attestation entry point.
 struct SettingsPlaceholderView: View {
     let featureFlags: FeatureFlags
     @State private var showConsent = false
-    @State private var consentService: ConsentService?
 
     var body: some View {
         Group {
-            if showConsent, let consentService {
-                ConsentRecordsView(service: consentService)
+            if showConsent {
+                ConsentLibraryShell(onDismiss: { showConsent = false })
             } else {
                 Form {
                     Section("About") {
@@ -160,7 +136,7 @@ struct SettingsPlaceholderView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         Button("Manage consent records…") {
-                            openConsent()
+                            showConsent = true
                         }
                     }
 
@@ -176,26 +152,6 @@ struct SettingsPlaceholderView: View {
                 .formStyle(.grouped)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .navigationTitle(SidebarDestination.settings.title)
-            }
-        }
-    }
-
-    private func openConsent() {
-        do {
-            if consentService == nil {
-                let db = try BAMPersistence.LibraryDatabase.openDefault()
-                let store = ConsentStore(
-                    database: db,
-                    consentDirectory: LibraryPaths.consent,
-                    writeJSONFiles: true
-                )
-                consentService = ConsentService(store: store)
-            }
-            showConsent = true
-        } catch {
-            if let mem = try? ConsentService.makeInMemory(writeJSONFiles: false) {
-                consentService = mem
-                showConsent = true
             }
         }
     }

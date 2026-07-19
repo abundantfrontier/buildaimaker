@@ -82,9 +82,22 @@ public final class ConsentService: Sendable {
         return record
     }
 
-    /// Persists an already-built record (e.g. golden fixture). Recomputes hash if empty.
+    /// Persists an already-built record after policy + hash checks (append-only insert).
+    ///
+    /// Secondary third-party confirmation is UI-only and is **not** re-checked here.
+    /// Record policy still requires non-empty `subjectDisplayName` / attestor / statements
+    /// so import paths cannot store empty third_party names.
+    ///
+    /// - Parameter skipPolicyCheck: When `true`, only hash integrity is checked (test fixtures
+    ///   that intentionally stress store edges). Product callers must leave this `false`.
     @discardableResult
-    public func persist(_ record: ConsentRecord) throws -> ConsentRecord {
+    public func persist(
+        _ record: ConsentRecord,
+        skipPolicyCheck: Bool = false
+    ) throws -> ConsentRecord {
+        if !skipPolicyCheck {
+            try ConsentValidator.validateRecordPolicy(record)
+        }
         let ready: ConsentRecord
         if record.contentHash.isEmpty {
             ready = try record.withComputedContentHash()
@@ -103,8 +116,15 @@ public final class ConsentService: Sendable {
 
     // MARK: - Read
 
+    /// Verified fetch (default product path). Returns `nil` when missing; throws on tamper.
     public func fetch(id: String) throws -> ConsentRecord? {
-        try store.fetch(id: id)
+        guard try store.fetchIndex(id: id) != nil else { return nil }
+        return try store.fetchAndVerify(id: id)
+    }
+
+    /// Decodes without hash verification. Prefer `fetch` / `fetchAndVerify` for binding.
+    public func fetchUnverified(id: String) throws -> ConsentRecord? {
+        try store.fetchUnverified(id: id)
     }
 
     public func fetchAndVerify(id: String) throws -> ConsentRecord {
@@ -115,7 +135,8 @@ public final class ConsentService: Sendable {
         try store.listAll()
     }
 
-    /// True when a stored record exists and its contentHash still verifies.
+    /// True when a stored record exists, verifies, and matches `expectedHash`.
+    /// Throws on missing/tampered rows; returns `false` when verify succeeds but hash differs.
     public func isValidBinding(id: String, expectedHash: String) throws -> Bool {
         let record = try store.fetchAndVerify(id: id)
         return ConsentRecord.normalizeHash(record.contentHash)

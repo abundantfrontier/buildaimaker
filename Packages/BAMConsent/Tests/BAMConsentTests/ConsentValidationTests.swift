@@ -1,4 +1,5 @@
 import XCTest
+import BAMCore
 import BAMModels
 @testable import BAMConsent
 
@@ -88,5 +89,37 @@ final class ConsentValidationTests: XCTestCase {
 
     func testDefaultStatementTextsMatchGoldenFixture() {
         XCTAssertEqual(ConsentStatements.defaults, DomainFixtures.goldenConsentRecord.statements)
+    }
+
+    func testAllDraftErrorsMapToConsentRequired() {
+        let cases: [ConsentValidationError] = [
+            .missingSubjectDisplayName,
+            .missingAttestorUserLabel,
+            .statementsIncomplete,
+            .thirdPartySecondaryConfirmRequired,
+            .emptyStatements,
+        ]
+        for error in cases {
+            XCTAssertEqual(error.bamError.code, .consentRequired, "\(error)")
+        }
+    }
+
+    func testThirdPartySecondaryMessageDoesNotClaimMissingName() {
+        let msg = ConsentValidationError.thirdPartySecondaryConfirmRequired.errorDescription ?? ""
+        XCTAssertFalse(msg.lowercased().contains("display name"))
+        XCTAssertTrue(msg.lowercased().contains("secondary"))
+    }
+
+    func testRecordPolicyRejectsEmptyThirdPartyName() {
+        var record = DomainFixtures.goldenConsentRecord
+        record.subjectType = .thirdParty
+        record.subjectDisplayName = "  "
+        XCTAssertThrowsError(try ConsentValidator.validateRecordPolicy(record)) { error in
+            XCTAssertEqual(error as? ConsentValidationError, .missingSubjectDisplayName)
+        }
+    }
+
+    func testRecordPolicyAcceptsGoldenFixture() throws {
+        try ConsentValidator.validateRecordPolicy(DomainFixtures.goldenConsentRecord)
     }
 }

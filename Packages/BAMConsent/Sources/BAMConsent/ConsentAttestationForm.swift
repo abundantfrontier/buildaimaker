@@ -1,5 +1,6 @@
 import BAMCore
 import BAMModels
+import BAMPersistence
 import SwiftUI
 
 /// SwiftUI form for creating a voice-cloning `ConsentRecord`.
@@ -10,17 +11,21 @@ public struct ConsentAttestationForm: View {
     @Binding private var draft: ConsentDraft
     private let onSubmit: (ConsentDraft) -> Void
     private let onCancel: (() -> Void)?
+    /// External create/persist error surfaced while the form remains open.
+    private var submitError: Binding<String?>?
 
     @State private var validationMessage: String?
 
     public init(
         draft: Binding<ConsentDraft>,
         onSubmit: @escaping (ConsentDraft) -> Void,
-        onCancel: (() -> Void)? = nil
+        onCancel: (() -> Void)? = nil,
+        submitError: Binding<String?>? = nil
     ) {
         self._draft = draft
         self.onSubmit = onSubmit
         self.onCancel = onCancel
+        self.submitError = submitError
     }
 
     public var body: some View {
@@ -86,9 +91,9 @@ public struct ConsentAttestationForm: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            if let validationMessage {
+            if let message = displayedError {
                 Section {
-                    Text(validationMessage)
+                    Text(message)
                         .foregroundStyle(.red)
                         .font(.callout)
                 }
@@ -112,8 +117,18 @@ public struct ConsentAttestationForm: View {
             if newType != .thirdParty {
                 draft.thirdPartySecondaryConfirmed = false
             }
-            validationMessage = nil
+            clearErrors()
         }
+    }
+
+    private var displayedError: String? {
+        if let validationMessage, !validationMessage.isEmpty {
+            return validationMessage
+        }
+        if let external = submitError?.wrappedValue, !external.isEmpty {
+            return external
+        }
+        return nil
     }
 
     private func bindingForStatement(at index: Int) -> Binding<Bool> {
@@ -125,9 +140,14 @@ public struct ConsentAttestationForm: View {
             set: { newValue in
                 guard draft.acceptedStatements.indices.contains(index) else { return }
                 draft.acceptedStatements[index] = newValue
-                validationMessage = nil
+                clearErrors()
             }
         )
+    }
+
+    private func clearErrors() {
+        validationMessage = nil
+        submitError?.wrappedValue = nil
     }
 
     private func submit() {
@@ -148,19 +168,23 @@ public struct ConsentAttestationForm: View {
 /// Lists stored consent records and presents `ConsentAttestationForm` for new attestations.
 public struct ConsentRecordsView: View {
     private let service: ConsentService
+    private let onDismiss: (() -> Void)?
     private let onCreated: ((ConsentRecord) -> Void)?
 
     @State private var records: [ConsentIndexRecord] = []
     @State private var draft = ConsentDraft()
     @State private var showingForm = false
     @State private var lastError: String?
+    @State private var formError: String?
     @State private var lastCreatedHash: String?
 
     public init(
         service: ConsentService,
+        onDismiss: (() -> Void)? = nil,
         onCreated: ((ConsentRecord) -> Void)? = nil
     ) {
         self.service = service
+        self.onDismiss = onDismiss
         self.onCreated = onCreated
     }
 
@@ -172,8 +196,10 @@ public struct ConsentRecordsView: View {
                     onSubmit: { d in create(from: d) },
                     onCancel: {
                         showingForm = false
+                        formError = nil
                         lastError = nil
-                    }
+                    },
+                    submitError: $formError
                 )
             } else {
                 listBody
@@ -181,6 +207,15 @@ public struct ConsentRecordsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle("Voice consent")
+        .toolbar {
+            if let onDismiss, !showingForm {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        onDismiss()
+                    }
+                }
+            }
+        }
         .onAppear { reload() }
     }
 
@@ -201,25 +236,13 @@ public struct ConsentRecordsView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(records, id: \.id) { row in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(row.id)
-                                .font(.system(.body, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text("hash: \(shortHash(row.contentHash))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(row.createdAt)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 2)
+                        consentRow(row)
                     }
                 }
             }
 
             if let lastCreatedHash {
-                Section("Last created") {
+                Section("Last created hash") {
                     Text(lastCreatedHash)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
@@ -237,11 +260,59 @@ public struct ConsentRecordsView: View {
                 Button("New consent attestation…") {
                     draft = ConsentDraft()
                     lastError = nil
+                    formError = nil
                     showingForm = true
                 }
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func consentRow(_ row: ConsentIndexRecord) -> some View {
+        let decoded = row.decodedRecord()
+        VStack(alignment: .leading, spacing: 4) {
+            if let decoded {
+                Text(decoded.subjectDisplayName)
+                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text(subjectTypeLabel(decoded.subjectType))
+                    Text("·")
+                    Text(scopeLabel(decoded.scope))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Text(row.id)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text("hash: \(ConsentRecord.normalizeHash(row.contentHash))")
+                .font(.system(.caption2, design: .monospaced))
+                .textSelection(.enabled)
+                .foregroundStyle(.secondary)
+            Text(row.createdAt)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func subjectTypeLabel(_ type: ConsentSubjectType) -> String {
+        switch type {
+        case .self_: return "Self"
+        case .thirdParty: return "Third party"
+        case .syntheticOrPublicDomain: return "Synthetic / public domain"
+        }
+    }
+
+    private func scopeLabel(_ scope: ConsentScope) -> String {
+        switch scope {
+        case .personalUse: return "Personal use"
+        case .shareableExport: return "Shareable export"
+        case .researchOnly: return "Research only"
+        }
     }
 
     private func reload() {
@@ -257,20 +328,96 @@ public struct ConsentRecordsView: View {
             let record = try service.create(from: draft)
             lastCreatedHash = record.contentHash
             lastError = nil
+            formError = nil
             showingForm = false
             self.draft = ConsentDraft()
             reload()
             onCreated?(record)
         } catch let error as ConsentValidationError {
-            lastError = error.errorDescription
+            // Keep form open and surface where the user still is.
+            formError = error.errorDescription
         } catch {
-            lastError = error.localizedDescription
+            formError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Shared shell (Settings / Voices)
+
+/// Opens the library-backed consent UI with an explicit dismiss path.
+/// Fails closed with a visible message when the library cannot be opened (no silent in-memory store).
+public struct ConsentLibraryShell: View {
+    private let onDismiss: () -> Void
+    private let onCreated: ((ConsentRecord) -> Void)?
+
+    @State private var service: ConsentService?
+    @State private var openError: String?
+
+    public init(
+        onDismiss: @escaping () -> Void,
+        onCreated: ((ConsentRecord) -> Void)? = nil
+    ) {
+        self.onDismiss = onDismiss
+        self.onCreated = onCreated
+    }
+
+    public var body: some View {
+        Group {
+            if let service {
+                ConsentRecordsView(
+                    service: service,
+                    onDismiss: onDismiss,
+                    onCreated: onCreated
+                )
+            } else if let openError {
+                VStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 40, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text("Library unavailable")
+                        .font(.title2.weight(.semibold))
+                    Text(openError)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                    Text("Consent records cannot be created or reviewed until the library database opens successfully.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                    Button("Done", action: onDismiss)
+                        .keyboardShortcut(.cancelAction)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle("Voice consent")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done", action: onDismiss)
+                    }
+                }
+            } else {
+                ProgressView("Opening library…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .navigationTitle("Voice consent")
+                    .onAppear { openLibrary() }
+            }
         }
     }
 
-    private func shortHash(_ hash: String) -> String {
-        let hex = ConsentRecord.normalizeHash(hash)
-        guard hex.count > 16 else { return hex }
-        return String(hex.prefix(12)) + "…"
+    private func openLibrary() {
+        do {
+            let db = try LibraryDatabase.openDefault()
+            let store = ConsentStore(
+                database: db,
+                consentDirectory: LibraryPaths.consent,
+                writeJSONFiles: true
+            )
+            service = ConsentService(store: store)
+            openError = nil
+        } catch {
+            service = nil
+            openError = error.localizedDescription
+        }
     }
 }

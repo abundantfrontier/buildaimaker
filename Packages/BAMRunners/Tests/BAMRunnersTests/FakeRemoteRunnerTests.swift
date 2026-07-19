@@ -102,17 +102,24 @@ final class FakeRemoteRunnerTests: XCTestCase {
 
         var events: [RunnerEvent] = []
         var sawProgress = false
+        var progressCount = 0
         var sawHeartbeat = false
         var sawDownloadLog = false
         var resultStatus: String?
+        // Snapshot phase only on first progress. Do not poll remoteStatus on every
+        // progress event: the stream producer may already have advanced to
+        // `.downloading` while earlier progress is still buffered (Issue 1 race).
+        var phaseAtFirstProgress: RemoteJobPhase?
 
         for try await event in runner.run(job: spec, paths: paths) {
             events.append(event)
             switch event {
             case .progress:
                 sawProgress = true
-                phase = try await runner.remoteStatus(handle: handle)
-                XCTAssertEqual(phase, .running)
+                progressCount += 1
+                if phaseAtFirstProgress == nil {
+                    phaseAtFirstProgress = try await runner.remoteStatus(handle: handle)
+                }
             case .heartbeat:
                 sawHeartbeat = true
             case let .log(_, message, _):
@@ -128,6 +135,15 @@ final class FakeRemoteRunnerTests: XCTestCase {
         }
 
         XCTAssertTrue(sawProgress)
+        XCTAssertGreaterThanOrEqual(progressCount, 1)
+        // First progress is emitted after setPhase(.running) and before the
+        // multi-step loop finishes; with .testing intervals this is stable.
+        // Allow downloading only if the consumer was heavily scheduled behind —
+        // authoritative order is asserted via phaseHistory below.
+        XCTAssertTrue(
+            phaseAtFirstProgress == .running || phaseAtFirstProgress == .downloading,
+            "first progress phase was \(String(describing: phaseAtFirstProgress))"
+        )
         XCTAssertTrue(sawHeartbeat)
         XCTAssertTrue(sawDownloadLog)
         XCTAssertEqual(resultStatus, "succeeded")
@@ -135,7 +151,8 @@ final class FakeRemoteRunnerTests: XCTestCase {
         XCTAssertEqual(phase, .succeeded)
 
         let history = runner.phaseHistory(localJobId: spec.id)
-        // Must include the remote lifecycle milestones (order preserved).
+        // Authoritative lifecycle proof (phaseHistory is append-only under lock;
+        // not subject to consumer/producer stream buffering races).
         XCTAssertTrue(history.contains(.pending))
         XCTAssertTrue(history.contains(.uploading))
         XCTAssertTrue(history.contains(.queued))
@@ -194,11 +211,13 @@ final class FakeRemoteRunnerTests: XCTestCase {
     }
 
     func testCancelDuringPrepare() async throws {
+        // Long upload delay + cooperative slice sleep guarantees cancel wins
+        // before prepare advances to `.queued` (Issue 2).
         let config = FakeRemoteRunnerConfig(
             stepCount: 5,
             stepInterval: .milliseconds(5),
             connectDelay: .milliseconds(1),
-            uploadDelay: .milliseconds(80),
+            uploadDelay: .milliseconds(500),
             queueDelay: .milliseconds(1),
             downloadDelay: .milliseconds(1)
         )
@@ -212,22 +231,29 @@ final class FakeRemoteRunnerTests: XCTestCase {
         let prepareTask = Task {
             try await runner.prepare(job: spec, paths: paths)
         }
-        // Cancel while upload delay is in flight.
-        try await Task.sleep(for: .milliseconds(10))
+        // Cancel shortly after prepare enters the upload sleep window.
+        try await Task.sleep(for: .milliseconds(20))
         await runner.cancel(jobId: spec.id)
 
+        var sawCancelledError = false
         do {
             try await prepareTask.value
-            // May succeed if prepare finished before cancel observed — either way phase is terminal.
+            XCTFail("prepare must throw BAM_CANCELLED when cancel wins during upload")
         } catch let error as BAMError {
             XCTAssertEqual(error.code, .cancelled)
+            sawCancelledError = true
         }
+        XCTAssertTrue(sawCancelledError)
 
         let phase = try await runner.remoteStatus(
             handle: RemoteJobHandle(remoteJobId: "remote-\(spec.id)", localJobId: spec.id)
         )
-        // If cancel won, cancelled; if prepare finished first, queued.
-        XCTAssertTrue(phase == .cancelled || phase == .queued || phase == .uploading)
+        XCTAssertEqual(phase, .cancelled)
+
+        let history = runner.phaseHistory(localJobId: spec.id)
+        XCTAssertTrue(history.contains(.uploading) || history.contains(.pending))
+        XCTAssertTrue(history.contains(.cancelled))
+        XCTAssertFalse(history.contains(.succeeded))
     }
 
     func testCapabilitiesAndProtocolVersion() async throws {

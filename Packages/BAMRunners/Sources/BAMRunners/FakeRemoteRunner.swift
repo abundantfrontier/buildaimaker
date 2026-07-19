@@ -242,21 +242,9 @@ public final class FakeRemoteRunner: RemoteRunner, @unchecked Sendable {
             _ = try await submit(job: job, paths: paths)
         }
         try setPhase(localJobId: job.id, .uploading)
-        if config.uploadDelay > .zero {
-            try await Task.sleep(for: config.uploadDelay)
-        }
-        if isCancelled(job.id) {
-            try setPhase(localJobId: job.id, .cancelled)
-            throw BAMError(code: .cancelled, message: "Cancelled during remote upload")
-        }
+        try await sleepCancellable(config.uploadDelay, jobId: job.id, message: "Cancelled during remote upload")
         try setPhase(localJobId: job.id, .queued)
-        if config.queueDelay > .zero {
-            try await Task.sleep(for: config.queueDelay)
-        }
-        if isCancelled(job.id) {
-            try setPhase(localJobId: job.id, .cancelled)
-            throw BAMError(code: .cancelled, message: "Cancelled while queued remotely")
-        }
+        try await sleepCancellable(config.queueDelay, jobId: job.id, message: "Cancelled while queued remotely")
     }
 
     public func run(job: JobSpec, paths: JobPaths) -> AsyncThrowingStream<RunnerEvent, Error> {
@@ -297,6 +285,35 @@ public final class FakeRemoteRunner: RemoteRunner, @unchecked Sendable {
 
     private func isCancelled(_ jobId: String) -> Bool {
         lock.withLock { $0.cancelledJobIds.contains(jobId) }
+    }
+
+    /// Sleep in short slices so cooperative `cancel(jobId:)` is observed promptly.
+    private func sleepCancellable(
+        _ duration: Duration,
+        jobId: String,
+        message: String
+    ) async throws {
+        if isCancelled(jobId) {
+            try setPhase(localJobId: jobId, .cancelled)
+            throw BAMError(code: .cancelled, message: message)
+        }
+        guard duration > .zero else { return }
+
+        let slice = Duration.milliseconds(5)
+        var remaining = duration
+        while remaining > .zero {
+            if Task.isCancelled || isCancelled(jobId) {
+                try setPhase(localJobId: jobId, .cancelled)
+                throw BAMError(code: .cancelled, message: message)
+            }
+            let step = remaining < slice ? remaining : slice
+            try await Task.sleep(for: step)
+            remaining -= step
+        }
+        if isCancelled(jobId) {
+            try setPhase(localJobId: jobId, .cancelled)
+            throw BAMError(code: .cancelled, message: message)
+        }
     }
 
     private func setPhase(localJobId: String, _ phase: RemoteJobPhase) throws {

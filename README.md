@@ -17,11 +17,11 @@ buildaimaker/
 │   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
 │   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
 │   ├── BAMPersistence/      # GRDB library.sqlite + migrations
-│   ├── BAMModelCatalog/     # Living catalog, local scan, fixture/HF install
+│   ├── BAMJobs/             # Job queue, state machine, fake TrainingRunner
+│   ├── BAMRunners/          # Runner Protocol v1, process supervisor, path jail
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/
-│   └── fixtures/models/tiny-qwen-mlx/  # Offline toy model (not real MLX weights)
-├── Catalog/models.json      # Living supported model list (fixture + Qwen2.5 MLX)
+├── Workers/                 # Helpers (bam-echo-worker for protocol CI; llm later)
+├── Catalog/                 # Model catalog (future)
 ├── Docs/                    # Design docs
 └── Package.swift            # Root SPM package
 ```
@@ -66,26 +66,6 @@ Run unit tests:
 swift test
 ```
 
-## Offline fixture model
-
-CI and offline dogfood use a **tiny bundled fixture**, not multi-GB weights:
-
-| Path | Role |
-|------|------|
-| `Workers/fixtures/models/tiny-qwen-mlx/` | Living fixture (stub config + tokenizer JSON) |
-| `Packages/BAMModelCatalog/.../Resources/fixtures/tiny-qwen-mlx/` | Same files, bundled for install |
-| Catalog `sourceKey` | `buildaimaker/tiny-qwen-mlx-fixture` |
-
-**Real MLX weights** (e.g. `mlx-community/Qwen2.5-*-Instruct-4bit`) download separately via the optional Hugging Face Hub path when `ff.hfHubDownload` is on, or by placing files under `models/base/`. The fixture’s `model.safetensors` is a placeholder only (`WEIGHTS_NOT_INCLUDED.txt`).
-
-In the Models UI, **Install fixture model** copies the fixture into:
-
-```text
-~/Library/Application Support/BuildAIMaker/models/base/tiny-qwen-mlx-fixture/
-```
-
-with **no network**. Unit tests cover this offline path only.
-
 ## Feature flags
 
 All flags live in `BAMCore.FeatureFlags` and **default to off**:
@@ -100,7 +80,6 @@ All flags live in `BAMCore.FeatureFlags` and **default to off**:
 | `ff.cloudRunner` | Remote/cloud runner (kept off in v1) |
 | `ff.knowledgePacks` | Knowledge/RAG packs (Phase 2+) |
 | `ff.telemetryOptIn` | Opt-in diagnostics |
-| `ff.hfHubDownload` | Optional HF Hub model download (dogfood; CI stays offline) |
 
 ## Library root
 
@@ -117,7 +96,7 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMModelCatalog (no GPU, no network for models)
+- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMJobs, BAMRunners (no GPU)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
@@ -125,8 +104,9 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
-- **BAMModelCatalog** — living `Catalog/models.json`, local `models/base` scan, offline fixture install + optional HF Hub interface (`ModelInstallService`, Keychain token stub).
+- **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
+- **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
 
 ## Non-goals (current tree)
 
-No training runners, no Python env, no real dataset import UI yet. HF Hub download client is a stub (`NoopHFHubClient`) until dogfood needs real weights.
+No real mlx-lm / F5-TTS training yet (see PR-LLM-Materialize / PR-VoiceSpike). No real dataset import UI yet.

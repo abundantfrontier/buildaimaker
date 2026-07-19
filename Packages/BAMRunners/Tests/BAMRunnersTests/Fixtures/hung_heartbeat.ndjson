@@ -1,0 +1,2 @@
+{"v":1,"type":"hello","workerId":"bam-echo-worker","workerVersion":"0.1.0","caps":{"modalities":["llm"],"resume":false,"modelFamilies":["echo"]}}
+{"v":1,"type":"heartbeat","rssBytes":1000,"gpuUtil":0.0,"cpuUtil":0.0,"ts":"2026-07-19T00:00:00Z"}

@@ -1,0 +1,2 @@
+{"v":1,"type":"hello","workerId":"bam-echo-worker","workerVersion":"0.1.0","caps":{"modalities":["llm"],"resume":false,"modelFamilies":[]}}
+this is not json

@@ -96,6 +96,17 @@ final class RuntimeIntegrityTests: XCTestCase {
         XCTAssertNoThrow(try RuntimeIntegrity.verifyPinsRoot(tempDir))
     }
 
+    /// Committed `Workers/python/runtime-pins.json` must match lock + entry on disk.
+    func testCommittedRuntimePinsMatchRepoArtifacts() throws {
+        guard let pinsRoot = findRepoPinsRoot() else {
+            XCTFail("could not locate Workers/python from \(#filePath)")
+            return
+        }
+        XCTAssertNoThrow(
+            try RuntimeIntegrity.verifyPinsRoot(pinsRoot, options: .pinsOnly)
+        )
+    }
+
     // MARK: - Golden: mismatch fails closed
 
     func testLockfileMismatchFailsWithBAMRuntimeIntegrity() throws {
@@ -156,12 +167,137 @@ final class RuntimeIntegrityTests: XCTestCase {
         XCTAssertThrowsError(
             try RuntimeIntegrity.resolvedFile(relativePath: "../etc/passwd", under: tempDir)
         ) { error in
-            XCTAssertEqual((error as? BAMError)?.code, .runtimeIntegrity)
+            XCTAssertEqual((error as? BAMError)?.code, .pathEscape)
         }
         XCTAssertThrowsError(
             try RuntimeIntegrity.resolvedFile(relativePath: "/etc/passwd", under: tempDir)
         ) { error in
-            XCTAssertEqual((error as? BAMError)?.code, .runtimeIntegrity)
+            XCTAssertEqual((error as? BAMError)?.code, .pathEscape)
+        }
+        XCTAssertThrowsError(
+            try RuntimeIntegrity.resolvedFile(relativePath: "a\0b", under: tempDir)
+        ) { error in
+            let code = (error as? BAMError)?.code
+            XCTAssertTrue(code == .pathEscape || code == .runtimeIntegrity)
+        }
+    }
+
+    /// Symlink pointing outside the managed root must fail the allowlist.
+    func testSymlinkEscapeRejectedForInterpreter() throws {
+        try writeFixture(lock: "l\n", entry: "e\n")
+        let lockHash = RuntimeIntegrity.sha256Hex(of: Data("l\n".utf8))
+        let entryHash = RuntimeIntegrity.sha256Hex(of: Data("e\n".utf8))
+        let pins = RuntimePins(
+            appVersion: "0.1.0",
+            lockfile: RuntimePinFile(relativePath: "requirements.lock", sha256: lockHash),
+            interpreterRelativePath: "bin/python3",
+            entries: [
+                RuntimePinEntry(
+                    id: "llm_worker.main",
+                    relativePath: "llm_worker/main.py",
+                    sha256: entryHash
+                ),
+            ]
+        )
+
+        let envRoot = tempDir.appendingPathComponent("env", isDirectory: true)
+        let binDir = envRoot.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+
+        // Outside target (not under envRoot).
+        let outside = tempDir.appendingPathComponent("outside-python")
+        try Data("# fake\n".utf8).write(to: outside)
+
+        let link = binDir.appendingPathComponent("python3")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path,
+            withDestinationPath: outside.path
+        )
+
+        XCTAssertThrowsError(
+            try RuntimeIntegrity.verify(
+                pins: pins,
+                pinsRoot: tempDir,
+                options: .init(requireInterpreterPresent: true, managedEnvRoot: envRoot)
+            )
+        ) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .pathEscape)
+            XCTAssertTrue(
+                bam?.message?.contains("symlink") == true
+                    || bam?.message?.contains("escape") == true
+            )
+        }
+
+        // Also fails when presence is not required if the symlink exists.
+        XCTAssertThrowsError(
+            try RuntimeIntegrity.verify(
+                pins: pins,
+                pinsRoot: tempDir,
+                options: .init(requireInterpreterPresent: false, managedEnvRoot: envRoot)
+            )
+        ) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .pathEscape)
+        }
+    }
+
+    func testSymlinkEscapeRejectedForPinEntry() throws {
+        let lockBody = "lock\n"
+        try lockBody.write(
+            to: tempDir.appendingPathComponent("requirements.lock"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let lockHash = RuntimeIntegrity.sha256Hex(of: Data(lockBody.utf8))
+
+        let outside = tempDir.appendingPathComponent("evil-entry.py")
+        try Data("print('evil')\n".utf8).write(to: outside)
+        let workerDir = tempDir.appendingPathComponent("llm_worker", isDirectory: true)
+        try FileManager.default.createDirectory(at: workerDir, withIntermediateDirectories: true)
+        let link = workerDir.appendingPathComponent("main.py")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path,
+            withDestinationPath: outside.path
+        )
+
+        // outside is still under tempDir (pins root) — use a sibling outside pins root.
+        let pinsRoot = tempDir.appendingPathComponent("pins", isDirectory: true)
+        try FileManager.default.createDirectory(at: pinsRoot, withIntermediateDirectories: true)
+        try lockBody.write(
+            to: pinsRoot.appendingPathComponent("requirements.lock"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let realOutside = tempDir.appendingPathComponent("totally-outside.py")
+        try Data("x\n".utf8).write(to: realOutside)
+        let pinsWorker = pinsRoot.appendingPathComponent("llm_worker", isDirectory: true)
+        try FileManager.default.createDirectory(at: pinsWorker, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: pinsWorker.appendingPathComponent("main.py").path,
+            withDestinationPath: realOutside.path
+        )
+
+        // Wait — realOutside is under tempDir parent of pinsRoot; pinsRoot is tempDir/pins,
+        // realOutside is tempDir/totally-outside.py — outside pinsRoot. Good.
+        // But hashing would still work if we didn't jail. Jail should fail.
+
+        let pins = RuntimePins(
+            appVersion: "0.1.0",
+            lockfile: RuntimePinFile(relativePath: "requirements.lock", sha256: lockHash),
+            interpreterRelativePath: "bin/python3",
+            entries: [
+                RuntimePinEntry(
+                    id: "llm_worker.main",
+                    relativePath: "llm_worker/main.py",
+                    sha256: RuntimeIntegrity.sha256Hex(of: Data("x\n".utf8))
+                ),
+            ]
+        )
+        let encoder = JSONEncoder()
+        try encoder.encode(pins).write(to: pinsRoot.appendingPathComponent("runtime-pins.json"))
+
+        XCTAssertThrowsError(try RuntimeIntegrity.verifyPinsRoot(pinsRoot)) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .pathEscape)
         }
     }
 
@@ -224,6 +360,26 @@ final class RuntimeIntegrityTests: XCTestCase {
         )
     }
 
+    func testDecodeRejectsEmptyEntriesAndUnsupportedVersion() throws {
+        let emptyEntries = """
+        {"version":1,"appVersion":"0.1.0","lockfile":{"relativePath":"requirements.lock","sha256":"\(String(repeating: "a", count: 64))"},"interpreterRelativePath":"bin/python3","entries":[]}
+        """
+        XCTAssertThrowsError(
+            try RuntimePins.decode(Data(emptyEntries.utf8))
+        ) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .runtimeIntegrity)
+        }
+
+        let badVersion = """
+        {"version":2,"appVersion":"0.1.0","lockfile":{"relativePath":"requirements.lock","sha256":"\(String(repeating: "a", count: 64))"},"interpreterRelativePath":"bin/python3","entries":[{"id":"x","relativePath":"x.py","sha256":"\(String(repeating: "b", count: 64))"}]}
+        """
+        XCTAssertThrowsError(
+            try RuntimePins.decode(Data(badVersion.utf8))
+        ) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .runtimeIntegrity)
+        }
+    }
+
     func testBAMErrorCodeRuntimeIntegrityExists() {
         XCTAssertEqual(BAMErrorCode.runtimeIntegrity.rawValue, "BAM_RUNTIME_INTEGRITY")
         XCTAssertTrue(BAMErrorCode.allCases.contains(.runtimeIntegrity))
@@ -238,21 +394,122 @@ final class RuntimeIntegrityTests: XCTestCase {
         XCTAssertFalse(status.isInstalled)
     }
 
+    func testInstallStubUsesCancelledNotRuntimeIntegrity() async {
+        let installer = RuntimeInstaller(appVersion: "0.1.0", pinsRoot: nil)
+        let result = await installer.installStub()
+        guard case .failure(let error) = result else {
+            XCTFail("expected failure")
+            return
+        }
+        XCTAssertEqual(error.code, .cancelled)
+        XCTAssertNotEqual(error.code, .runtimeIntegrity)
+    }
+
+    // MARK: - WorkerTrust / WorkerSpawn
+
     func testWorkerTrustDebugAllowsMissingTeamIDForLocalBinary() throws {
-        // Create an empty file — unsigned → treated as ad-hoc.
         let helper = tempDir.appendingPathComponent("bam-llm-worker")
         try Data().write(to: helper)
-        try WorkerTrust.verifyHelperLaunch(helperURL: helper, mode: .debug)
+        try WorkerTrust.verifyHelperLaunch(
+            helperURL: helper,
+            mode: .debug,
+            expectedBundleURL: nil,
+            requireHelpersDirectory: false
+        )
     }
 
     func testWorkerTrustReleaseRejectsUnsignedHelper() throws {
         let helper = tempDir.appendingPathComponent("bam-llm-worker")
         try Data().write(to: helper)
         XCTAssertThrowsError(
-            try WorkerTrust.verifyHelperLaunch(helperURL: helper, mode: .release)
+            try WorkerTrust.verifyHelperLaunch(
+                helperURL: helper,
+                mode: .release,
+                requireHelpersDirectory: false
+            )
+        ) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .runtimeIntegrity)
+            XCTAssertTrue(
+                bam?.message?.contains("signature") == true
+                    || bam?.message?.contains("TeamID") == true
+            )
+        }
+    }
+
+    func testWorkerTrustRejectsBadHelperName() throws {
+        let helper = tempDir.appendingPathComponent("evil-binary")
+        try Data().write(to: helper)
+        XCTAssertThrowsError(
+            try WorkerTrust.verifyHelperLaunch(
+                helperURL: helper,
+                mode: .debug,
+                requireHelpersDirectory: false
+            )
         ) { error in
             XCTAssertEqual((error as? BAMError)?.code, .runtimeIntegrity)
+            XCTAssertTrue((error as? BAMError)?.message?.contains("not allowed") == true)
         }
+    }
+
+    func testWorkerTrustEnforcesHelpersDirectory() throws {
+        let bundle = tempDir.appendingPathComponent("Fake.app", isDirectory: true)
+        let helpers = WorkerTrust.helpersDirectory(inBundle: bundle)
+        try FileManager.default.createDirectory(at: helpers, withIntermediateDirectories: true)
+
+        let outside = tempDir.appendingPathComponent("bam-llm-worker")
+        try Data().write(to: outside)
+
+        XCTAssertThrowsError(
+            try WorkerTrust.verifyHelperLaunch(
+                helperURL: outside,
+                mode: .debug,
+                expectedBundleURL: bundle,
+                requireHelpersDirectory: true
+            )
+        ) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .runtimeIntegrity)
+            XCTAssertTrue((error as? BAMError)?.message?.contains("Helpers") == true)
+        }
+    }
+
+    func testWorkerTrustAllowedBasenames() {
+        XCTAssertTrue(WorkerTrust.isAllowedHelperBasename("bam-llm-worker"))
+        XCTAssertTrue(WorkerTrust.isAllowedHelperBasename("bam-voice-worker"))
+        XCTAssertFalse(WorkerTrust.isAllowedHelperBasename("llm-worker"))
+        XCTAssertFalse(WorkerTrust.isAllowedHelperBasename("bam-worker"))
+        XCTAssertFalse(WorkerTrust.isAllowedHelperBasename("bam-llm"))
+        XCTAssertFalse(WorkerTrust.isAllowedHelperBasename("../bam-llm-worker"))
+    }
+
+    func testWorkerSpawnPrepareFindsExplicitHelper() throws {
+        let helper = tempDir.appendingPathComponent("bam-llm-worker")
+        try Data().write(to: helper)
+        let prepared = try WorkerSpawn.prepareHelperLaunch(
+            helperName: "bam-llm-worker",
+            bundleURL: nil,
+            explicitHelperURL: helper,
+            mode: .debug
+        )
+        XCTAssertEqual(prepared.url.path, helper.path)
+        XCTAssertEqual(prepared.name, "bam-llm-worker")
+    }
+
+    func testCodeIdentityHasTeamIDSemantics() {
+        let withTeam = WorkerTrust.CodeIdentity(
+            teamID: "ABCD123456",
+            signingID: "com.example",
+            signatureValid: true
+        )
+        XCTAssertTrue(withTeam.hasTeamID)
+        let without = WorkerTrust.CodeIdentity(
+            teamID: nil,
+            signingID: nil,
+            signatureValid: false
+        )
+        XCTAssertFalse(without.hasTeamID)
+        let empty = WorkerTrust.CodeIdentity(teamID: "", signingID: nil, signatureValid: false)
+        XCTAssertFalse(empty.hasTeamID)
     }
 
     // MARK: - Fixtures
@@ -277,5 +534,20 @@ final class RuntimeIntegrityTests: XCTestCase {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(pins)
         try data.write(to: tempDir.appendingPathComponent("runtime-pins.json"))
+    }
+
+    private func findRepoPinsRoot() -> URL? {
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<10 {
+            let candidate = dir.appendingPathComponent("Workers/python", isDirectory: true)
+            let pins = candidate.appendingPathComponent("runtime-pins.json")
+            if FileManager.default.fileExists(atPath: pins.path) {
+                return candidate
+            }
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { break }
+            dir = parent
+        }
+        return RuntimePaths.resolvePinsRoot()
     }
 }

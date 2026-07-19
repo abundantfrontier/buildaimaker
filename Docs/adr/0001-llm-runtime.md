@@ -58,13 +58,28 @@ Example: `Workers/python/runtime-pins.json`
 
 Fields: `version`, `appVersion`, `lockfile{relativePath,sha256}`, `interpreterRelativePath`, `entries[{id,relativePath,sha256}]`, optional `sizeBudgetBytes` / `sizeBudgetLabel`.
 
-### Helper
+### Helper + L1 spawn gate
 
 `Workers/bam-llm-worker` builds the thin native stub that will ship as `Contents/Helpers/bam-llm-worker`. Spike prints JSON `hello` after L2 verify (no real training).
+
+UI / future supervisor **must** call `WorkerSpawn.prepareHelperLaunch` before any `Process` launch:
+
+1. Basename `bam-*-worker`
+2. When a bundle URL is available: path under `Contents/Helpers` (symlink-resolved)
+3. `SecStaticCodeCheckValidity` + TeamID policy via `WorkerTrust.verifyHelperLaunch`
+4. Only then set `Process.executableURL`
+
+Settings → **Validate helper (L1)** exercises this gate without starting a worker.
+
+### Path jail (symlink-aware)
+
+`RuntimeIntegrity.resolvedFile` / `assertPathUnderRoot` use `resolvingSymlinksInPath()` on both root and candidate before the prefix check. A `bin/python3 → /usr/bin/python3` link fails with `BAM_PATH_ESCAPE`.
 
 ## SPDX inventory (planned pins — spike placeholders)
 
 > **Not legal advice.** Counsel review required before public paid launch (K24). SPDX strings below reflect common upstream declarations for the **placeholder** lock versions; re-verify against the exact wheel/source artifact at ship time.
+>
+> **Scope:** Primary direct + notable transitive deps are listed here. The complete lock sketch — including every transitive pin — carries per-line `SPDX:` comments in `Workers/python/requirements.lock`. Keep both in sync when freezing for production.
 
 | Package | Placeholder pin | SPDX (planned) | Role |
 |---------|-----------------|----------------|------|
@@ -85,6 +100,13 @@ Fields: `version`, `appVersion`, `lockfile{relativePath,sha256}`, `interpreterRe
 | urllib3 | 2.2.3 | MIT | HTTP transport |
 | jinja2 | 3.1.4 | BSD-3-Clause | Templates |
 | typing-extensions | 4.12.2 | PSF-2.0 | Typing |
+| filelock | 3.16.1 | Unlicense | Cache locking (transitive) |
+| fsspec | 2024.10.0 | BSD-3-Clause | FS abstraction (transitive) |
+| packaging | 24.2 | Apache-2.0 OR BSD-2-Clause | Version parsing (transitive) |
+| charset-normalizer | 3.4.0 | MIT | Encoding (transitive) |
+| idna | 3.10 | BSD-3-Clause | IDNA (transitive) |
+| markupsafe | 3.0.2 | BSD-3-Clause | Jinja dependency |
+| regex | 2024.11.6 | Apache-2.0 | Tokenization helper |
 
 Voice pins (F5-TTS, etc.) land in a separate ADR after PR-VoiceSpike.
 
@@ -119,6 +141,7 @@ Voice pins (F5-TTS, etc.) land in a separate ADR after PR-VoiceSpike.
 | Entry stub | `Workers/python/llm_worker/main.py` |
 | Helper stub | `Workers/bam-llm-worker` |
 | Integrity API | `BAMCore.RuntimeIntegrity`, `RuntimePins`, `RuntimePaths` |
-| L1 TeamID API | `BAMCore.WorkerTrust` |
-| Installer stub | `BAMCore.RuntimeInstaller` |
-| Settings CTA | App Settings → Install training runtime |
+| L1 TeamID API | `BAMCore.WorkerTrust` (`SecStaticCodeCheckValidity` + TeamID) |
+| L1 spawn gate | `BAMCore.WorkerSpawn.prepareHelperLaunch` |
+| Installer stub | `BAMCore.RuntimeInstaller` (stub failure = `BAM_CANCELLED`, not integrity) |
+| Settings CTA | Install training runtime + Validate helper (L1) |

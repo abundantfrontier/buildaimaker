@@ -130,7 +130,11 @@ public enum RuntimeIntegrity: Sendable {
 
     // MARK: - Path helpers
 
-    /// Resolve `relativePath` under `root`, rejecting `..` / absolute escapes.
+    /// Resolve `relativePath` under `root`, rejecting `..` / absolute / symlink escapes.
+    ///
+    /// After building the candidate, both root and candidate are checked with
+    /// `resolvingSymlinksInPath()` so a `bin/python3 → /usr/bin/python3` style
+    /// link cannot pass the allowlist.
     public static func resolvedFile(relativePath: String, under root: URL) throws -> URL {
         let trimmed = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -138,7 +142,7 @@ public enum RuntimeIntegrity: Sendable {
         }
         guard !trimmed.hasPrefix("/"), !trimmed.contains("\0") else {
             throw BAMError(
-                code: .runtimeIntegrity,
+                code: .pathEscape,
                 message: "absolute or invalid path in pins: \(trimmed)"
             )
         }
@@ -150,27 +154,47 @@ public enum RuntimeIntegrity: Sendable {
         for part in components {
             if part.isEmpty || part == ".." {
                 throw BAMError(
-                    code: .runtimeIntegrity,
+                    code: .pathEscape,
                     message: "path escape in pins: \(trimmed)"
                 )
             }
         }
 
-        var url = root.standardizedFileURL
+        var candidate = root.standardizedFileURL
         for part in components where part != "." {
-            url = url.appendingPathComponent(part, isDirectory: false)
+            candidate = candidate.appendingPathComponent(part, isDirectory: false)
         }
-        let standardized = url.standardizedFileURL
-        let rootPath = root.standardizedFileURL.path
-        let filePath = standardized.path
-        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
-        guard filePath.hasPrefix(prefix) || filePath == rootPath else {
+        candidate = candidate.standardizedFileURL
+
+        try assertPathUnderRoot(candidate, root: root, relativePath: trimmed)
+        return candidate
+    }
+
+    /// Fail closed if `candidate` (after symlink resolution) is not under `root`
+    /// (also after symlink resolution).
+    public static func assertPathUnderRoot(
+        _ candidate: URL,
+        root: URL,
+        relativePath: String = ""
+    ) throws {
+        let rootReal = root.resolvingSymlinksInPath().standardizedFileURL
+        let pathReal = candidate.resolvingSymlinksInPath().standardizedFileURL
+        guard isPath(pathReal, under: rootReal) else {
+            let label = relativePath.isEmpty ? pathReal.path : relativePath
             throw BAMError(
-                code: .runtimeIntegrity,
-                message: "resolved path escaped pins root: \(trimmed)"
+                code: .pathEscape,
+                message: "symlink or path escape outside root: \(label) → \(pathReal.path)"
             )
         }
-        return standardized
+    }
+
+    /// True when `path` is exactly `root` or a strict descendant (separator-aware).
+    public static func isPath(_ path: URL, under root: URL) -> Bool {
+        let p = path.standardizedFileURL.path
+        let r = root.standardizedFileURL.path
+        if p == r { return true }
+        let prefix = r.hasSuffix("/") ? r : r + "/"
+        return p.hasPrefix(prefix)
     }
 
     public static func verifyInterpreterPath(
@@ -182,6 +206,9 @@ public enum RuntimeIntegrity: Sendable {
         let envRoot = managedEnvRoot.standardizedFileURL
         let interpreter = try resolvedFile(relativePath: relativePath, under: envRoot)
 
+        // Re-check after existence: a race or dangling link must not pass.
+        try assertPathUnderRoot(interpreter, root: envRoot, relativePath: relativePath)
+
         if requirePresent {
             var isDir: ObjCBool = false
             guard fileManager.fileExists(atPath: interpreter.path, isDirectory: &isDir),
@@ -192,6 +219,8 @@ public enum RuntimeIntegrity: Sendable {
                     message: "managed interpreter missing: \(interpreter.path)"
                 )
             }
+            // Existence may have followed a symlink created after the first check.
+            try assertPathUnderRoot(interpreter, root: envRoot, relativePath: relativePath)
         }
     }
 }

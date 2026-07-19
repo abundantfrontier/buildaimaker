@@ -123,8 +123,9 @@ public struct RuntimeInstaller: Sendable {
 
     /// Simulated install for UI wiring. Does not download.
     ///
-    /// Reports progress callbacks then fails with a clear “not implemented”
-    /// message so Settings can show size budget + progress chrome without CI cost.
+    /// Reports progress callbacks then returns `.cancelled` so Settings can show
+    /// size budget + progress chrome without CI cost. **Does not** use
+    /// `BAM_RUNTIME_INTEGRITY` (reserved for pin/path/signature failures).
     public func installStub(
         onProgress: @Sendable (RuntimeInstallProgress) -> Void = { _ in }
     ) async -> Result<Void, BAMError> {
@@ -149,7 +150,7 @@ public struct RuntimeInstaller: Sendable {
         ))
 
         return .failure(BAMError(
-            code: .runtimeIntegrity,
+            code: .cancelled,
             message: "training runtime install is a stub; multi-GB wheel download not performed (budget \(label))"
         ))
     }

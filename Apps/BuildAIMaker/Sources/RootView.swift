@@ -82,6 +82,7 @@ struct SettingsPlaceholderView: View {
     @State private var installProgress = RuntimeInstallProgress()
     @State private var installMessage: String?
     @State private var isInstalling = false
+    @State private var helperValidationMessage: String?
 
     private var installer: RuntimeInstaller {
         RuntimeInstaller(appVersion: RuntimePaths.spikeAppVersion)
@@ -159,7 +160,29 @@ struct SettingsPlaceholderView: View {
             } header: {
                 Text("Training runtime")
             } footer: {
-                Text("Two-layer trust: UI launches only TeamID-signed Helpers/bam-*-worker (L1); helper verifies runtime-pins.json before exec (L2). Fail closed: BAM_RUNTIME_INTEGRITY.")
+                Text("Two-layer trust: UI launches only TeamID-signed Helpers/bam-*-worker via WorkerSpawn.prepareHelperLaunch (L1); helper verifies runtime-pins.json before exec (L2). Fail closed: BAM_RUNTIME_INTEGRITY.")
+            }
+
+            Section {
+                Text("Before any Process launch, the supervisor must call WorkerSpawn.prepareHelperLaunch (L1 TeamID / validity). This control exercises that gate without starting a worker.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                if let helperValidationMessage {
+                    Text(helperValidationMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                Button {
+                    validateHelperL1()
+                } label: {
+                    Label("Validate helper (L1)", systemImage: "checkmark.shield")
+                }
+                .help("Resolve bam-llm-worker and run WorkerTrust via WorkerSpawn.prepareHelperLaunch.")
+            } header: {
+                Text("Worker trust")
             }
 
             Section("Feature flags") {
@@ -187,6 +210,32 @@ struct SettingsPlaceholderView: View {
         ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
+    /// L1 call site: only path the UI uses to approve a helper before spawn.
+    private func validateHelperL1() {
+        do {
+            // Prefer bundled Helpers when running as a real .app; else dev build product.
+            let bundleURL: URL? = {
+                let b = Bundle.main.bundleURL
+                let helpers = WorkerTrust.helpersDirectory(inBundle: b)
+                if FileManager.default.fileExists(atPath: helpers.path) {
+                    return b
+                }
+                return nil
+            }()
+            let prepared = try WorkerSpawn.prepareHelperLaunch(
+                helperName: WorkerSpawn.llmWorkerName,
+                bundleURL: bundleURL,
+                mode: WorkerTrust.defaultMode
+            )
+            helperValidationMessage =
+                "L1 OK (\(prepared.mode)): \(prepared.url.path)"
+        } catch let error as BAMError {
+            helperValidationMessage = error.errorDescription ?? error.code.rawValue
+        } catch {
+            helperValidationMessage = String(describing: error)
+        }
+    }
+
     @MainActor
     private func runInstallStub() async {
         isInstalling = true
@@ -209,8 +258,9 @@ struct SettingsPlaceholderView: View {
             installMessage = "Training runtime installed."
         case .failure(let error):
             installProgress.phase = .failed
+            // Stub uses BAM_CANCELLED — not BAM_RUNTIME_INTEGRITY.
             installMessage = error.errorDescription
-                ?? "Install failed (\(error.code.rawValue)). Multi-GB download is not performed in this spike."
+                ?? "Install not performed (\(error.code.rawValue)). Multi-GB download is deferred in this spike."
         }
     }
 }

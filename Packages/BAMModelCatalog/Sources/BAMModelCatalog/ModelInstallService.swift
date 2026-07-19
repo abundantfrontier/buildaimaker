@@ -80,12 +80,18 @@ public struct ModelInstallService: Sendable {
         let dest = fixtureInstallDirectory
         try ensureDestinationUnderModelsBase(dest)
 
-        let alreadyPresent = fm.fileExists(atPath: dest.path)
-        if alreadyPresent {
-            if !overwrite {
-                let record = makeFixtureRecord(localPath: dest.path)
-                return ModelInstallResult(modelRecord: record, alreadyPresent: true)
-            }
+        let destExists = fm.fileExists(atPath: dest.path)
+        let destValid = destExists && Self.layoutLooksValid(at: dest)
+
+        // Valid install + no overwrite → return existing without touching disk.
+        if destValid, !overwrite {
+            let record = makeFixtureRecord(localPath: dest.path)
+            return ModelInstallResult(modelRecord: record, alreadyPresent: true)
+        }
+
+        // Incomplete/corrupt dest with overwrite:false is treated as missing and reinstalled.
+        // Complete dest with overwrite:true is replaced.
+        if destExists {
             try fm.removeItem(at: dest)
         }
 
@@ -111,12 +117,16 @@ public struct ModelInstallService: Sendable {
         }
 
         let record = makeFixtureRecord(localPath: dest.path)
-        return ModelInstallResult(modelRecord: record, alreadyPresent: alreadyPresent)
+        return ModelInstallResult(modelRecord: record, alreadyPresent: destValid)
     }
 
     // MARK: - Optional HF Hub
 
     /// Downloads a catalog model from Hugging Face Hub when `hfHubDownloadEnabled`.
+    ///
+    /// Stages into a temporary directory under `models/base`, then atomically
+    /// replaces the final destination. On failure the previous install (if any)
+    /// is left untouched.
     ///
     /// **Not used in CI.** Throws `BAM_CAPABILITY_UNSUPPORTED` when the flag is off.
     public func downloadFromHub(
@@ -144,28 +154,69 @@ public struct ModelInstallService: Sendable {
 
         let fm = FileManager.default
         try fm.createDirectory(at: modelsBaseURL, withIntermediateDirectories: true)
-        if fm.fileExists(atPath: dest.path) {
-            try fm.removeItem(at: dest)
+
+        // Stage under modelsBase (same volume) so replace/move is reliable.
+        // Leading-dot name keeps staging out of casual LocalModelScanner lists
+        // (scanner skips hidden files).
+        let stagingName = ".staging-\(dirName)-\(UUID().uuidString.lowercased())"
+        guard LibraryPaths.validatedPathComponent(stagingName) != nil else {
+            throw BAMError(code: .pathEscape, message: "Invalid staging directory name")
         }
-        try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        let staging = modelsBaseURL.appendingPathComponent(stagingName, isDirectory: true)
+        try ensureDestinationUnderModelsBase(staging)
+
+        if fm.fileExists(atPath: staging.path) {
+            try fm.removeItem(at: staging)
+        }
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
 
         let token = try tokenStore.loadToken()
         do {
             try await hubClient.download(
                 sourceKey: trimmed,
-                destinationDirectory: dest,
+                destinationDirectory: staging,
                 token: token
             )
         } catch let error as BAMError {
-            try? fm.removeItem(at: dest)
+            try? fm.removeItem(at: staging)
             throw error
         } catch {
-            try? fm.removeItem(at: dest)
+            try? fm.removeItem(at: staging)
             throw BAMError(
                 code: .downloadFailed,
                 message: "HF download failed for \(trimmed): \(error.localizedDescription)"
             )
         }
+
+        // Path jail on staging before promoting to final dest.
+        let resolvedStaging = staging.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedBase = modelsBaseURL.resolvingSymlinksInPath().standardizedFileURL
+        guard LocalModelScanner.isPath(resolvedStaging, under: resolvedBase) else {
+            try? fm.removeItem(at: staging)
+            throw BAMError(
+                code: .pathEscape,
+                message: "Downloaded model staged outside models/base"
+            )
+        }
+
+        let alreadyPresent = fm.fileExists(atPath: dest.path)
+        do {
+            if alreadyPresent {
+                // Atomic-ish swap: prior tree is only replaced after a successful stage.
+                _ = try fm.replaceItemAt(dest, withItemAt: staging)
+            } else {
+                try fm.moveItem(at: staging, to: dest)
+            }
+        } catch {
+            try? fm.removeItem(at: staging)
+            throw BAMError(
+                code: .downloadFailed,
+                message: "Could not promote staged download to \(dest.path): \(error.localizedDescription)"
+            )
+        }
+
+        // Best-effort cleanup if replace left a sibling backup (implementation-dependent).
+        try? fm.removeItem(at: staging)
 
         let record = ModelRecord(
             id: modelID,
@@ -175,7 +226,7 @@ public struct ModelInstallService: Sendable {
             localPath: dest.path,
             metaJSON: #"{"source":"huggingface_hub"}"#
         )
-        return ModelInstallResult(modelRecord: record, alreadyPresent: false)
+        return ModelInstallResult(modelRecord: record, alreadyPresent: alreadyPresent)
     }
 
     // MARK: - Bundle / workers paths

@@ -80,7 +80,7 @@ struct ModelsView: View {
                             }
                         }
                         .disabled(isInstallingFixture)
-                        .help("Copy Workers/fixtures/models/tiny-qwen-mlx into models/base (no network)")
+                        .help("Copy bundled tiny-qwen-mlx fixture into models/base (no network)")
 
                         if fixtureInstalled {
                             Label("Installed", systemImage: "checkmark.circle.fill")

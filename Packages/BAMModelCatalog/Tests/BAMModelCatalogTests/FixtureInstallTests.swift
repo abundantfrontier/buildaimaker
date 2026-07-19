@@ -148,6 +148,122 @@ final class FixtureInstallTests: XCTestCase {
         }
     }
 
+    /// Failed / stub HF download must not wipe a prior good install at the same modelID.
+    func testDownloadFromHubFailurePreservesExistingInstall() async throws {
+        let modelID = "b0000000-0000-4000-8000-0000000000aa"
+        let dest = modelsBase.appendingPathComponent(modelID, isDirectory: true)
+        try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+        let marker = dest.appendingPathComponent("marker.txt", isDirectory: false)
+        try Data("keep-me".utf8).write(to: marker)
+
+        let service = ModelInstallService(
+            modelsBaseURL: modelsBase,
+            fixtureSourceURL: ModelInstallService.bundledFixtureURL(),
+            hfHubDownloadEnabled: true,
+            tokenStore: InMemoryHFTokenStore(token: "hf_test"),
+            hubClient: NoopHFHubClient()
+        )
+
+        do {
+            _ = try await service.downloadFromHub(
+                sourceKey: "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+                modelID: modelID
+            )
+            XCTFail("Expected capability unsupported from Noop client")
+        } catch let error as BAMError {
+            XCTAssertEqual(error.code, .capabilityUnsupported)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: marker.path),
+            "Prior install must survive failed downloadFromHub"
+        )
+        let contents = try String(contentsOf: marker, encoding: .utf8)
+        XCTAssertEqual(contents, "keep-me")
+
+        // Staging dirs must not linger under models/base.
+        let children = try FileManager.default.contentsOfDirectory(
+            at: modelsBase,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        XCTAssertEqual(children.map(\.lastPathComponent).sorted(), [modelID])
+    }
+
+    func testDownloadFromHubRejectsInvalidModelID() async {
+        let service = ModelInstallService(
+            modelsBaseURL: modelsBase,
+            fixtureSourceURL: ModelInstallService.bundledFixtureURL(),
+            hfHubDownloadEnabled: true,
+            hubClient: NoopHFHubClient()
+        )
+        do {
+            _ = try await service.downloadFromHub(
+                sourceKey: "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+                modelID: "../escape"
+            )
+            XCTFail("Expected path escape")
+        } catch let error as BAMError {
+            XCTAssertEqual(error.code, .pathEscape)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    /// Incomplete dest + overwrite:false reinstalls rather than returning a bogus success.
+    func testInstallFixtureOverwriteFalseReinstallsIncompleteDest() throws {
+        let incomplete = modelsBase.appendingPathComponent(
+            FixtureModel.installDirectoryName,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: incomplete, withIntermediateDirectories: true)
+        // Empty dir — fails layoutLooksValid
+        XCTAssertFalse(ModelInstallService.layoutLooksValid(at: incomplete))
+
+        let service = ModelInstallService(
+            modelsBaseURL: modelsBase,
+            fixtureSourceURL: ModelInstallService.bundledFixtureURL()
+        )
+        XCTAssertFalse(service.isFixtureInstalled())
+
+        let result = try service.installFixture(overwrite: false)
+        XCTAssertFalse(result.alreadyPresent, "Incomplete dest should not report alreadyPresent")
+        XCTAssertTrue(service.isFixtureInstalled())
+        XCTAssertTrue(ModelInstallService.layoutLooksValid(at: service.fixtureInstallDirectory))
+    }
+
+    /// Bundled fixture must stay toy-sized (guards against accidental multi-GB weight drops).
+    func testBundledFixtureStaysUnderOneMebibyte() throws {
+        let root = ModelInstallService.bundledFixtureURL()
+        let maxBytes = 1 * 1024 * 1024 // 1 MiB
+        var total: Int64 = 0
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            XCTFail("Could not enumerate bundled fixture at \(root.path)")
+            return
+        }
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { continue }
+            total += Int64(values.fileSize ?? 0)
+        }
+        XCTAssertLessThan(
+            total,
+            Int64(maxBytes),
+            "Bundled fixture is \(total) bytes; must stay well under 1 MiB (no real MLX weights)"
+        )
+        // Sanity: also keep model.safetensors tiny (placeholder only).
+        let weights = root.appendingPathComponent("model.safetensors")
+        let weightSize = try weights.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        XCTAssertLessThan(weightSize, 4096, "model.safetensors must remain a tiny placeholder")
+    }
+
     func testInMemoryTokenStoreRoundTrip() throws {
         let store = InMemoryHFTokenStore()
         XCTAssertNil(try store.loadToken())

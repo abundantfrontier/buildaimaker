@@ -24,6 +24,8 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
         var activePaths: JobPaths?
         var activeJobId: String?
         var cachedCaps: RunnerCapabilities?
+        /// Original raw JobSpec JSON for path-jail side-channel (never re-encoded).
+        var rawSpecJSON: Data?
     }
 
     public init(
@@ -52,12 +54,20 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
         )
     }
 
+    /// Protocol `TrainingRunner` entry — no raw side-channel available.
     public func prepare(job: JobSpec, paths: JobPaths) async throws {
+        try await prepare(job: job, paths: paths, rawSpecJSON: nil)
+    }
+
+    /// Preferred prepare path: pass the **original** store/disk JobSpec JSON so free path
+    /// keys (e.g. legacy `referenceAudioPath`) are path-jailed. Never pass re-encoded
+    /// Codable output — that drops unknown keys and makes the side-channel a no-op.
+    public func prepare(job: JobSpec, paths: JobPaths, rawSpecJSON: Data?) async throws {
         try PathJail.validate(paths: paths)
         try PathJail.validateModalityRequirements(job: job, paths: paths)
-
-        // Encode job to raw JSON so we can path-jail any accidental free path keys.
-        let rawSpec = try ProtocolCodec.encoder.encode(job)
+        if let rawSpecJSON {
+            try PathJail.validateRawJobSpecPaths(rawSpecJSON: rawSpecJSON, paths: paths)
+        }
 
         let supervisor = ProcessSupervisor(
             executableURL: executableURL,
@@ -65,13 +75,14 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
             config: config
         )
         let caps = try await supervisor.start(paths: paths)
-        try await supervisor.prepare(job: job, paths: paths, rawSpecJSON: rawSpec)
+        try await supervisor.prepare(job: job, paths: paths, rawSpecJSON: rawSpecJSON)
 
         lock.withLock { state in
             state.supervisor = supervisor
             state.activePaths = paths
             state.activeJobId = job.id
             state.cachedCaps = caps
+            state.rawSpecJSON = rawSpecJSON
         }
     }
 
@@ -79,20 +90,20 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let supervisor = try await self.requireSupervisor(jobId: job.id, paths: paths)
+                    let supervisor = try await self.requireSupervisor(jobId: job.id)
                     for try await event in await supervisor.run(job: job, paths: paths) {
                         continuation.yield(event)
                         if case .result = event {
                             continuation.finish()
-                            await self.clearSupervisor()
+                            self.clearSupervisor()
                             return
                         }
                     }
                     continuation.finish()
-                    await self.clearSupervisor()
+                    self.clearSupervisor()
                 } catch {
                     continuation.finish(throwing: error)
-                    await self.clearSupervisor()
+                    self.clearSupervisor()
                 }
             }
             continuation.onTermination = { _ in
@@ -109,15 +120,8 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    // Resume may need a fresh worker if prepare was not called.
-                    var supervisor = await self.currentSupervisor()
-                    if supervisor == nil {
-                        try await self.prepare(job: job, paths: paths)
-                        supervisor = await self.currentSupervisor()
-                    }
-                    guard let supervisor else {
-                        throw BAMError(code: .workerCrash, message: "No supervisor for resume")
-                    }
+                    // Fail closed if prepare never ran (do not invent a bare llm JobSpec).
+                    let supervisor = try await self.requireSupervisor(jobId: job.id)
                     for try await event in await supervisor.resume(
                         job: job,
                         paths: paths,
@@ -126,15 +130,15 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
                         continuation.yield(event)
                         if case .result = event {
                             continuation.finish()
-                            await self.clearSupervisor()
+                            self.clearSupervisor()
                             return
                         }
                     }
                     continuation.finish()
-                    await self.clearSupervisor()
+                    self.clearSupervisor()
                 } catch {
                     continuation.finish(throwing: error)
-                    await self.clearSupervisor()
+                    self.clearSupervisor()
                 }
             }
             continuation.onTermination = { _ in
@@ -148,7 +152,6 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
             (state.supervisor, state.activePaths)
         }
         guard let supervisor, let paths else {
-            // Still try to write cancel.flag if we can reconstruct paths — no-op here.
             return
         }
         await supervisor.cancel(jobId: jobId, paths: paths)
@@ -156,23 +159,14 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
 
     // MARK: - Internals
 
-    private func requireSupervisor(jobId: String, paths: JobPaths) async throws -> ProcessSupervisor {
-        if let existing = lock.withLock({ $0.supervisor }) {
-            return existing
+    private func requireSupervisor(jobId: String) throws -> ProcessSupervisor {
+        guard let existing = lock.withLock({ $0.supervisor }) else {
+            throw BAMError(
+                code: .workerCrash,
+                message: "No supervisor for job \(jobId); call prepare first"
+            )
         }
-        // Lazy start if prepare was skipped.
-        try await prepare(
-            job: JobSpec(id: jobId, modality: .llm),
-            paths: paths
-        )
-        guard let supervisor = lock.withLock({ $0.supervisor }) else {
-            throw BAMError(code: .workerCrash, message: "Failed to start supervisor")
-        }
-        return supervisor
-    }
-
-    private func currentSupervisor() -> ProcessSupervisor? {
-        lock.withLock { $0.supervisor }
+        return existing
     }
 
     private func clearSupervisor() {
@@ -180,6 +174,7 @@ public final class SupervisedTrainingRunner: TrainingRunner, @unchecked Sendable
             state.supervisor = nil
             state.activePaths = nil
             state.activeJobId = nil
+            state.rawSpecJSON = nil
         }
     }
 }

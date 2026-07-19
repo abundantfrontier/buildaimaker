@@ -50,7 +50,8 @@ public enum WorkerMessage: Sendable, Equatable {
         metrics: [String: Double]
     )
     case checkpoint(path: String, step: Int)
-    case artifact(kind: String, path: String)
+    /// Design catalog includes optional `meta:{}`; retained for wire completeness.
+    case artifact(kind: String, path: String, meta: [String: String]?)
     case heartbeat(rssBytes: Int64, gpuUtil: Double?, cpuUtil: Double?, ts: String)
     case error(code: String, message: String, retriable: Bool)
     case result(status: String, artifacts: [RunnerArtifactRef], message: String?)
@@ -70,6 +71,9 @@ public enum WorkerMessage: Sendable, Equatable {
 
     /// Maps wire events used by the queue controller onto `RunnerEvent`.
     /// Returns `nil` for `hello` (handshake-only).
+    ///
+    /// Note: `artifact.meta` is not surfaced on `RunnerEvent` in v1 (queue does not
+    /// consume it); use `WorkerMessage` if metadata is required.
     public func asRunnerEvent() -> RunnerEvent? {
         switch self {
         case .hello:
@@ -88,7 +92,8 @@ public enum WorkerMessage: Sendable, Equatable {
             )
         case let .checkpoint(path, step):
             return .checkpoint(path: path, step: step)
-        case let .artifact(kind, path):
+        case let .artifact(kind, path, _):
+            // v1: RunnerEvent drops meta; wire still carries it on WorkerMessage.
             return .artifact(kind: kind, path: path)
         case let .heartbeat(rssBytes, gpuUtil, cpuUtil, ts):
             return .heartbeat(rssBytes: rssBytes, gpuUtil: gpuUtil, cpuUtil: cpuUtil, ts: ts)

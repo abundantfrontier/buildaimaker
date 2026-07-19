@@ -190,6 +190,151 @@ final class ProcessSupervisorTests: XCTestCase {
         XCTAssertFalse(CancelFlag.exists(at: flag))
     }
 
+    /// Flag-only cancel (no `supervisor.cancel` API): worker observes flag → cancelled.
+    func testFlagOnlyCancelWithoutAPICancel() async throws {
+        let exe = try resolveEchoWorker()
+        let jobId = UUID().uuidString
+        let paths = makePaths(jobId: jobId)
+        let job = JobSpec(id: jobId, modality: .llm)
+
+        var config = ProcessSupervisorConfig.testing
+        config.extraEnvironment = [
+            "BAM_ECHO_MODE": "cancel",
+            "BAM_ECHO_STEPS": "30",
+            "BAM_ECHO_STEP_MS": "80",
+        ]
+        config.cancelGraceT1 = 2
+        config.cancelGraceT2 = 1
+
+        let supervisor = ProcessSupervisor(executableURL: exe, config: config)
+        _ = try await supervisor.start(paths: paths)
+        try await supervisor.prepare(job: job, paths: paths)
+
+        let stream = await supervisor.run(job: job, paths: paths)
+        var resultStatus: String?
+
+        let flagTask = Task {
+            try? await Task.sleep(for: .milliseconds(120))
+            // Pure flag write — no cancel() call.
+            try? CancelFlag.write(at: paths.cancelFlagPath)
+        }
+
+        for try await event in stream {
+            if case let .result(status, _, _) = event {
+                resultStatus = status
+            }
+        }
+        await flagTask.value
+
+        XCTAssertEqual(resultStatus, "cancelled")
+        XCTAssertTrue(CancelFlag.exists(at: paths.cancelFlagPath))
+    }
+
+    /// Raw JobSpec free path key must match JobPaths or reject before worker I/O.
+    func testRawJobSpecPathMismatchOnPrepare() async throws {
+        let exe = try resolveEchoWorker()
+        let jobId = UUID().uuidString
+        let paths = makePaths(jobId: jobId)
+        let job = JobSpec.voiceClone(
+            id: jobId,
+            consentRecordId: UUID().uuidString,
+            consentContentHash: "sha256:abc"
+        )
+        // Valid jailed ref on JobPaths.
+        var jailedPaths = paths
+        let ref = libraryRoot.appendingPathComponent("voices/staging/v1/ref.wav").path
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: ref).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        jailedPaths.referenceAudioPath = ref
+
+        // Original raw payload with mismatched free path (side-channel).
+        let raw: [String: Any] = [
+            "v": 1,
+            "id": jobId,
+            "modality": "voiceClone",
+            "engineId": "f5-tts",
+            "consentRecordId": job.consentRecordId!,
+            "consentContentHash": job.consentContentHash!,
+            "referenceAudioPath": "/tmp/not-in-library/evil.wav",
+        ]
+        let rawData = try JSONSerialization.data(withJSONObject: raw)
+
+        var config = ProcessSupervisorConfig.testing
+        config.extraEnvironment = ["BAM_ECHO_MODE": "happy"]
+
+        // Reject on SupervisedTrainingRunner prepare *before* spawn when raw is validated first.
+        let runner = SupervisedTrainingRunner(executableURL: exe, config: config)
+        do {
+            try await runner.prepare(job: job, paths: jailedPaths, rawSpecJSON: rawData)
+            XCTFail("expected BAM_PATH_ESCAPE")
+        } catch let error as BAMError {
+            XCTAssertEqual(error.code, .pathEscape)
+        }
+
+        // Also on ProcessSupervisor after start (still before prepare send uses raw check).
+        let supervisor = ProcessSupervisor(executableURL: exe, config: config)
+        _ = try await supervisor.start(paths: jailedPaths)
+        do {
+            try await supervisor.prepare(job: job, paths: jailedPaths, rawSpecJSON: rawData)
+            XCTFail("expected BAM_PATH_ESCAPE on supervisor.prepare")
+        } catch let error as BAMError {
+            XCTAssertEqual(error.code, .pathEscape)
+        }
+    }
+
+    func testResumeRejectsEscapingCheckpointPath() async throws {
+        let exe = try resolveEchoWorker()
+        let jobId = UUID().uuidString
+        let paths = makePaths(jobId: jobId)
+        let job = JobSpec(id: jobId, modality: .llm)
+
+        var config = ProcessSupervisorConfig.testing
+        config.extraEnvironment = [
+            "BAM_ECHO_MODE": "happy",
+            "BAM_ECHO_STEPS": "1",
+            "BAM_ECHO_STEP_MS": "10",
+        ]
+        let supervisor = ProcessSupervisor(executableURL: exe, config: config)
+        _ = try await supervisor.start(paths: paths)
+        try await supervisor.prepare(job: job, paths: paths)
+
+        let bad = CheckpointRef(path: "/etc/passwd", step: 1)
+        var sawEscape = false
+        do {
+            for try await _ in await supervisor.resume(job: job, paths: paths, checkpoint: bad) {
+                // should not yield
+            }
+        } catch let error as BAMError {
+            sawEscape = error.code == .pathEscape
+        }
+        XCTAssertTrue(sawEscape)
+    }
+
+    func testRunRevalidatesPaths() async throws {
+        let exe = try resolveEchoWorker()
+        let jobId = UUID().uuidString
+        let paths = makePaths(jobId: jobId)
+        let job = JobSpec(id: jobId, modality: .llm)
+
+        var config = ProcessSupervisorConfig.testing
+        config.extraEnvironment = ["BAM_ECHO_MODE": "happy", "BAM_ECHO_STEPS": "1"]
+        let supervisor = ProcessSupervisor(executableURL: exe, config: config)
+        _ = try await supervisor.start(paths: paths)
+        try await supervisor.prepare(job: job, paths: paths)
+
+        var badPaths = paths
+        badPaths.datasetPath = "/tmp/outside-library/dataset"
+        var sawEscape = false
+        do {
+            for try await _ in await supervisor.run(job: job, paths: badPaths) {}
+        } catch let error as BAMError {
+            sawEscape = error.code == .pathEscape
+        }
+        XCTAssertTrue(sawEscape)
+    }
+
     // MARK: - Helpers
 
     private func makePaths(jobId: String) -> JobPaths {

@@ -1,8 +1,10 @@
 import BAMCore
+import BAMJobs
 import BAMModels
 import Foundation
 
-/// Path jail: all job filesystem inputs must resolve under `libraryRoot` (or `jobDir`).
+/// Path jail: all job filesystem inputs must resolve under `libraryRoot`,
+/// with job-local outputs nested under `jobDir`.
 ///
 /// Uses `resolvingSymlinksInPath` so symlink escape cannot bypass the root check.
 public enum PathJail: Sendable {
@@ -46,15 +48,18 @@ public enum PathJail: Sendable {
         }
     }
 
-    /// Validates every non-null field on `JobPaths` is jailed under `libraryRoot`
-    /// (and nested job dirs under `jobDir` where applicable).
+    /// Validates every non-null field on `JobPaths`:
+    /// - all under `libraryRoot`
+    /// - job-local dirs (`outputPath`, `checkpointPath`, `cancelFlagPath`, `logPath`) under `jobDir`
     public static func validate(paths: JobPaths) throws {
         try assertUnderRoot(paths.libraryRoot, root: paths.libraryRoot, label: "libraryRoot")
         try assertUnderRoot(paths.jobDir, root: paths.libraryRoot, label: "jobDir")
-        try assertUnderRoot(paths.outputPath, root: paths.libraryRoot, label: "outputPath")
-        try assertUnderRoot(paths.checkpointPath, root: paths.libraryRoot, label: "checkpointPath")
-        try assertUnderRoot(paths.cancelFlagPath, root: paths.libraryRoot, label: "cancelFlagPath")
-        try assertUnderRoot(paths.logPath, root: paths.libraryRoot, label: "logPath")
+
+        // Job-local layout under jobDir (and therefore under libraryRoot).
+        try assertUnderRoot(paths.outputPath, root: paths.jobDir, label: "outputPath")
+        try assertUnderRoot(paths.checkpointPath, root: paths.jobDir, label: "checkpointPath")
+        try assertUnderRoot(paths.cancelFlagPath, root: paths.jobDir, label: "cancelFlagPath")
+        try assertUnderRoot(paths.logPath, root: paths.jobDir, label: "logPath")
 
         if let datasetPath = paths.datasetPath {
             try assertUnderRoot(datasetPath, root: paths.libraryRoot, label: "datasetPath")
@@ -84,11 +89,30 @@ public enum PathJail: Sendable {
         }
     }
 
+    /// Jail a resume checkpoint path under `paths.checkpointPath` (and libraryRoot).
+    /// Relative paths are resolved against `jobDir`.
+    public static func validateCheckpoint(_ checkpoint: CheckpointRef, paths: JobPaths) throws {
+        let absolute = resolvePath(checkpoint.path, relativeToJobDir: paths.jobDir)
+        try assertUnderRoot(absolute, root: paths.libraryRoot, label: "checkpoint.path")
+        try assertUnderRoot(absolute, root: paths.checkpointPath, label: "checkpoint.path")
+    }
+
+    /// Resolve relative worker paths against jobDir; leave absolute paths as-is.
+    public static func resolvePath(_ path: String, relativeToJobDir jobDir: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("/") {
+            return trimmed
+        }
+        return URL(fileURLWithPath: jobDir, isDirectory: true)
+            .appendingPathComponent(trimmed)
+            .path
+    }
+
     /// Rejects free-form path keys that may appear on a **raw** JobSpec JSON payload
     /// (e.g. legacy `referenceAudioPath`) unless they equal the jailed JobPaths value.
     ///
-    /// Standard `JobSpec` Codable drops unknown keys; supervisors must call this on the
-    /// raw prepare/run payload when available.
+    /// Standard `JobSpec` Codable drops unknown keys; callers **must** pass the original
+    /// on-disk / store payload — never re-encoded Codable output (that is a no-op side-channel).
     public static func validateRawJobSpecPaths(
         rawSpecJSON: Data,
         paths: JobPaths

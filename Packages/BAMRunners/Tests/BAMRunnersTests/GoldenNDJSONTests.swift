@@ -72,8 +72,32 @@ final class GoldenNDJSONTests: XCTestCase {
         }
     }
 
+    func testErrorTranscript() throws {
+        let lines = try loadFixture("error_then_exit.ndjson")
+        XCTAssertGreaterThanOrEqual(lines.count, 2)
+        let hello = try ProtocolCodec.decodeWorkerLine(lines[0])
+        guard case .hello = hello else { return XCTFail("hello") }
+        let err = try ProtocolCodec.decodeWorkerLine(lines[1])
+        guard case let .error(code, message, retriable) = err else {
+            return XCTFail("error")
+        }
+        XCTAssertEqual(code, "BAM_PREFLIGHT_MEMORY")
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertFalse(retriable)
+    }
+
+    func testHeartbeatRequiredFieldsInHungFixture() throws {
+        let lines = try loadFixture("hung_heartbeat.ndjson")
+        let hb = try ProtocolCodec.decodeWorkerLine(lines[1])
+        guard case let .heartbeat(rss, _, _, ts) = hb else {
+            return XCTFail("heartbeat")
+        }
+        XCTAssertGreaterThan(rss, 0)
+        XCTAssertFalse(ts.isEmpty)
+    }
+
     func testSupervisorCommandsFixtureRoundTrip() throws {
-        // Supervisor-side golden: encode commands match expected type field.
+        // Supervisor-side golden: encode commands match expected type field + shapes.
         let job = DomainFixtures.llmJobSpec
         let paths = DomainFixtures.llmJobPaths
         let commands: [SupervisorCommand] = [
@@ -91,6 +115,15 @@ final class GoldenNDJSONTests: XCTestCase {
             let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
             XCTAssertEqual(obj["type"] as? String, type)
             XCTAssertEqual(obj["v"] as? Int, 1)
+            if type == "hello_ok" {
+                XCTAssertEqual(obj["minV"] as? Int, 1)
+                XCTAssertEqual(obj["maxV"] as? Int, 1)
+            }
+            if type == "resume" {
+                let cp = try XCTUnwrap(obj["checkpoint"] as? [String: Any])
+                XCTAssertEqual(cp["path"] as? String, "checkpoints/step-1")
+                XCTAssertEqual(cp["step"] as? Int, 1)
+            }
         }
     }
 

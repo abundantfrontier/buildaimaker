@@ -1,4 +1,5 @@
 import BAMCore
+import BAMJobs
 import BAMModels
 import XCTest
 
@@ -173,6 +174,48 @@ final class PathJailTests: XCTestCase {
         )
         XCTAssertThrowsError(
             try PathJail.validateModalityRequirements(job: job, paths: paths)
+        ) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .pathEscape)
+        }
+    }
+
+    func testJobLocalFieldsMustNestUnderJobDir() throws {
+        let jobDir = root.appendingPathComponent("jobs/j6", isDirectory: true)
+        try FileManager.default.createDirectory(at: jobDir, withIntermediateDirectories: true)
+        // outputPath under libraryRoot but NOT under jobDir.
+        let paths = JobPaths(
+            jobDir: jobDir.path,
+            libraryRoot: root.path,
+            outputPath: root.appendingPathComponent("other/artifacts").path,
+            checkpointPath: jobDir.appendingPathComponent("checkpoints").path,
+            cancelFlagPath: jobDir.appendingPathComponent("cancel.flag").path,
+            logPath: jobDir.appendingPathComponent("logs").path
+        )
+        XCTAssertThrowsError(try PathJail.validate(paths: paths)) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .pathEscape)
+        }
+    }
+
+    func testCheckpointPathJailedUnderCheckpointDir() throws {
+        let jobDir = root.appendingPathComponent("jobs/j7", isDirectory: true)
+        try FileManager.default.createDirectory(at: jobDir, withIntermediateDirectories: true)
+        let paths = JobPaths(
+            jobDir: jobDir.path,
+            libraryRoot: root.path,
+            outputPath: jobDir.appendingPathComponent("artifacts").path,
+            checkpointPath: jobDir.appendingPathComponent("checkpoints").path,
+            cancelFlagPath: jobDir.appendingPathComponent("cancel.flag").path,
+            logPath: jobDir.appendingPathComponent("logs").path
+        )
+        try PathJail.validateCheckpoint(
+            CheckpointRef(path: "checkpoints/step-1", step: 1),
+            paths: paths
+        )
+        XCTAssertThrowsError(
+            try PathJail.validateCheckpoint(
+                CheckpointRef(path: "/etc/passwd", step: 1),
+                paths: paths
+            )
         ) { error in
             XCTAssertEqual((error as? BAMError)?.code, .pathEscape)
         }

@@ -66,6 +66,10 @@ public actor ProcessSupervisor {
     private var workerId: String?
     private var stderrLogURL: URL?
     private var lineTooLarge = false
+    /// Last job id seen on prepare/run/resume (for flag-only cancel cmd).
+    private var lastJobId: String?
+    /// Whether cancel stdin command was already sent for the current generation.
+    private var cancelCommandSent = false
 
     public init(
         executableURL: URL,
@@ -103,6 +107,11 @@ public actor ProcessSupervisor {
     @discardableResult
     public func start(paths: JobPaths) async throws -> RunnerCapabilities {
         try PathJail.validate(paths: paths)
+
+        // Reset cancel escalation from any prior generation (reuse hazard).
+        clearCancelEscalation()
+        cancelCommandSent = false
+        lastJobId = nil
 
         let jobDirURL = URL(fileURLWithPath: paths.jobDir, isDirectory: true)
         try FileManager.default.createDirectory(at: jobDirURL, withIntermediateDirectories: true)
@@ -203,22 +212,32 @@ public actor ProcessSupervisor {
         return caps
     }
 
-    /// Sends `prepare` after path-jail validation (including optional raw JobSpec path keys).
+    /// Sends `prepare` after path-jail validation (including optional **original** raw JobSpec path keys).
+    ///
+    /// - Parameter rawSpecJSON: Original on-disk / store payload. Must **not** be re-encoded
+    ///   Codable output (that drops free path keys and makes the side-channel a no-op).
     public func prepare(job: JobSpec, paths: JobPaths, rawSpecJSON: Data? = nil) async throws {
         try PathJail.validate(paths: paths)
         try PathJail.validateModalityRequirements(job: job, paths: paths)
         if let rawSpecJSON {
             try PathJail.validateRawJobSpecPaths(rawSpecJSON: rawSpecJSON, paths: paths)
         }
+        lastJobId = job.id
         try send(.prepare(job: job, paths: paths))
     }
 
     /// Sends `run` and yields protocol events until `result` or process death / hang.
     public func run(job: JobSpec, paths: JobPaths) -> AsyncThrowingStream<RunnerEvent, Error> {
-        eventStream(sendFirst: .run(job: job, paths: paths), paths: paths)
+        eventStream(
+            sendFirst: .run(job: job, paths: paths),
+            job: job,
+            paths: paths,
+            checkpoint: nil
+        )
     }
 
-    /// Sends `resume` and yields events.
+    /// Sends `resume` and yields events. Requires negotiated `caps.resume == true`
+    /// and a jailed checkpoint path under `paths.checkpointPath`.
     public func resume(
         job: JobSpec,
         paths: JobPaths,
@@ -226,14 +245,17 @@ public actor ProcessSupervisor {
     ) -> AsyncThrowingStream<RunnerEvent, Error> {
         eventStream(
             sendFirst: .resume(job: job, paths: paths, checkpoint: checkpoint),
-            paths: paths
+            job: job,
+            paths: paths,
+            checkpoint: checkpoint
         )
     }
 
     /// Cooperative cancel: write cancel.flag, send cancel command, escalate SIGTERM/SIGKILL.
     public func cancel(jobId: String, paths: JobPaths) async {
+        lastJobId = jobId
         try? CancelFlag.write(at: paths.cancelFlagPath)
-        try? send(.cancel(jobId: jobId))
+        sendCancelCommandIfNeeded(jobId: jobId)
         guard config.escalateSignalsOnCancel else { return }
         startCancelEscalation()
     }
@@ -242,10 +264,14 @@ public actor ProcessSupervisor {
     public func waitUntilExit(timeout: TimeInterval) async -> Int32? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if processExited { return exitStatus }
+            if processExited {
+                clearCancelEscalation()
+                return exitStatus
+            }
             if process?.isRunning != true {
                 exitStatus = process?.terminationStatus
                 processExited = true
+                clearCancelEscalation()
                 return exitStatus
             }
             try? await Task.sleep(for: .milliseconds(20))
@@ -259,7 +285,6 @@ public actor ProcessSupervisor {
 
     public func forceKill() {
         process?.interrupt() // SIGINT first (harmless if dead)
-        // SIGKILL via kill(2) when still running.
         if let proc = process, proc.isRunning {
             let pid = proc.processIdentifier
             if pid > 0 {
@@ -272,11 +297,28 @@ public actor ProcessSupervisor {
 
     private func eventStream(
         sendFirst: SupervisorCommand,
-        paths: JobPaths
+        job: JobSpec,
+        paths: JobPaths,
+        checkpoint: CheckpointRef?
     ) -> AsyncThrowingStream<RunnerEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    // Path jail before run/resume (design: before prepare/run/resume).
+                    try PathJail.validate(paths: paths)
+                    try PathJail.validateModalityRequirements(job: job, paths: paths)
+                    if let checkpoint {
+                        try PathJail.validateCheckpoint(checkpoint, paths: paths)
+                        let caps = await self.negotiatedCaps
+                        if caps?.resume != true {
+                            throw BAMError(
+                                code: .capabilityUnsupported,
+                                message: "Worker did not advertise caps.resume; cannot resume"
+                            )
+                        }
+                    }
+
+                    await self.setLastJobId(job.id)
                     try await self.send(sendFirst)
                     await self.markHeartbeat()
 
@@ -299,8 +341,9 @@ public actor ProcessSupervisor {
                             )
                         }
 
+                        // Flag-only cancel: send cancel cmd + escalate signals.
                         if CancelFlag.exists(at: paths.cancelFlagPath) {
-                            await self.ensureCancelEscalation()
+                            await self.handleExternalCancelFlag(paths: paths)
                         }
 
                         let line = try await self.readLine(timeout: 0.25)
@@ -316,11 +359,14 @@ public actor ProcessSupervisor {
                                 continuation.yield(event)
                                 if case .result = event {
                                     _ = await self.waitUntilExit(timeout: 2)
+                                    await self.clearCancelEscalation()
                                     continuation.finish()
                                     return
                                 }
+                                // Bare error event: keep streaming until process exit / result.
                             }
                         } else if await self.hasExited() {
+                            await self.clearCancelEscalation()
                             let status = await self.terminationStatus ?? -1
                             throw BAMError(
                                 code: .workerCrash,
@@ -335,6 +381,51 @@ public actor ProcessSupervisor {
             }
             continuation.onTermination = { _ in
                 task.cancel()
+            }
+        }
+    }
+
+    // MARK: - Cancel helpers
+
+    private func setLastJobId(_ id: String) {
+        lastJobId = id
+    }
+
+    private func handleExternalCancelFlag(paths: JobPaths) {
+        let jobId = lastJobId ?? URL(fileURLWithPath: paths.jobDir).lastPathComponent
+        sendCancelCommandIfNeeded(jobId: jobId)
+        if config.escalateSignalsOnCancel {
+            startCancelEscalation()
+        }
+    }
+
+    private func sendCancelCommandIfNeeded(jobId: String) {
+        guard !cancelCommandSent else { return }
+        cancelCommandSent = true
+        try? send(.cancel(jobId: jobId))
+    }
+
+    private func clearCancelEscalation() {
+        cancelEscalationTask?.cancel()
+        cancelEscalationTask = nil
+        // Allow re-arm on a later cancel of the same process generation after clear.
+        // cancelCommandSent stays true until next start().
+    }
+
+    private func startCancelEscalation() {
+        guard cancelEscalationTask == nil else { return }
+        let t1 = config.cancelGraceT1
+        let t2 = config.cancelGraceT2
+        cancelEscalationTask = Task {
+            try? await Task.sleep(for: .seconds(t1))
+            if Task.isCancelled { return }
+            if await self.isRunning {
+                await self.signalTerminate()
+            }
+            try? await Task.sleep(for: .seconds(t2))
+            if Task.isCancelled { return }
+            if await self.isRunning {
+                await self.forceKill()
             }
         }
     }
@@ -368,7 +459,6 @@ public actor ProcessSupervisor {
             Task {
                 let deadline = Date().addingTimeInterval(timeout)
                 while Date() < deadline {
-                    // Completed when deliverLine / finishStdout removes the continuation.
                     if await self.continuationMissing(id) {
                         return
                     }
@@ -410,8 +500,13 @@ public actor ProcessSupervisor {
     }
 
     private func startReading(stdout: FileHandle, stderr: FileHandle) {
+        readTask?.cancel()
+        stderrTask?.cancel()
+
+        // IMPORTANT: `FileHandle.availableData` can block. Run these loops off the
+        // actor executor so they never hold the ProcessSupervisor isolation domain
+        // (would deadlock hello/readLine/cancel). Hop back with `await` for mutations.
         readTask = Task { [weak self] in
-            // Use readabilityHandler on a dedicated queue via availableData polling.
             while !Task.isCancelled {
                 let chunk = stdout.availableData
                 if chunk.isEmpty {
@@ -455,7 +550,7 @@ public actor ProcessSupervisor {
         if lineBuffer.count + data.count > config.maxLineBytes + 64 * 1024 {
             lineTooLarge = true
             failAllWaiters()
-            Task { await forceKill() }
+            forceKill()
             return
         }
         lineBuffer.append(data)
@@ -465,7 +560,7 @@ public actor ProcessSupervisor {
             if lineData.count > config.maxLineBytes {
                 lineTooLarge = true
                 failAllWaiters()
-                Task { await forceKill() }
+                forceKill()
                 return
             }
             if let line = String(data: lineData, encoding: .utf8) {
@@ -487,41 +582,20 @@ public actor ProcessSupervisor {
     }
 
     private func finishStdout() {
-        // Discard incomplete trailing buffer (design: discard incomplete on exit).
         lineBuffer.removeAll(keepingCapacity: false)
         processExited = true
         if let proc = process {
             exitStatus = proc.terminationStatus
         }
         failAllWaiters()
+        clearCancelEscalation()
     }
 
     private func handleTermination(status: Int32) {
         exitStatus = status
         processExited = true
         failAllWaiters()
-    }
-
-    private func startCancelEscalation() {
-        guard cancelEscalationTask == nil else { return }
-        let t1 = config.cancelGraceT1
-        let t2 = config.cancelGraceT2
-        cancelEscalationTask = Task {
-            try? await Task.sleep(for: .seconds(t1))
-            if Task.isCancelled { return }
-            if await self.isRunning {
-                await self.signalTerminate()
-            }
-            try? await Task.sleep(for: .seconds(t2))
-            if Task.isCancelled { return }
-            if await self.isRunning {
-                await self.forceKill()
-            }
-        }
-    }
-
-    private func ensureCancelEscalation() {
-        startCancelEscalation()
+        clearCancelEscalation()
     }
 
     private func markHeartbeat() {

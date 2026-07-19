@@ -115,8 +115,51 @@ final class ProtocolCodecTests: XCTestCase {
         XCTAssertEqual(WorkerExitCode.protocolError.rawValue, 2)
         XCTAssertEqual(WorkerExitCode.sigterm.rawValue, 130)
         XCTAssertEqual(WorkerExitCode.sigkill.rawValue, 137)
+        // Design lists 130; Process.terminate() on macOS is typically 143.
+        XCTAssertEqual(WorkerExitCode.classify(130), .sigterm)
+        XCTAssertEqual(WorkerExitCode.classify(143), .sigterm)
+        XCTAssertEqual(WorkerExitCode.posixSigtermStatus, 143)
         for code in WorkerExitCode.allCases {
             XCTAssertFalse(code.meaning.isEmpty)
         }
+    }
+
+    func testMissingRequiredFieldsRejected() {
+        let cases = [
+            #"{"v":1,"type":"hello","workerVersion":"0","caps":{}}"#, // missing workerId
+            #"{"v":1,"type":"progress","epoch":1.0}"#, // missing step
+            #"{"v":1,"type":"heartbeat","rssBytes":1}"#, // missing ts
+            #"{"v":1,"type":"result","status":"succeeded"}"#, // missing artifacts
+            #"{"v":1,"type":"result","status":"weird","artifacts":[]}"#, // bad status
+            #"{"v":1,"type":"error","message":"x"}"#, // missing code
+        ]
+        for line in cases {
+            XCTAssertThrowsError(try ProtocolCodec.decodeWorkerLine(line), line) { error in
+                let code = (error as? BAMError)?.code
+                XCTAssertTrue(
+                    code == .schemaInvalid || code == .protocolMismatch,
+                    "expected schema/protocol error for \(line), got \(String(describing: error))"
+                )
+            }
+        }
+    }
+
+    func testArtifactMetaRetainedOnWorkerMessage() throws {
+        let line =
+            #"{"v":1,"type":"artifact","kind":"lora_adapter","path":"artifacts/adapter","meta":{"rank":"16"}}"#
+        let msg = try ProtocolCodec.decodeWorkerLine(line)
+        guard case let .artifact(kind, path, meta) = msg else {
+            return XCTFail("artifact")
+        }
+        XCTAssertEqual(kind, "lora_adapter")
+        XCTAssertEqual(path, "artifacts/adapter")
+        XCTAssertEqual(meta?["rank"], "16")
+        // RunnerEvent mapping drops meta in v1.
+        let event = try XCTUnwrap(msg.asRunnerEvent())
+        guard case let .artifact(ek, ep) = event else {
+            return XCTFail("runner artifact")
+        }
+        XCTAssertEqual(ek, kind)
+        XCTAssertEqual(ep, path)
     }
 }

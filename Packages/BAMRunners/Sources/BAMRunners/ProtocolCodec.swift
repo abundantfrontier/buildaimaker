@@ -41,6 +41,7 @@ public enum ProtocolCodec: Sendable {
     // MARK: - Decode worker → supervisor
 
     /// Decodes one NDJSON line. Rejects lines over the max size and unknown/mismatched `v`.
+    /// Critical per-type fields are required (`BAM_SCHEMA_INVALID` when missing).
     public static func decodeWorkerLine(_ line: String) throws -> WorkerMessage {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -82,7 +83,7 @@ public enum ProtocolCodec: Sendable {
             throw BAMError(code: .schemaInvalid, message: "Missing message `type`")
         }
 
-        return try parseWorkerMessage(type: type, obj: obj, v: v, data: data)
+        return try parseWorkerMessage(type: type, obj: obj, v: v)
     }
 
     /// Version negotiation: worker `v` must fall within supervisor min/max.
@@ -156,14 +157,16 @@ public enum ProtocolCodec: Sendable {
     private static func parseWorkerMessage(
         type: String,
         obj: [String: Any],
-        v: Int,
-        data: Data
+        v: Int
     ) throws -> WorkerMessage {
         switch type {
         case "hello":
-            let workerId = obj["workerId"] as? String ?? "unknown"
-            let workerVersion = obj["workerVersion"] as? String ?? "0"
-            let caps = parseCapabilities(obj["caps"] as? [String: Any] ?? [:])
+            let workerId = try requireString(obj, "workerId", type: type)
+            let workerVersion = try requireString(obj, "workerVersion", type: type)
+            guard let capsObj = obj["caps"] as? [String: Any] else {
+                throw BAMError(code: .schemaInvalid, message: "hello missing required field `caps`")
+            }
+            let caps = parseCapabilities(capsObj)
             return .hello(
                 workerId: workerId,
                 workerVersion: workerVersion,
@@ -173,14 +176,18 @@ public enum ProtocolCodec: Sendable {
 
         case "log":
             return .log(
-                level: obj["level"] as? String ?? "info",
-                message: obj["message"] as? String ?? "",
-                ts: obj["ts"] as? String ?? ""
+                level: try requireString(obj, "level", type: type),
+                message: try requireString(obj, "message", type: type),
+                ts: try requireString(obj, "ts", type: type)
             )
 
         case "progress":
-            let step = intValue(obj["step"]) ?? 0
-            let epoch = doubleValue(obj["epoch"]) ?? 0
+            guard let step = intValue(obj["step"]) else {
+                throw BAMError(code: .schemaInvalid, message: "progress missing required field `step`")
+            }
+            guard let epoch = doubleValue(obj["epoch"]) else {
+                throw BAMError(code: .schemaInvalid, message: "progress missing required field `epoch`")
+            }
             var metrics: [String: Double] = [:]
             if let m = obj["metrics"] as? [String: Any] {
                 for (k, val) in m {
@@ -199,32 +206,60 @@ public enum ProtocolCodec: Sendable {
 
         case "checkpoint":
             return .checkpoint(
-                path: obj["path"] as? String ?? "",
-                step: intValue(obj["step"]) ?? 0
+                path: try requireString(obj, "path", type: type),
+                step: try requireInt(obj, "step", type: type)
             )
 
         case "artifact":
+            var meta: [String: String]?
+            if let metaObj = obj["meta"] as? [String: Any] {
+                var parsed: [String: String] = [:]
+                for (k, val) in metaObj {
+                    if let s = val as? String {
+                        parsed[k] = s
+                    } else if let n = val as? NSNumber {
+                        parsed[k] = n.stringValue
+                    }
+                }
+                meta = parsed.isEmpty ? [:] : parsed
+            } else if obj["meta"] is NSNull {
+                meta = nil
+            }
             return .artifact(
-                kind: obj["kind"] as? String ?? "",
-                path: obj["path"] as? String ?? ""
+                kind: try requireString(obj, "kind", type: type),
+                path: try requireString(obj, "path", type: type),
+                meta: meta
             )
 
         case "heartbeat":
+            guard let rss = int64Value(obj["rssBytes"]) else {
+                throw BAMError(
+                    code: .schemaInvalid,
+                    message: "heartbeat missing required field `rssBytes`"
+                )
+            }
             return .heartbeat(
-                rssBytes: int64Value(obj["rssBytes"]) ?? 0,
+                rssBytes: rss,
                 gpuUtil: doubleValue(obj["gpuUtil"]),
                 cpuUtil: doubleValue(obj["cpuUtil"]),
-                ts: obj["ts"] as? String ?? ""
+                ts: try requireString(obj, "ts", type: type)
             )
 
         case "error":
             return .error(
-                code: obj["code"] as? String ?? BAMErrorCode.workerCrash.rawValue,
-                message: obj["message"] as? String ?? "",
+                code: try requireString(obj, "code", type: type),
+                message: try requireString(obj, "message", type: type),
                 retriable: (obj["retriable"] as? Bool) ?? false
             )
 
         case "result":
+            let status = try requireString(obj, "status", type: type)
+            guard ["succeeded", "failed", "cancelled"].contains(status) else {
+                throw BAMError(
+                    code: .schemaInvalid,
+                    message: "result.status must be succeeded|failed|cancelled (got \(status))"
+                )
+            }
             var artifacts: [RunnerArtifactRef] = []
             if let arr = obj["artifacts"] as? [[String: Any]] {
                 for item in arr {
@@ -235,15 +270,20 @@ public enum ProtocolCodec: Sendable {
                         )
                     )
                 }
+            } else if obj["artifacts"] == nil {
+                throw BAMError(
+                    code: .schemaInvalid,
+                    message: "result missing required field `artifacts`"
+                )
             }
             let message: String?
-            if obj["message"] is NSNull {
+            if obj["message"] is NSNull || obj["message"] == nil {
                 message = nil
             } else {
                 message = obj["message"] as? String
             }
             return .result(
-                status: obj["status"] as? String ?? "failed",
+                status: status,
                 artifacts: artifacts,
                 message: message
             )
@@ -256,7 +296,7 @@ public enum ProtocolCodec: Sendable {
         }
     }
 
-    /// Lenient caps parse — missing optional fields use defaults (wire may omit).
+    /// Caps parse — `modalities` required; optional fields use defaults when omitted.
     private static func parseCapabilities(_ capsObj: [String: Any]) -> RunnerCapabilities {
         let modalityStrings = capsObj["modalities"] as? [String] ?? []
         let modalities = modalityStrings.compactMap { JobModality(rawValue: $0) }
@@ -271,6 +311,26 @@ public enum ProtocolCodec: Sendable {
             maxSeqLen: maxSeqLen,
             engineIds: engineIds
         )
+    }
+
+    private static func requireString(_ obj: [String: Any], _ key: String, type: String) throws -> String {
+        guard let value = obj[key] as? String else {
+            throw BAMError(
+                code: .schemaInvalid,
+                message: "\(type) missing required field `\(key)`"
+            )
+        }
+        return value
+    }
+
+    private static func requireInt(_ obj: [String: Any], _ key: String, type: String) throws -> Int {
+        guard let value = intValue(obj[key]) else {
+            throw BAMError(
+                code: .schemaInvalid,
+                message: "\(type) missing required field `\(key)`"
+            )
+        }
+        return value
     }
 
     private static func intValue(_ any: Any?) -> Int? {

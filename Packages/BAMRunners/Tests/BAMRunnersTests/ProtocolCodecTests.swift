@@ -119,6 +119,9 @@ final class ProtocolCodecTests: XCTestCase {
         XCTAssertEqual(WorkerExitCode.classify(130), .sigterm)
         XCTAssertEqual(WorkerExitCode.classify(143), .sigterm)
         XCTAssertEqual(WorkerExitCode.posixSigtermStatus, 143)
+        // Spike CLI license block is not a supervised worker exit.
+        XCTAssertEqual(WorkerExitCode.spikeCLILicenseBlockStatus, 3)
+        XCTAssertNil(WorkerExitCode.classify(3))
         for code in WorkerExitCode.allCases {
             XCTAssertFalse(code.meaning.isEmpty)
         }

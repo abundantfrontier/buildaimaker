@@ -20,7 +20,7 @@ buildaimaker/
 │   ├── BAMJobs/             # Job queue, state machine, fake TrainingRunner
 │   ├── BAMRunners/          # Runner Protocol v1, process supervisor, path jail
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/                 # Helpers (bam-echo-worker for protocol CI; llm later)
+├── Workers/                 # Helpers: echo, llm, voice (+ managed Python pins)
 ├── Catalog/                 # Model catalog (future)
 ├── Docs/                    # Design docs + ADRs
 └── Package.swift            # Root SPM package
@@ -66,26 +66,6 @@ Run unit tests:
 swift test
 ```
 
-## Offline fixture model
-
-CI and offline dogfood use a **tiny bundled fixture**, not multi-GB weights:
-
-| Path | Role |
-|------|------|
-| `Workers/fixtures/models/tiny-qwen-mlx/` | Living fixture (stub config + tokenizer JSON) |
-| `Packages/BAMModelCatalog/.../Resources/fixtures/tiny-qwen-mlx/` | Same files, bundled for install |
-| Catalog `sourceKey` | `buildaimaker/tiny-qwen-mlx-fixture` |
-
-**Real MLX weights** (e.g. `mlx-community/Qwen2.5-*-Instruct-4bit`) download separately via the optional Hugging Face Hub path when `ff.hfHubDownload` is on, or by placing files under `models/base/`. The fixture’s `model.safetensors` is a placeholder only (`WEIGHTS_NOT_INCLUDED.txt`).
-
-In the Models UI, **Install fixture model** copies the fixture into:
-
-```text
-~/Library/Application Support/BuildAIMaker/models/base/tiny-qwen-mlx-fixture/
-```
-
-with **no network**. Unit tests cover this offline path only.
-
 ## Feature flags
 
 All flags live in `BAMCore.FeatureFlags` and **default to off**:
@@ -100,7 +80,6 @@ All flags live in `BAMCore.FeatureFlags` and **default to off**:
 | `ff.cloudRunner` | Remote/cloud runner (kept off in v1) |
 | `ff.knowledgePacks` | Knowledge/RAG packs (Phase 2+) |
 | `ff.telemetryOptIn` | Opt-in diagnostics |
-| `ff.hfHubDownload` | Optional HF Hub model download (dogfood; CI stays offline) |
 
 ## Library root
 
@@ -127,11 +106,7 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
 - **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
 - **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
-- **BAMRunnersMLX** — LLM job materializer (normalized JSONL + JobPaths), ChatTemplateRegistry, prepare-only dry-run via `MLXWorkerClient` / echo or `bam-llm-worker`. No weight updates. Train wizard: Validate & dry-run.
 
 ## Non-goals (current tree)
 
-No real mlx-lm LoRA training yet (see PR-LLM-LoRA). No F5-TTS training yet (PR-VoiceSpike). `ff.llmTraining` remains off.
-
-## Merged stack note
-This branch base merges Protocol + Datasets + Catalog/Fixture + PyEnv for LLM materialization.
+No real mlx-lm / F5-TTS training yet (stubs + pin/license ADRs only). Voice spike: `bam-voice-worker` + `voice_worker` stub clone CLI + ADR 0002. No product Voices UI yet.

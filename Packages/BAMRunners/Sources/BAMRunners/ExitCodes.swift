@@ -5,6 +5,14 @@ import Foundation
 /// Design table lists 130 for “SIGTERM path”. On macOS/POSIX, `Process.terminate()`
 /// typically yields **143** (`128 + SIGTERM`). Both are classified as `.sigterm`.
 /// 130 is more commonly associated with SIGINT (`128 + 2`).
+///
+/// ## Spike CLI note (`voice_worker clone`)
+/// The standalone Python stub CLI may exit **3** for `BAM_LICENSE_BLOCK` (XTTS etc.).
+/// That code is **not** part of the supervised worker table below and
+/// `classify(3)` returns `nil`. Use `spikeCLILicenseBlockStatus` only when
+/// interpreting the CLI tool. Under `ProcessSupervisor`, license failures must
+/// emit a protocol `error` with code `BAM_LICENSE_BLOCK` and exit **1**
+/// (`.handledFailure`) — never exit 3.
 public enum WorkerExitCode: Int, Sendable, CaseIterable {
     /// Clean protocol completion (including cancelled result).
     case success = 0
@@ -20,6 +28,10 @@ public enum WorkerExitCode: Int, Sendable, CaseIterable {
     /// POSIX `128 + SIGTERM` as observed from `Process.terminate()` on macOS.
     public static let posixSigtermStatus: Int = 143
 
+    /// Spike-only: `python -m voice_worker clone` exit for `BAM_LICENSE_BLOCK`.
+    /// **Not** a supervised worker exit; `classify` does not map this to a case.
+    public static let spikeCLILicenseBlockStatus: Int = 3
+
     public var meaning: String {
         switch self {
         case .success: return "Clean protocol completion (incl. cancelled result)"
@@ -31,6 +43,9 @@ public enum WorkerExitCode: Int, Sendable, CaseIterable {
     }
 
     /// Maps an arbitrary process termination status to a known code or `nil`.
+    ///
+    /// Note: status `3` (spike CLI license block) returns `nil` — it is not a
+    /// supervised worker exit. See `spikeCLILicenseBlockStatus`.
     public static func classify(_ status: Int32) -> WorkerExitCode? {
         switch Int(status) {
         case 0: return .success

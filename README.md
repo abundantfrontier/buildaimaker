@@ -77,7 +77,7 @@ All flags live in `BAMCore.FeatureFlags` and **default to off**:
 | `ff.voiceFinetune` | Supervised voice fine-tune (future) |
 | `ff.personaPacks` | Persona pack import/export |
 | `ff.talkMode` | Spoken conversation mode |
-| `ff.cloudRunner` | Remote/cloud runner (kept off in v1) |
+| `ff.cloudRunner` | Remote/cloud runner (**off** in v1; “Remote training deferred post-PMF”) |
 | `ff.knowledgePacks` | Knowledge/RAG packs (Phase 2+) |
 | `ff.telemetryOptIn` | Opt-in diagnostics |
 
@@ -105,8 +105,8 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
 - **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
-- **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
+- **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`. **`RemoteRunner` + `FakeRemoteRunner`** for remote interface stability only (K22); no real cloud/SSH; `ff.cloudRunner` stays off.
 
 ## Non-goals (current tree)
 
-No real mlx-lm / F5-TTS training yet (see PR-LLM-Materialize / PR-VoiceSpike). No real dataset import UI yet.
+No real mlx-lm / F5-TTS training yet (see PR-LLM-Materialize / PR-VoiceSpike). No real dataset import UI yet. **No real cloud/SSH remote training** (deferred post-PMF; fake remote only).

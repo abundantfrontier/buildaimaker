@@ -9,6 +9,16 @@ final class FeatureFlagsTests: XCTestCase {
         }
     }
 
+    func testCloudRunnerRemainsOffAndDeferredMessage() {
+        XCTAssertFalse(FeatureFlags.default.cloudRunner)
+        XCTAssertFalse(CloudPolicy.isCloudRunnerEnabled(.default))
+        XCTAssertEqual(CloudPolicy.deferredMessage, "Remote training deferred post-PMF")
+        XCTAssertEqual(FeatureFlags.Key.cloudRunner.rawValue, "ff.cloudRunner")
+        XCTAssertThrowsError(try CloudPolicy.requireCloudRunnerEnabled(.default)) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .capabilityUnsupported)
+        }
+    }
+
     func testLibraryRootUsesApplicationSupport() {
         let root = LibraryPaths.libraryRoot
         XCTAssertTrue(root.path.contains("Application Support"))

@@ -114,7 +114,13 @@ public struct LoRATrainService: Sendable {
             config.extraEnvironment = env
         }
 
-        let exe = try workerURL ?? MLXWorkerClient.resolveWorkerExecutable()
+        // L1: every helper launch path goes through WorkerSpawn (resolve or explicit URL).
+        let exe: URL
+        if let workerURL {
+            exe = try WorkerSpawn.prepareExecutableURL(workerURL).url
+        } else {
+            exe = try MLXWorkerClient.resolveWorkerExecutable()
+        }
         let client = MLXWorkerClient(
             executableURL: exe,
             config: config,

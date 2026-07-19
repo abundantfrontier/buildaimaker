@@ -209,10 +209,15 @@ public actor MLXWorkerClient {
 
     // MARK: - Worker resolution
 
-    /// Resolves a worker binary for dry-run / train: env override → bam-llm-worker → bam-echo-worker.
+    /// Resolves a worker binary for dry-run / train and runs **L1**
+    /// `WorkerSpawn.prepareHelperLaunch` before returning.
+    ///
+    /// Order: env override → bam-llm-worker → bam-echo-worker.
+    /// Only `bam-*-worker` basenames are accepted (never venv/CPython).
     public static func resolveWorkerExecutable(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        mode: WorkerTrust.Mode = WorkerTrust.defaultMode
     ) throws -> URL {
         if let override = environment["BAM_LLM_WORKER_PATH"] ?? environment["BAM_ECHO_WORKER_PATH"],
            !override.isEmpty
@@ -226,24 +231,39 @@ public actor MLXWorkerClient {
                     message: "Worker override not found: \(override)"
                 )
             }
-            return url
+            // L1 gate on every override path.
+            let prepared = try WorkerSpawn.prepareExecutableURL(
+                url,
+                mode: mode,
+                environment: environment,
+                fileManager: fileManager
+            )
+            return prepared.url
         }
 
-        if let llm = WorkerSpawn.resolveDevelopmentHelper(
-            named: WorkerSpawn.llmWorkerName,
+        // L1 prepare includes dev product resolution + TeamID / validity policy.
+        if let prepared = try? WorkerSpawn.prepareHelperLaunch(
+            helperName: WorkerSpawn.llmWorkerName,
+            mode: mode,
             environment: environment,
             fileManager: fileManager
         ) {
-            return llm
+            return prepared.url
         }
 
         // Fall back to echo worker (CI-friendly prepare/run protocol speaker).
         if let echo = resolveBuildProduct(
-            named: "bam-echo-worker",
+            named: WorkerSpawn.echoWorkerName,
             environment: environment,
             fileManager: fileManager
         ) {
-            return echo
+            let prepared = try WorkerSpawn.prepareExecutableURL(
+                echo,
+                mode: mode,
+                environment: environment,
+                fileManager: fileManager
+            )
+            return prepared.url
         }
 
         throw BAMError(

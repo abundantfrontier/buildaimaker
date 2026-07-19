@@ -17,9 +17,11 @@ buildaimaker/
 │   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
 │   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
 │   ├── BAMPersistence/      # GRDB library.sqlite + migrations
+│   ├── BAMModelCatalog/     # Living catalog, local scan, fixture/HF install
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/                 # Training workers (future)
-├── Catalog/                 # Model catalog (future)
+├── Workers/
+│   └── fixtures/models/tiny-qwen-mlx/  # Offline toy model (not real MLX weights)
+├── Catalog/models.json      # Living supported model list (fixture + Qwen2.5 MLX)
 ├── Docs/                    # Design docs
 └── Package.swift            # Root SPM package
 ```
@@ -64,6 +66,26 @@ Run unit tests:
 swift test
 ```
 
+## Offline fixture model
+
+CI and offline dogfood use a **tiny bundled fixture**, not multi-GB weights:
+
+| Path | Role |
+|------|------|
+| `Workers/fixtures/models/tiny-qwen-mlx/` | Living fixture (stub config + tokenizer JSON) |
+| `Packages/BAMModelCatalog/.../Resources/fixtures/tiny-qwen-mlx/` | Same files, bundled for install |
+| Catalog `sourceKey` | `buildaimaker/tiny-qwen-mlx-fixture` |
+
+**Real MLX weights** (e.g. `mlx-community/Qwen2.5-*-Instruct-4bit`) download separately via the optional Hugging Face Hub path when `ff.hfHubDownload` is on, or by placing files under `models/base/`. The fixture’s `model.safetensors` is a placeholder only (`WEIGHTS_NOT_INCLUDED.txt`).
+
+In the Models UI, **Install fixture model** copies the fixture into:
+
+```text
+~/Library/Application Support/BuildAIMaker/models/base/tiny-qwen-mlx-fixture/
+```
+
+with **no network**. Unit tests cover this offline path only.
+
 ## Feature flags
 
 All flags live in `BAMCore.FeatureFlags` and **default to off**:
@@ -78,6 +100,7 @@ All flags live in `BAMCore.FeatureFlags` and **default to off**:
 | `ff.cloudRunner` | Remote/cloud runner (kept off in v1) |
 | `ff.knowledgePacks` | Knowledge/RAG packs (Phase 2+) |
 | `ff.telemetryOptIn` | Opt-in diagnostics |
+| `ff.hfHubDownload` | Optional HF Hub model download (dogfood; CI stays offline) |
 
 ## Library root
 
@@ -94,15 +117,16 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore, BAMModels, BAMPersistence (no GPU)
+- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMModelCatalog (no GPU, no network for models)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
 ## Domain packages
 
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
-- **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …); `LibraryArchiveExporter` for Settings → “Export library archive…” (zip of sqlite + metadata; model weights skipped by default).
+- **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
+- **BAMModelCatalog** — living `Catalog/models.json`, local `models/base` scan, offline fixture install + optional HF Hub interface (`ModelInstallService`, Keychain token stub).
 
 ## Non-goals (current tree)
 
-No training runners, no Python env, no real dataset import UI yet.
+No training runners, no Python env, no real dataset import UI yet. HF Hub download client is a stub (`NoopHFHubClient`) until dogfood needs real weights.

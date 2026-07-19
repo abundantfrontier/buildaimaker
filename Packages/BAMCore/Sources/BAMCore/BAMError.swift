@@ -13,6 +13,7 @@ public enum BAMErrorCode: String, Codable, Sendable, CaseIterable {
     case preflightMemory = "BAM_PREFLIGHT_MEMORY"
     case datasetInvalid = "BAM_DATASET_INVALID"
     case modelNotFound = "BAM_MODEL_NOT_FOUND"
+    case downloadFailed = "BAM_DOWNLOAD_FAILED"
     case consentRequired = "BAM_CONSENT_REQUIRED"
     case consentTamper = "BAM_CONSENT_TAMPER"
     case personaUnresolved = "BAM_PERSONA_UNRESOLVED"

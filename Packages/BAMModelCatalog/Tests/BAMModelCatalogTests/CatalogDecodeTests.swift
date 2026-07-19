@@ -7,21 +7,25 @@ final class CatalogDecodeTests: XCTestCase {
         let catalog = try ModelCatalog.loadBundled()
 
         XCTAssertEqual(catalog.document.schemaVersion, 1)
-        XCTAssertEqual(catalog.entries.count, 3)
+        XCTAssertEqual(catalog.entries.count, 4)
 
         let sourceKeys = catalog.entries.map(\.sourceKey)
         XCTAssertEqual(
             sourceKeys,
             [
+                "buildaimaker/tiny-qwen-mlx-fixture",
                 "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
                 "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
                 "mlx-community/Qwen2.5-3B-Instruct-4bit",
             ]
         )
 
+        let fixture = try XCTUnwrap(catalog.fixtureEntry)
+        XCTAssertTrue(fixture.isFixture)
+        XCTAssertEqual(fixture.sourceKey, "buildaimaker/tiny-qwen-mlx-fixture")
+
         for entry in catalog.entries {
             XCTAssertEqual(entry.archFamily, "qwen2.5")
-            XCTAssertEqual(entry.quantBits, 4)
             XCTAssertEqual(entry.chatTemplateId, "qwen2.5-instruct")
             XCTAssertEqual(entry.license, "Apache-2.0")
             XCTAssertEqual(entry.format, "mlx")
@@ -33,9 +37,11 @@ final class CatalogDecodeTests: XCTestCase {
         let mid = try XCTUnwrap(catalog.entry(sourceKey: "mlx-community/Qwen2.5-1.5B-Instruct-4bit"))
         XCTAssertEqual(mid.paramCountB, 1.5)
         XCTAssertEqual(mid.name, "Qwen2.5 Instruct 1.5B")
+        XCTAssertFalse(mid.isFixture)
+        XCTAssertEqual(mid.quantBits, 4)
 
         let family = catalog.entries(archFamily: "qwen2.5")
-        XCTAssertEqual(family.count, 3)
+        XCTAssertEqual(family.count, 4)
     }
 
     func testDecodeFromDataRoundTrip() throws {

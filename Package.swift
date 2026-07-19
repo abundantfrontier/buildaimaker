@@ -10,7 +10,7 @@ let package = Package(
         .library(name: "BAMCore", targets: ["BAMCore"]),
         .library(name: "BAMModels", targets: ["BAMModels"]),
         .library(name: "BAMPersistence", targets: ["BAMPersistence"]),
-        .library(name: "BAMJobs", targets: ["BAMJobs"]),
+        .library(name: "BAMModelCatalog", targets: ["BAMModelCatalog"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
     ],
@@ -37,14 +37,16 @@ let package = Package(
             path: "Packages/BAMPersistence/Sources/BAMPersistence"
         ),
         .target(
-            name: "BAMJobs",
+            name: "BAMModelCatalog",
             dependencies: [
                 "BAMCore",
                 "BAMModels",
-                "BAMPersistence",
-                .product(name: "GRDB", package: "GRDB.swift"),
             ],
-            path: "Packages/BAMJobs/Sources/BAMJobs"
+            path: "Packages/BAMModelCatalog/Sources/BAMModelCatalog",
+            resources: [
+                .copy("Resources/models.json"),
+                .copy("Resources/fixtures"),
+            ]
         ),
         .target(
             name: "BAMResourcesUI",
@@ -57,7 +59,7 @@ let package = Package(
                 "BAMCore",
                 "BAMModels",
                 "BAMPersistence",
-                "BAMJobs",
+                "BAMModelCatalog",
                 "BAMResourcesUI",
             ],
             path: "Apps/BuildAIMaker/Sources"
@@ -83,15 +85,13 @@ let package = Package(
             path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"
         ),
         .testTarget(
-            name: "BAMJobsTests",
+            name: "BAMModelCatalogTests",
             dependencies: [
-                "BAMJobs",
+                "BAMModelCatalog",
                 "BAMModels",
                 "BAMCore",
-                "BAMPersistence",
-                .product(name: "GRDB", package: "GRDB.swift"),
             ],
-            path: "Packages/BAMJobs/Tests/BAMJobsTests"
+            path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"
         ),
     ]
 )

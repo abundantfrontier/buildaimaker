@@ -11,6 +11,8 @@ public struct FeatureFlags: Sendable, Equatable {
     public var cloudRunner: Bool
     public var knowledgePacks: Bool
     public var telemetryOptIn: Bool
+    /// Optional Hugging Face Hub download path (dogfood). Default off — CI stays offline.
+    public var hfHubDownload: Bool
 
     public init(
         llmTraining: Bool = false,
@@ -20,7 +22,8 @@ public struct FeatureFlags: Sendable, Equatable {
         talkMode: Bool = false,
         cloudRunner: Bool = false,
         knowledgePacks: Bool = false,
-        telemetryOptIn: Bool = false
+        telemetryOptIn: Bool = false,
+        hfHubDownload: Bool = false
     ) {
         self.llmTraining = llmTraining
         self.voiceClone = voiceClone
@@ -30,6 +33,7 @@ public struct FeatureFlags: Sendable, Equatable {
         self.cloudRunner = cloudRunner
         self.knowledgePacks = knowledgePacks
         self.telemetryOptIn = telemetryOptIn
+        self.hfHubDownload = hfHubDownload
     }
 
     /// Default product flags: every flag off (Phase 0 scaffold).
@@ -45,6 +49,7 @@ public struct FeatureFlags: Sendable, Equatable {
         case cloudRunner = "ff.cloudRunner"
         case knowledgePacks = "ff.knowledgePacks"
         case telemetryOptIn = "ff.telemetryOptIn"
+        case hfHubDownload = "ff.hfHubDownload"
     }
 
     public func isEnabled(_ key: Key) -> Bool {
@@ -57,6 +62,7 @@ public struct FeatureFlags: Sendable, Equatable {
         case .cloudRunner: return cloudRunner
         case .knowledgePacks: return knowledgePacks
         case .telemetryOptIn: return telemetryOptIn
+        case .hfHubDownload: return hfHubDownload
         }
     }
 }

@@ -1,0 +1,6 @@
+This fixture does NOT include real MLX / safetensors weights.
+
+- Offline CI uses the JSON stubs only (protocol, materialize, path jail).
+- Dogfood training requires a separate download of catalog MLX models
+  (e.g. mlx-community/Qwen2.5-*-Instruct-4bit) via Hugging Face Hub
+  when ff.hfHubDownload is enabled, or manual placement under models/base/.

@@ -1,4 +1,5 @@
 import SwiftUI
+import BAMCore
 
 /// Shared sidebar list chrome for the main navigation split view.
 public struct SidebarChrome: View {
@@ -18,6 +19,6 @@ public struct SidebarChrome: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("BuildAIMaker")
+        .navigationTitle(AppIdentity.displayName)
     }
 }

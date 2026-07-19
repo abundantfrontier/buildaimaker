@@ -66,31 +66,54 @@ public enum LibraryPaths: Sendable {
     }
 
     public static func datasetDirectory(id: String) -> URL {
-        datasets.appendingPathComponent(id, isDirectory: true)
+        datasets.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
     }
 
     public static func baseModelDirectory(id: String) -> URL {
-        modelsBase.appendingPathComponent(id, isDirectory: true)
+        modelsBase.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
     }
 
     public static func adapterDirectory(id: String) -> URL {
-        modelsAdapters.appendingPathComponent(id, isDirectory: true)
+        modelsAdapters.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
     }
 
     public static func voiceDirectory(id: String) -> URL {
-        voices.appendingPathComponent(id, isDirectory: true)
+        voices.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
     }
 
     public static func jobDirectory(id: String) -> URL {
-        jobs.appendingPathComponent(id, isDirectory: true)
+        jobs.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
     }
 
     public static func personaDirectory(id: String) -> URL {
-        personas.appendingPathComponent(id, isDirectory: true)
+        personas.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
     }
 
     public static func pythonEnvDirectory(appVersion: String) -> URL {
-        pythonEnvs.appendingPathComponent(appVersion, isDirectory: true)
+        pythonEnvs.appendingPathComponent(sanitizedPathComponent(appVersion), isDirectory: true)
+    }
+
+    /// Returns a single safe path component, or `nil` if `raw` is empty, `.`, `..`,
+    /// or contains path separators / null bytes.
+    ///
+    /// Callers that need hard rejection should use this before I/O; directory
+    /// helpers fall back to `"_invalid"` so a bad id cannot escape its parent folder.
+    public static func validatedPathComponent(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed != ".", trimmed != ".." else { return nil }
+        guard !trimmed.contains("/"), !trimmed.contains("\\"), !trimmed.contains("\0") else {
+            return nil
+        }
+        // Reject multi-segment inputs even if separators were encoded oddly.
+        let asURLComponent = (trimmed as NSString).lastPathComponent
+        guard asURLComponent == trimmed else { return nil }
+        return trimmed
+    }
+
+    /// Sanitizes an id for use as a single path component under the library root.
+    public static func sanitizedPathComponent(_ raw: String) -> String {
+        validatedPathComponent(raw) ?? "_invalid"
     }
 
     /// Environment variable names pinned for workers.

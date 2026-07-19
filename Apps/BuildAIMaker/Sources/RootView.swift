@@ -98,7 +98,6 @@ struct SettingsPlaceholderView: View {
             }
         }
         .formStyle(.grouped)
-        .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle(SidebarDestination.settings.title)
     }

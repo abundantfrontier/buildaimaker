@@ -1,6 +1,4 @@
 import SwiftUI
-import BAMCore
-import BAMResourcesUI
 
 @main
 struct BuildAIMakerApp: App {

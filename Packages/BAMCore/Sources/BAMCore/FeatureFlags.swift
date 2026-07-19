@@ -1,28 +1,47 @@
 import Foundation
 
-/// Product feature flags. Most flags default to **off**; ship-enabled features flip on
-/// in the PR that lands the corresponding product surface.
+/// Product feature flags.
+///
+/// Defaults after PR-Talk:
+/// - `ff.llmTraining` **on** (dogfood)
+/// - `ff.playground` **on** (text playground always available)
+/// - `ff.voiceClone` **on**
+/// - `ff.talkMode` **on** (STT → LLM → TTS)
+/// Remaining flags stay off until their shipping PRs enable them. Overrides can
+/// still be applied via `UserDefaults` / dev tooling by constructing a custom
+/// `FeatureFlags`.
 public struct FeatureFlags: Sendable, Equatable {
     public var llmTraining: Bool
+    /// Text playground (base + optional adapter chat). Always on after PR-Play-Text.
+    public var playground: Bool
     public var voiceClone: Bool
     public var voiceFinetune: Bool
     public var personaPacks: Bool
+    /// Spoken conversation: push-to-talk STT → LLM → TTS (PR-Talk).
     public var talkMode: Bool
     public var cloudRunner: Bool
     public var knowledgePacks: Bool
     public var telemetryOptIn: Bool
+    /// Optional Hugging Face Hub download path (dogfood). Default off — CI stays offline.
+    public var hfHubDownload: Bool
 
     public init(
-        llmTraining: Bool = false,
-        voiceClone: Bool = false,
+        /// PR-LLM-LoRA: default **true** for dogfood (design table: `ff.llmTraining` on).
+        llmTraining: Bool = true,
+        /// PR-Play-Text: default **true** — text playground always available.
+        playground: Bool = true,
+        voiceClone: Bool = true,
         voiceFinetune: Bool = false,
         personaPacks: Bool = false,
-        talkMode: Bool = false,
+        /// PR-Talk: default **true** — Talk mode STT+LLM+TTS.
+        talkMode: Bool = true,
         cloudRunner: Bool = false,
         knowledgePacks: Bool = false,
-        telemetryOptIn: Bool = false
+        telemetryOptIn: Bool = false,
+        hfHubDownload: Bool = false
     ) {
         self.llmTraining = llmTraining
+        self.playground = playground
         self.voiceClone = voiceClone
         self.voiceFinetune = voiceFinetune
         self.personaPacks = personaPacks
@@ -30,14 +49,16 @@ public struct FeatureFlags: Sendable, Equatable {
         self.cloudRunner = cloudRunner
         self.knowledgePacks = knowledgePacks
         self.telemetryOptIn = telemetryOptIn
+        self.hfHubDownload = hfHubDownload
     }
 
-    /// Default product flags. `ff.voiceClone` is **on** (PR-Voice-UI); all others remain off.
-    public static let `default` = FeatureFlags(voiceClone: true)
+    /// Default product flags (llmTraining, playground, voiceClone, talkMode on).
+    public static let `default` = FeatureFlags()
 
     /// Stable string keys used in config / docs (e.g. `ff.llmTraining`).
     public enum Key: String, CaseIterable, Sendable {
         case llmTraining = "ff.llmTraining"
+        case playground = "ff.playground"
         case voiceClone = "ff.voiceClone"
         case voiceFinetune = "ff.voiceFinetune"
         case personaPacks = "ff.personaPacks"
@@ -45,11 +66,13 @@ public struct FeatureFlags: Sendable, Equatable {
         case cloudRunner = "ff.cloudRunner"
         case knowledgePacks = "ff.knowledgePacks"
         case telemetryOptIn = "ff.telemetryOptIn"
+        case hfHubDownload = "ff.hfHubDownload"
     }
 
     public func isEnabled(_ key: Key) -> Bool {
         switch key {
         case .llmTraining: return llmTraining
+        case .playground: return playground
         case .voiceClone: return voiceClone
         case .voiceFinetune: return voiceFinetune
         case .personaPacks: return personaPacks
@@ -57,6 +80,7 @@ public struct FeatureFlags: Sendable, Equatable {
         case .cloudRunner: return cloudRunner
         case .knowledgePacks: return knowledgePacks
         case .telemetryOptIn: return telemetryOptIn
+        case .hfHubDownload: return hfHubDownload
         }
     }
 }

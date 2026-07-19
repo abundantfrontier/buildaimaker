@@ -20,7 +20,7 @@ buildaimaker/
 │   ├── BAMJobs/             # Job queue, state machine, fake TrainingRunner
 │   ├── BAMRunners/          # Runner Protocol v1, process supervisor, path jail
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/                 # Helpers: echo, llm, voice (+ managed Python pins)
+├── Workers/                 # Helpers (bam-echo-worker for protocol CI; llm later)
 ├── Catalog/                 # Model catalog (future)
 ├── Docs/                    # Design docs + ADRs
 └── Package.swift            # Root SPM package
@@ -66,20 +66,42 @@ Run unit tests:
 swift test
 ```
 
+## Offline fixture model
+
+CI and offline dogfood use a **tiny bundled fixture**, not multi-GB weights:
+
+| Path | Role |
+|------|------|
+| `Workers/fixtures/models/tiny-qwen-mlx/` | Living fixture (stub config + tokenizer JSON) |
+| `Packages/BAMModelCatalog/.../Resources/fixtures/tiny-qwen-mlx/` | Same files, bundled for install |
+| Catalog `sourceKey` | `buildaimaker/tiny-qwen-mlx-fixture` |
+
+**Real MLX weights** (e.g. `mlx-community/Qwen2.5-*-Instruct-4bit`) download separately via the optional Hugging Face Hub path when `ff.hfHubDownload` is on, or by placing files under `models/base/`. The fixture’s `model.safetensors` is a placeholder only (`WEIGHTS_NOT_INCLUDED.txt`).
+
+In the Models UI, **Install fixture model** copies the fixture into:
+
+```text
+~/Library/Application Support/BuildAIMaker/models/base/tiny-qwen-mlx-fixture/
+```
+
+with **no network**. Unit tests cover this offline path only.
+
 ## Feature flags
 
-All flags live in `BAMCore.FeatureFlags`. Most default **off**; ship-enabled features flip on in their PR:
+Flags live in `BAMCore.FeatureFlags`. Defaults after PR-Play-Text / PR-LLM-LoRA:
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `ff.llmTraining` | off | LLM LoRA training UI/path |
-| `ff.voiceClone` | **on** | Voice clone UI/path (PR-Voice-UI) |
+| `ff.llmTraining` | **on** | LLM LoRA training UI/path |
+| `ff.playground` | **on** | Text playground (base + adapter chat) |
+| `ff.voiceClone` | **on** | Voice clone UI/path |
 | `ff.voiceFinetune` | off | Supervised voice fine-tune (future) |
 | `ff.personaPacks` | off | Persona pack import/export |
-| `ff.talkMode` | off | Spoken conversation mode |
+| `ff.talkMode` | **on** | Talk mode STT→LLM→TTS (push-to-talk, barge-in) |
 | `ff.cloudRunner` | off | Remote/cloud runner (kept off in v1) |
 | `ff.knowledgePacks` | off | Knowledge/RAG packs (Phase 2+) |
 | `ff.telemetryOptIn` | off | Opt-in diagnostics |
+| `ff.hfHubDownload` | off | Optional HF Hub model download (dogfood; CI stays offline) |
 
 ## Library root
 
@@ -104,10 +126,8 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
-- **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, `VoiceCloneMaterializer`, Jobs UI.
-- **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures.
-- **BAMRunnersVoice** — Stub voice-clone runner (no F5 download), `VoiceProfileStore`, `VoiceCloneService` (import ref audio → consent → `JobPaths.referenceAudioPath` only → enqueue), Voices UI.
+- **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
+- **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
+- **BAMRunnersMLX** — LLM job materializer (normalized JSONL + JobPaths), ChatTemplateRegistry, prepare-only dry-run via `MLXWorkerClient` / echo or `bam-llm-worker`. LoRA train path with CI-safe fake when mlx-lm is missing.
+- **BAMInference** — Composable `LLMBackend` (echo stub + optional mlx-lm generate), ChatPromptFormatter, playground session, transcript JSONL export. Playground UI under sidebar **Playground**.
 
-## Non-goals (current tree)
-
-No real mlx-lm / F5-TTS training yet (stubs + pin/license ADRs only). Voice product UI uses the **stub** clone path. Talk mode is not enabled (`ff.talkMode` remains off).

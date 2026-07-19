@@ -5,14 +5,19 @@
   "sizeBudgetLabel": "3\u20138 GB",
   "lockfile": {
     "relativePath": "requirements.lock",
-    "sha256": "b05c1dc945fcdcd2fb94d8c045d82a4d7062b3f1654379fa3b962bbeebe02b00"
+    "sha256": "8af9383dbb23edf8ec89fccfaae82f112800eb95cbbf6c64fee4e672a7eb259b"
   },
   "interpreterRelativePath": "bin/python3",
   "entries": [
     {
       "id": "llm_worker.main",
       "relativePath": "llm_worker/main.py",
-      "sha256": "1682ba594fc06f3582cfc57787a4519c0bb7b9b8c635d11f8046f12b72e153a2"
+      "sha256": "7979d93347a38ab3e43d3235f8afd2c26d8c14dcdda8d00feb9fdea4267e5fee"
+    },
+    {
+      "id": "voice_worker.main",
+      "relativePath": "voice_worker/main.py",
+      "sha256": "e973c10de275d873646fd40787d080326fcf437beeca00b4d93c7f23a1407405"
     }
   ]
 }

@@ -2,11 +2,17 @@ import XCTest
 import BAMCore
 
 final class FeatureFlagsTests: XCTestCase {
-    func testDefaultFlagsAreAllOff() {
+    func testDefaultFlagsVoiceCloneOnOthersOff() {
         let flags = FeatureFlags.default
         for key in FeatureFlags.Key.allCases {
-            XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
+            if key == .voiceClone {
+                XCTAssertTrue(flags.isEnabled(key), "\(key.rawValue) should default on (PR-Voice-UI)")
+            } else {
+                XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
+            }
         }
+        XCTAssertTrue(flags.voiceClone)
+        XCTAssertFalse(flags.talkMode)
     }
 
     func testLibraryRootUsesApplicationSupport() {

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Product feature flags. All flags default to **off** in the Phase 0 shell.
-/// Enable only via future PRs that ship the corresponding feature.
+/// Product feature flags. Most flags default to **off**; ship-enabled features flip on
+/// in the PR that lands the corresponding product surface.
 public struct FeatureFlags: Sendable, Equatable {
     public var llmTraining: Bool
     public var voiceClone: Bool
@@ -32,8 +32,8 @@ public struct FeatureFlags: Sendable, Equatable {
         self.telemetryOptIn = telemetryOptIn
     }
 
-    /// Default product flags: every flag off (Phase 0 scaffold).
-    public static let `default` = FeatureFlags()
+    /// Default product flags. `ff.voiceClone` is **on** (PR-Voice-UI); all others remain off.
+    public static let `default` = FeatureFlags(voiceClone: true)
 
     /// Stable string keys used in config / docs (e.g. `ff.llmTraining`).
     public enum Key: String, CaseIterable, Sendable {

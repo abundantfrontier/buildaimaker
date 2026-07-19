@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "BAMConsent", targets: ["BAMConsent"]),
         .library(name: "BAMJobs", targets: ["BAMJobs"]),
         .library(name: "BAMRunners", targets: ["BAMRunners"]),
+        .library(name: "BAMRunnersVoice", targets: ["BAMRunnersVoice"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
@@ -27,8 +28,33 @@ let package = Package(
         .target(name: "BAMConsent", dependencies: ["BAMCore", "BAMModels", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMConsent/Sources/BAMConsent"),
         .target(name: "BAMJobs", dependencies: ["BAMCore", "BAMModels", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMJobs/Sources/BAMJobs"),
         .target(name: "BAMRunners", dependencies: ["BAMCore", "BAMModels", "BAMJobs"], path: "Packages/BAMRunners/Sources/BAMRunners"),
+        .target(
+            name: "BAMRunnersVoice",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+                "BAMConsent",
+                "BAMJobs",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Packages/BAMRunnersVoice/Sources/BAMRunnersVoice"
+        ),
         .target(name: "BAMResourcesUI", dependencies: ["BAMCore"], path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"),
-        .executableTarget(name: "BuildAIMaker", dependencies: ["BAMCore", "BAMModels", "BAMPersistence", "BAMConsent", "BAMJobs", "BAMRunners", "BAMResourcesUI"], path: "Apps/BuildAIMaker/Sources"),
+        .executableTarget(
+            name: "BuildAIMaker",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+                "BAMConsent",
+                "BAMJobs",
+                "BAMRunners",
+                "BAMRunnersVoice",
+                "BAMResourcesUI",
+            ],
+            path: "Apps/BuildAIMaker/Sources"
+        ),
         .executableTarget(name: "bam-echo-worker", path: "Workers/bam-echo-worker/Sources"),
         .executableTarget(name: "bam-llm-worker", dependencies: ["BAMCore"], path: "Workers/bam-llm-worker/Sources"),
         .executableTarget(name: "bam-voice-worker", dependencies: ["BAMCore"], path: "Workers/bam-voice-worker/Sources"),
@@ -38,5 +64,18 @@ let package = Package(
         .testTarget(name: "BAMConsentTests", dependencies: ["BAMConsent", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMConsent/Tests/BAMConsentTests"),
         .testTarget(name: "BAMJobsTests", dependencies: ["BAMJobs", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMJobs/Tests/BAMJobsTests"),
         .testTarget(name: "BAMRunnersTests", dependencies: ["BAMRunners", "BAMJobs", "BAMModels", "BAMCore"], path: "Packages/BAMRunners/Tests/BAMRunnersTests", resources: [.copy("Fixtures")]),
+        .testTarget(
+            name: "BAMRunnersVoiceTests",
+            dependencies: [
+                "BAMRunnersVoice",
+                "BAMJobs",
+                "BAMModels",
+                "BAMCore",
+                "BAMConsent",
+                "BAMPersistence",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Packages/BAMRunnersVoice/Tests/BAMRunnersVoiceTests"
+        ),
     ]
 )

@@ -68,18 +68,18 @@ swift test
 
 ## Feature flags
 
-All flags live in `BAMCore.FeatureFlags` and **default to off**:
+All flags live in `BAMCore.FeatureFlags`. Most default **off**; ship-enabled features flip on in their PR:
 
-| Key | Purpose |
-|-----|---------|
-| `ff.llmTraining` | LLM LoRA training UI/path |
-| `ff.voiceClone` | Voice clone UI/path |
-| `ff.voiceFinetune` | Supervised voice fine-tune (future) |
-| `ff.personaPacks` | Persona pack import/export |
-| `ff.talkMode` | Spoken conversation mode |
-| `ff.cloudRunner` | Remote/cloud runner (kept off in v1) |
-| `ff.knowledgePacks` | Knowledge/RAG packs (Phase 2+) |
-| `ff.telemetryOptIn` | Opt-in diagnostics |
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `ff.llmTraining` | off | LLM LoRA training UI/path |
+| `ff.voiceClone` | **on** | Voice clone UI/path (PR-Voice-UI) |
+| `ff.voiceFinetune` | off | Supervised voice fine-tune (future) |
+| `ff.personaPacks` | off | Persona pack import/export |
+| `ff.talkMode` | off | Spoken conversation mode |
+| `ff.cloudRunner` | off | Remote/cloud runner (kept off in v1) |
+| `ff.knowledgePacks` | off | Knowledge/RAG packs (Phase 2+) |
+| `ff.telemetryOptIn` | off | Opt-in diagnostics |
 
 ## Library root
 
@@ -96,7 +96,7 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMJobs, BAMRunners (no GPU)
+- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMJobs, BAMRunners, BAMRunnersVoice (no GPU)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
@@ -104,9 +104,10 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
-- **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
-- **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
+- **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, `VoiceCloneMaterializer`, Jobs UI.
+- **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures.
+- **BAMRunnersVoice** — Stub voice-clone runner (no F5 download), `VoiceProfileStore`, `VoiceCloneService` (import ref audio → consent → `JobPaths.referenceAudioPath` only → enqueue), Voices UI.
 
 ## Non-goals (current tree)
 
-No real mlx-lm / F5-TTS training yet (stubs + pin/license ADRs only). Voice spike: `bam-voice-worker` + `voice_worker` stub clone CLI + ADR 0002. No product Voices UI yet.
+No real mlx-lm / F5-TTS training yet (stubs + pin/license ADRs only). Voice product UI uses the **stub** clone path. Talk mode is not enabled (`ff.talkMode` remains off).

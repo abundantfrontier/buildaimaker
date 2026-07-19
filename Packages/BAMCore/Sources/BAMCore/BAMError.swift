@@ -20,6 +20,7 @@ public enum BAMErrorCode: String, Codable, Sendable, CaseIterable {
     case capabilityUnsupported = "BAM_CAPABILITY_UNSUPPORTED"
     case licenseBlock = "BAM_LICENSE_BLOCK"
     case migrationFailed = "BAM_MIGRATION_FAILED"
+    case exportFailed = "BAM_EXPORT_FAILED"
     case unknownKey = "BAM_UNKNOWN_KEY"
     case schemaInvalid = "BAM_SCHEMA_INVALID"
 }

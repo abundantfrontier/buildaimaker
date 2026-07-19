@@ -1,6 +1,7 @@
 import SwiftUI
+import AppKit
 import BAMCore
-import BAMConsent
+import BAMPersistence
 import BAMResourcesUI
 
 struct RootView: View {
@@ -43,14 +44,22 @@ struct RootView: View {
                     : "LLM training is not enabled yet (ff.llmTraining is off)."
             )
         case .jobs:
-            JobsView()
+            PlaceholderDetailView(
+                destination: .jobs,
+                subtitle: "Queue, progress, and job history."
+            )
         case .playground:
             PlaceholderDetailView(
                 destination: .playground,
                 subtitle: "Chat against base models and adapters."
             )
         case .voices:
-            VoicesPlaceholderView(featureFlags: featureFlags)
+            PlaceholderDetailView(
+                destination: .voices,
+                subtitle: featureFlags.voiceClone
+                    ? "Manage voice profiles."
+                    : "Voice cloning is not enabled yet (ff.voiceClone is off)."
+            )
         case .personas:
             PlaceholderDetailView(
                 destination: .personas,
@@ -68,88 +77,133 @@ struct RootView: View {
     }
 }
 
-/// Voices shell: consent attestation available before full voice-clone UI (PR-Voice-UI).
-struct VoicesPlaceholderView: View {
-    let featureFlags: FeatureFlags
-    @State private var showConsent = false
-
-    var body: some View {
-        Group {
-            if showConsent {
-                ConsentLibraryShell(onDismiss: { showConsent = false })
-            } else {
-                VStack(spacing: 16) {
-                    Image(systemName: SidebarDestination.voices.systemImage)
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(.secondary)
-                    Text(SidebarDestination.voices.title)
-                        .font(.title2.weight(.semibold))
-                    Text(subtitle)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 400)
-                    Button("Voice consent attestations…") {
-                        showConsent = true
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .navigationTitle(SidebarDestination.voices.title)
-            }
-        }
-    }
-
-    private var subtitle: String {
-        if featureFlags.voiceClone {
-            return "Manage voice profiles. Consent records are required before cloning."
-        }
-        return "Voice cloning is not enabled yet (ff.voiceClone is off). You can still create consent records."
-    }
-}
-
-/// Settings shell: feature flags + consent attestation entry point.
+/// Settings shell: about, feature flags, and library archive backup.
 struct SettingsPlaceholderView: View {
     let featureFlags: FeatureFlags
-    @State private var showConsent = false
+
+    @State private var includeModelWeights = false
+    @State private var isExporting = false
+    @State private var exportStatus: String?
+    @State private var exportError: String?
 
     var body: some View {
-        Group {
-            if showConsent {
-                ConsentLibraryShell(onDismiss: { showConsent = false })
-            } else {
-                Form {
-                    Section("About") {
-                        LabeledContent("App", value: AppIdentity.displayName)
-                        LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
-                        LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
-                        LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
-                    }
+        Form {
+            Section("About") {
+                LabeledContent("App", value: AppIdentity.displayName)
+                LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
+                LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
+                LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
+            }
 
-                    Section("Voice consent") {
-                        Text(
-                            "Create and review consent records bound by canonical content hash before voice cloning."
-                        )
+            Section {
+                Text(LibraryArchiveExporter.defaultWeightsSkipNote)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Include model weights", isOn: $includeModelWeights)
+                    .help("When off, models/base and models/adapters are omitted from the archive.")
+
+                Button("Export library archive…") {
+                    exportLibraryArchive()
+                }
+                .disabled(isExporting)
+
+                if isExporting {
+                    ProgressView("Exporting…")
+                        .controlSize(.small)
+                }
+                if let exportStatus {
+                    Text(exportStatus)
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        Button("Manage consent records…") {
-                            showConsent = true
-                        }
-                    }
+                        .textSelection(.enabled)
+                }
+                if let exportError {
+                    Text(exportError)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("Library durability")
+            } footer: {
+                Text(
+                    "Creates a zip of library.sqlite (SQLite online backup), config, consent, personas, datasets, voices, and jobs. Python envs and download cache are always skipped from this panel. Prefer exporting when the app is idle for the calmest snapshot."
+                )
+            }
 
-                    Section("Feature flags") {
-                        ForEach(FeatureFlags.Key.allCases, id: \.rawValue) { key in
-                            LabeledContent(key.rawValue) {
-                                Text(featureFlags.isEnabled(key) ? "On" : "Off")
-                                    .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
-                            }
-                        }
+            Section("Feature flags") {
+                ForEach(FeatureFlags.Key.allCases, id: \.rawValue) { key in
+                    LabeledContent(key.rawValue) {
+                        Text(featureFlags.isEnabled(key) ? "On" : "Off")
+                            .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
                     }
                 }
-                .formStyle(.grouped)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle(SidebarDestination.settings.title)
             }
         }
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .navigationTitle(SidebarDestination.settings.title)
+    }
+
+    /// Presents a save panel, then runs export off the main actor.
+    private func exportLibraryArchive() {
+        exportStatus = nil
+        exportError = nil
+
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = LibraryArchiveExporter.suggestedArchiveFileName()
+        panel.title = "Export library archive"
+        panel.message = includeModelWeights
+            ? "Full archive including model weights. library.sqlite is snapshotted via online backup."
+            : "Archive excludes large model weights (recommended). library.sqlite is snapshotted via online backup."
+        panel.prompt = "Export"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        isExporting = true
+        let includeWeights = includeModelWeights
+        DispatchQueue.global(qos: .userInitiated).async {
+            let options = LibraryArchiveExportOptions(
+                includeModelWeights: includeWeights,
+                includePythonEnvs: false,
+                includeDownloadCache: false,
+                compressToZip: true
+            )
+            do {
+                // Exporter fails closed with BAM_EXPORT_FAILED if library root / sqlite is missing.
+                let result = try LibraryArchiveExporter.exportDefaultLibrary(
+                    to: url,
+                    options: options
+                )
+                DispatchQueue.main.async {
+                    isExporting = false
+                    exportStatus =
+                        "Exported \(result.includedRelativePaths.count) entries (~\(Self.formatBytes(result.bytesCopied))) → \(result.archiveURL.path)"
+                    exportError = nil
+                }
+            } catch let error as BAMError {
+                DispatchQueue.main.async {
+                    isExporting = false
+                    exportError = error.errorDescription ?? error.code.rawValue
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isExporting = false
+                    exportError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 }

@@ -44,7 +44,8 @@ final class FeatureFlagsTests: XCTestCase {
         XCTAssertEqual(BAMErrorCode.capabilityUnsupported.rawValue, "BAM_CAPABILITY_UNSUPPORTED")
         XCTAssertEqual(BAMErrorCode.licenseBlock.rawValue, "BAM_LICENSE_BLOCK")
         XCTAssertEqual(BAMErrorCode.migrationFailed.rawValue, "BAM_MIGRATION_FAILED")
+        XCTAssertEqual(BAMErrorCode.exportFailed.rawValue, "BAM_EXPORT_FAILED")
         XCTAssertEqual(BAMErrorCode.schemaInvalid.rawValue, "BAM_SCHEMA_INVALID")
-        XCTAssertTrue(BAMErrorCode.allCases.count >= 19)
+        XCTAssertTrue(BAMErrorCode.allCases.count >= 20)
     }
 }

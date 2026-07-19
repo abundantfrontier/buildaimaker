@@ -80,9 +80,17 @@ public struct ConsentRecord: Codable, Sendable, Equatable {
         self.statements = statements
         self.attestedAt = attestedAt
         self.appVersion = appVersion
-        self.jurisdictionNote = jurisdictionNote
+        // Empty string is treated as absent so stored JSON matches hash input.
+        self.jurisdictionNote = Self.normalizedOptionalNote(jurisdictionNote)
         self.retention = retention
         self.contentHash = contentHash
+    }
+
+    /// Empty / whitespace-only notes collapse to `nil` (omit from JSON and hash).
+    public static func normalizedOptionalNote(_ note: String?) -> String? {
+        guard let note else { return nil }
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     enum CodingKeys: String, CodingKey {
@@ -113,7 +121,9 @@ public struct ConsentRecord: Codable, Sendable, Equatable {
         statements = try c.decode([String].self, forKey: .statements)
         attestedAt = try c.decode(String.self, forKey: .attestedAt)
         appVersion = try c.decode(String.self, forKey: .appVersion)
-        jurisdictionNote = try c.decodeIfPresent(String.self, forKey: .jurisdictionNote)
+        jurisdictionNote = Self.normalizedOptionalNote(
+            try c.decodeIfPresent(String.self, forKey: .jurisdictionNote)
+        )
         retention = try c.decode(String.self, forKey: .retention)
         contentHash = try c.decode(String.self, forKey: .contentHash)
     }
@@ -130,8 +140,9 @@ public struct ConsentRecord: Codable, Sendable, Equatable {
         try c.encode(statements, forKey: .statements)
         try c.encode(attestedAt, forKey: .attestedAt)
         try c.encode(appVersion, forKey: .appVersion)
-        if let jurisdictionNote {
-            try c.encode(jurisdictionNote, forKey: .jurisdictionNote)
+        // Match hash rules: omit empty/nil (never emit `""` or `null`).
+        if let note = jurisdictionNote, !note.isEmpty {
+            try c.encode(note, forKey: .jurisdictionNote)
         }
         try c.encode(retention, forKey: .retention)
         try c.encode(contentHash, forKey: .contentHash)

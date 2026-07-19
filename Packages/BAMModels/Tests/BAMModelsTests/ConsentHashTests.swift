@@ -55,6 +55,23 @@ final class ConsentHashTests: XCTestCase {
         XCTAssertNotEqual(try record.computeContentHash(), DomainFixtures.goldenConsentContentHash)
     }
 
+    func testEmptyJurisdictionNoteOmittedFromEncodeAndHash() throws {
+        var record = DomainFixtures.goldenConsentRecord
+        record.jurisdictionNote = ""
+        // Property can be assigned empty; encode + hash must still omit the key.
+        let data = try JSONEncoder().encode(record)
+        let obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertNil(obj["jurisdictionNote"])
+        XCTAssertEqual(try record.computeContentHash(), DomainFixtures.goldenConsentContentHash)
+
+        // Decoder normalizes empty string → nil.
+        let withEmpty = """
+        {"id":"\(DomainFixtures.consentRecordId)","schemaVersion":1,"createdAt":"\(DomainFixtures.goldenCreatedAt)","subjectType":"self","subjectDisplayName":"Test Subject","attestorUserLabel":"test-user","scope":"personal_use","statements":["I have the right to use this voice for the selected scope.","I will not use this to commit fraud or illegal impersonation."],"attestedAt":"\(DomainFixtures.goldenCreatedAt)","appVersion":"0.1.0","jurisdictionNote":"","retention":"until_user_deletes","contentHash":"\(DomainFixtures.goldenConsentContentHash)"}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ConsentRecord.self, from: withEmpty)
+        XCTAssertNil(decoded.jurisdictionNote)
+    }
+
     func testUnknownKeysRejected() {
         XCTAssertThrowsError(
             try ConsentCanonicalJSON.serialize(["id": "x", "evil": 1])

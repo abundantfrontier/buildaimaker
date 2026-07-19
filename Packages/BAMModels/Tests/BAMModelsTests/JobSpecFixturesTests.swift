@@ -97,4 +97,26 @@ final class JobSpecFixturesTests: XCTestCase {
         XCTAssertNotNil(obj["consentContentHash"] as? String)
         XCTAssertNotNil(obj["sampleText"] as? String)
     }
+
+    func testLegacyReferenceAudioPathOnJobSpecIsDropped() throws {
+        // Unknown path keys on JobSpec are ignored at decode (documented policy).
+        // Supervisor path-jail must use raw payload / JobPaths for BAM_PATH_ESCAPE.
+        let json = """
+        {
+          "v": 1,
+          "id": "\(DomainFixtures.voiceCloneJobId)",
+          "modality": "voiceClone",
+          "engineId": "f5-tts",
+          "consentRecordId": "\(DomainFixtures.consentRecordId)",
+          "consentContentHash": "sha256:abc",
+          "language": "en",
+          "referenceAudioPath": "/evil/escape.wav"
+        }
+        """.data(using: .utf8)!
+        let decoded = try decoder.decode(JobSpec.self, from: json)
+        XCTAssertEqual(decoded.modality, .voiceClone)
+        let reencoded = try encoder.encode(decoded)
+        let obj = try JSONSerialization.jsonObject(with: reencoded) as! [String: Any]
+        XCTAssertNil(obj["referenceAudioPath"])
+    }
 }

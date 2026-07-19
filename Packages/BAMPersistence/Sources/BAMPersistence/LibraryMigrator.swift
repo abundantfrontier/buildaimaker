@@ -1,13 +1,19 @@
+import BAMCore
 import Foundation
 import GRDB
 
 /// GRDB migration registry for `library.sqlite`.
 ///
-/// Migration numbers are sequential integers. Schema version 1 matches
-/// `ProtocolVersions.librarySchemaVersion` / design DDL.
+/// Migration identifiers are sequential (`v1`, …). Product schema version is
+/// `ProtocolVersions.librarySchemaVersion` (currently 1).
 public enum LibraryMigrator: Sendable {
     /// Migration identifier for library schema v1.
     public static let v1MigrationName = "v1"
+
+    /// Product-level schema version this migrator targets.
+    public static var currentSchemaVersion: Int {
+        ProtocolVersions.librarySchemaVersion
+    }
 
     /// Builds a `DatabaseMigrator` with all registered library migrations.
     public static func makeMigrator() -> DatabaseMigrator {
@@ -23,8 +29,24 @@ public enum LibraryMigrator: Sendable {
     }
 
     /// Applies migrations to an open database writer.
+    /// Failures are mapped to `BAMError(code: .migrationFailed)`.
     public static func migrate(_ dbWriter: any DatabaseWriter) throws {
-        try makeMigrator().migrate(dbWriter)
+        try migrate(dbWriter, using: makeMigrator())
+    }
+
+    /// Applies the given migrator, mapping non-`BAMError` failures to
+    /// `BAM_MIGRATION_FAILED` so callers can branch on the stable taxonomy.
+    public static func migrate(_ dbWriter: any DatabaseWriter, using migrator: DatabaseMigrator) throws {
+        do {
+            try migrator.migrate(dbWriter)
+        } catch let error as BAMError {
+            throw error
+        } catch {
+            throw BAMError(
+                code: .migrationFailed,
+                message: error.localizedDescription
+            )
+        }
     }
 
     // MARK: - V1 DDL

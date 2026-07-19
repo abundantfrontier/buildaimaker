@@ -1,3 +1,4 @@
+import BAMCore
 import Foundation
 
 /// Resolved playground mode after persona component resolution.
@@ -54,20 +55,21 @@ public struct PersonaSampling: Codable, Sendable, Equatable {
 /// Canonical nested persona document (pack `persona.json` / SQLite `personas.json` body).
 ///
 /// Knowledge / RAG pack keys are intentionally absent from this schema (K26).
-/// Unknown keys are ignored by `JSONDecoder` defaults at import time.
+/// Unknown keys (including future `knowledgePackId`) are ignored by `JSONDecoder` at import.
 public struct PersonaDocument: Codable, Sendable, Equatable {
     public var id: String
     public var name: String
     /// Semver string (e.g. `"1.0.0"`).
     public var version: String
-    /// Pack format version; pinned to `ProtocolVersions.personaPackFormat` (= 1).
+    /// Pack format version; always equals `ProtocolVersions.personaPackFormat`.
     public var formatVersion: Int
     public var llm: PersonaLLMComponents?
     public var voice: PersonaVoiceComponents?
     public var systemPrompt: String?
     public var sampling: PersonaSampling?
 
-    public static let formatVersionV1: Int = 1
+    /// Alias of `ProtocolVersions.personaPackFormat` so the pin cannot drift.
+    public static let formatVersionV1: Int = ProtocolVersions.personaPackFormat
 
     public init(
         id: String,

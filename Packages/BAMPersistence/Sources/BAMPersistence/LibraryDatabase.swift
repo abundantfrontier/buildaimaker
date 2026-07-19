@@ -4,8 +4,9 @@ import GRDB
 
 /// Opens and migrates the app library SQLite database (`library.sqlite`).
 ///
-/// Before each migrate on an existing on-disk file, copies the DB to
-/// `library.sqlite.bak` (design: pre-migration backup).
+/// Before applying **pending** migrations on an existing on-disk file, copies the DB to
+/// `library.sqlite.bak` (design: pre-migration backup of last known good schema).
+/// Already-current databases are opened without rewriting `.bak`.
 public final class LibraryDatabase: Sendable {
     public let dbQueue: DatabaseQueue
     public let databaseURL: URL?
@@ -17,22 +18,44 @@ public final class LibraryDatabase: Sendable {
         return LibraryDatabase(dbQueue: queue, databaseURL: nil)
     }
 
-    /// Opens (or creates) the library database at `url`, backs up if present, migrates.
+    /// Opens (or creates) the library database at `url`.
+    ///
+    /// - If the file already exists and has pending migrations, writes
+    ///   `\<name\>.bak` (temp copy then replace) before migrating.
+    /// - Migration failures surface as `BAMError(code: .migrationFailed)`.
     public static func open(at url: URL) throws -> LibraryDatabase {
         let fm = FileManager.default
         let parent = url.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
 
-        if fm.fileExists(atPath: url.path) {
-            // Design: copy `library.sqlite` → `library.sqlite.bak` before migrate.
-            let backupURL = parent.appendingPathComponent(url.lastPathComponent + ".bak")
-            if fm.fileExists(atPath: backupURL.path) {
-                try fm.removeItem(at: backupURL)
+        let fileExisted = fm.fileExists(atPath: url.path)
+        if fileExisted {
+            let pending: Bool
+            do {
+                pending = try hasPendingMigrations(at: url)
+            } catch let error as BAMError {
+                throw error
+            } catch {
+                throw BAMError(
+                    code: .migrationFailed,
+                    message: "Could not inspect library schema: \(error.localizedDescription)"
+                )
             }
-            try fm.copyItem(at: url, to: backupURL)
+            if pending {
+                try writePreMigrationBackup(of: url)
+            }
         }
 
-        let queue = try DatabaseQueue(path: url.path)
+        let queue: DatabaseQueue
+        do {
+            queue = try DatabaseQueue(path: url.path)
+        } catch {
+            throw BAMError(
+                code: .migrationFailed,
+                message: "Could not open library database: \(error.localizedDescription)"
+            )
+        }
+
         try LibraryMigrator.migrate(queue)
         return LibraryDatabase(dbQueue: queue, databaseURL: url)
     }
@@ -46,6 +69,38 @@ public final class LibraryDatabase: Sendable {
         self.dbQueue = dbQueue
         self.databaseURL = databaseURL
     }
+
+    // MARK: - Pre-migration backup
+
+    /// True when registered migrations have not all been applied yet.
+    public static func hasPendingMigrations(at url: URL) throws -> Bool {
+        let queue = try DatabaseQueue(path: url.path)
+        return try queue.read { db in
+            !(try LibraryMigrator.makeMigrator().hasCompletedMigrations(db))
+        }
+    }
+
+    /// Copies `url` → `url.lastPathComponent.bak` via a temp file so an existing
+    /// `.bak` is only replaced after the new copy succeeds.
+    public static func writePreMigrationBackup(of url: URL) throws {
+        let fm = FileManager.default
+        let parent = url.deletingLastPathComponent()
+        let bakURL = parent.appendingPathComponent(url.lastPathComponent + ".bak")
+        let tempURL = parent.appendingPathComponent(url.lastPathComponent + ".bak.tmp")
+
+        if fm.fileExists(atPath: tempURL.path) {
+            try fm.removeItem(at: tempURL)
+        }
+        try fm.copyItem(at: url, to: tempURL)
+
+        // Replace previous bak only after the new backup exists.
+        if fm.fileExists(atPath: bakURL.path) {
+            try fm.removeItem(at: bakURL)
+        }
+        try fm.moveItem(at: tempURL, to: bakURL)
+    }
+
+    // MARK: - Schema inspection
 
     /// Returns user-table names currently present (excludes `grdb_migrations`).
     public func userTableNames() throws -> [String] {

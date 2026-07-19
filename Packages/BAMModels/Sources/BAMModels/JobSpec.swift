@@ -157,6 +157,15 @@ public struct JobOutputs: Codable, Sendable, Equatable {
 
 /// Training job specification. Carries **ids only** for filesystem inputs —
 /// absolute paths live exclusively on `JobPaths` (including `referenceAudioPath`).
+///
+/// ## Decode policy (v1)
+/// - Unknown keys (including a legacy `referenceAudioPath` on the spec) are **dropped**
+///   by `Codable` because they are not in `CodingKeys`. The supervisor path-jail
+///   (PR-Jobs / PR-Protocol) must compare paths from the **raw prepare payload** or
+///   a side-channel if it needs to reject JobSpec↔JobPaths mismatches (`BAM_PATH_ESCAPE`).
+/// - Modality-specific required fields (e.g. `engineId` / `consentRecordId` for
+///   `.voiceClone`) are **not** enforced at decode time; materializer/supervisor
+///   validates before `prepare` / `run`.
 public struct JobSpec: Codable, Sendable, Equatable {
     public var v: Int
     public var id: String

@@ -20,7 +20,7 @@ buildaimaker/
 │   ├── BAMJobs/             # Job queue, state machine, fake TrainingRunner
 │   ├── BAMRunners/          # Runner Protocol v1, process supervisor, path jail
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/                 # Helpers (bam-echo-worker for protocol CI; llm later)
+├── Workers/                 # Helpers: echo, llm, voice (+ managed Python pins)
 ├── Catalog/                 # Model catalog (future)
 ├── Docs/                    # Design docs + ADRs
 └── Package.swift            # Root SPM package
@@ -109,4 +109,4 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 
 ## Non-goals (current tree)
 
-No real mlx-lm / F5-TTS training yet (see PR-LLM-Materialize / PR-VoiceSpike). No real dataset import UI yet.
+No real mlx-lm / F5-TTS training yet (stubs + pin/license ADRs only). Voice spike: `bam-voice-worker` + `voice_worker` stub clone CLI + ADR 0002. No product Voices UI yet.

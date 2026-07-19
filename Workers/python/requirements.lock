@@ -1,4 +1,4 @@
-# requirements.lock — pinned sketch for PR-PyEnv (SPIKE).
+# requirements.lock — pinned sketch for PR-PyEnv + PR-VoiceSpike (SPIKE).
 # These pins are placeholders for integrity hashing + SPDX inventory.
 # Do NOT download multi-GB wheels in CI. Real pins land when training ships.
 #
@@ -6,8 +6,12 @@
 # Generate with: pip freeze after a clean Apple Silicon install of requirements.txt
 #
 # Expected download size budget: 3–8 GB (CPython venv + wheels + caches).
-# See Docs/adr/0001-llm-runtime.md.
+#   LLM-only ~3–5 GB; LLM + voice (PyTorch MPS + F5-TTS) ~5–8 GB.
+# See Docs/adr/0001-llm-runtime.md and Docs/adr/0002-voice-engine.md.
+#
+# XTTS-v2 / coqui-ai-TTS is intentionally NOT pinned (AGPL; non-default).
 
+# --- LLM stack (ADR 0001) ---
 mlx==0.22.1  # SPDX: MIT
 mlx-lm==0.21.5  # SPDX: MIT
 mlx-metal==0.22.1  # SPDX: MIT
@@ -32,3 +36,16 @@ markupsafe==3.0.2  # SPDX: BSD-3-Clause
 regex==2024.11.6  # SPDX: Apache-2.0
 tokenizers==0.20.3  # SPDX: Apache-2.0
 transformers==4.46.3  # SPDX: Apache-2.0
+
+# --- Voice stack (ADR 0002 / PR-VoiceSpike) ---
+# Primary engine: F5-TTS. Code is MIT; default Emilia checkpoints are often
+# CC-BY-NC-4.0 — counsel review before paid commercial TTS (K24).
+# Do NOT install these multi-GB wheels in CI; stub clone uses stdlib only.
+f5-tts==1.1.1  # SPDX: MIT (code); default Emilia weights often CC-BY-NC-4.0 — see ADR 0002
+torch==2.5.1  # SPDX: BSD-3-Clause
+torchaudio==2.5.1  # SPDX: BSD-3-Clause
+scipy==1.14.1  # SPDX: BSD-3-Clause
+soundfile==0.12.1  # SPDX: BSD-3-Clause
+librosa==0.10.2  # SPDX: ISC
+einops==0.8.0  # SPDX: MIT
+# NOT PINNED (non-default, AGPL): TTS / coqui-ai-TTS / XTTS-v2 — see ADR 0002

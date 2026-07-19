@@ -3,12 +3,16 @@
 #
 # Size budget (documented, not downloaded in this spike): ~3–8 GB total for
 # CPython + mlx / mlx-lm + PyTorch-class deps when voice lands. LLM-only is
-# typically toward the lower end of that range.
+# typically toward the lower end of that range; LLM + F5-TTS ~5–8 GB.
+# See Docs/adr/0001-llm-runtime.md and Docs/adr/0002-voice-engine.md.
 #
 # Install (user machine, post-app-install into Application Support):
 #   python -m venv "$BAM_ENV"
 #   "$BAM_ENV/bin/pip" install -r requirements.lock
+#
+# XTTS-v2 / Coqui is AGPL and intentionally omitted (non-default).
 
+# LLM
 mlx>=0.22.0,<0.30.0
 mlx-lm>=0.21.0,<0.30.0
 numpy>=1.26.0,<3.0.0
@@ -16,3 +20,12 @@ huggingface-hub>=0.26.0,<1.0.0
 safetensors>=0.4.0,<1.0.0
 sentencepiece>=0.2.0,<1.0.0
 protobuf>=4.25.0,<6.0.0
+
+# Voice (F5-TTS primary — PR-VoiceSpike)
+f5-tts>=1.0.0,<2.0.0
+torch>=2.4.0,<2.7.0
+torchaudio>=2.4.0,<2.7.0
+scipy>=1.11.0,<2.0.0
+soundfile>=0.12.0,<0.13.0
+librosa>=0.10.0,<0.11.0
+einops>=0.7.0,<0.9.0

@@ -14,6 +14,7 @@ let package = Package(
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
         .executable(name: "bam-llm-worker", targets: ["bam-llm-worker"]),
+        .executable(name: "bam-voice-worker", targets: ["bam-voice-worker"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -28,6 +29,7 @@ let package = Package(
         .executableTarget(name: "BuildAIMaker", dependencies: ["BAMCore", "BAMModels", "BAMPersistence", "BAMJobs", "BAMRunners", "BAMResourcesUI"], path: "Apps/BuildAIMaker/Sources"),
         .executableTarget(name: "bam-echo-worker", path: "Workers/bam-echo-worker/Sources"),
         .executableTarget(name: "bam-llm-worker", dependencies: ["BAMCore"], path: "Workers/bam-llm-worker/Sources"),
+        .executableTarget(name: "bam-voice-worker", dependencies: ["BAMCore"], path: "Workers/bam-voice-worker/Sources"),
         .testTarget(name: "BAMCoreTests", dependencies: ["BAMCore"], path: "Packages/BAMCore/Tests/BAMCoreTests"),
         .testTarget(name: "BAMModelsTests", dependencies: ["BAMModels", "BAMCore"], path: "Packages/BAMModels/Tests/BAMModelsTests"),
         .testTarget(name: "BAMPersistenceTests", dependencies: ["BAMPersistence", "BAMModels", "BAMCore", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"),

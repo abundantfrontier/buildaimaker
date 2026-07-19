@@ -17,6 +17,7 @@ buildaimaker/
 │   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
 │   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
 │   ├── BAMPersistence/      # GRDB library.sqlite + migrations
+│   ├── BAMDatasets/         # Text JSONL import, validate, preview
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
 ├── Workers/                 # Training workers (future)
 ├── Catalog/                 # Model catalog (future)
@@ -94,7 +95,7 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore, BAMModels, BAMPersistence (no GPU)
+- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMDatasets (no GPU)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
@@ -102,7 +103,8 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
+- **BAMDatasets** — ShareGPT / OpenAI-messages JSONL import (copy or reference), validation with `BAM_DATASET_INVALID` line-level errors, preview of first N messages, Datasets UI.
 
 ## Non-goals (current tree)
 
-No training runners, no Python env, no real dataset import UI yet.
+No training runners, no Python env yet.

@@ -69,9 +69,11 @@ public actor MLXWorkerClient {
         // Brief pause so workers can emit prepare log lines before we tear down.
         try? await Task.sleep(for: .milliseconds(50))
 
-        // Tear down without run: cooperative cancel so echo/llm workers exit cleanly.
-        await supervisor.cancel(jobId: materialized.spec.id, paths: materialized.paths)
-        _ = await supervisor.waitUntilExit(
+        // Tear down without writing cancel.flag — dry-run must leave job layout
+        // re-runnable (not in a cancelled filesystem state). Prefer SIGTERM/SIGKILL.
+        await Self.shutdownDryRun(
+            supervisor: supervisor,
+            cancelFlagPath: materialized.paths.cancelFlagPath,
             timeout: max(config.cancelGraceT1 + config.cancelGraceT2 + 0.5, 1)
         )
 
@@ -83,6 +85,23 @@ public actor MLXWorkerClient {
             didTrain: false,
             workerExecutablePath: executableURL.path
         )
+    }
+
+    /// Stops the worker without `CancelFlag.write`. Clears any flag that might exist.
+    private static func shutdownDryRun(
+        supervisor: ProcessSupervisor,
+        cancelFlagPath: String,
+        timeout: TimeInterval
+    ) async {
+        // Never leave a cancelled layout after prepare-only dry-run.
+        CancelFlag.clear(at: cancelFlagPath)
+        await supervisor.signalTerminate()
+        _ = await supervisor.waitUntilExit(timeout: timeout)
+        if await supervisor.isRunning {
+            await supervisor.forceKill()
+            _ = await supervisor.waitUntilExit(timeout: 0.5)
+        }
+        CancelFlag.clear(at: cancelFlagPath)
     }
 
     /// Materialize only (no worker process). Useful for Validate without a built helper.

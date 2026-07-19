@@ -117,6 +117,34 @@ final class DryRunTests: XCTestCase {
         try JobMaterializer.assertLayoutExists(
             jobDir: URL(fileURLWithPath: result.materialize.paths.jobDir, isDirectory: true)
         )
+
+        // Issue 1: dry-run must not leave cancel.flag (would mark job cancelled).
+        XCTAssertFalse(
+            CancelFlag.exists(at: result.materialize.paths.cancelFlagPath),
+            "dry-run teardown must not write cancel.flag"
+        )
+
+        // Issue 4: observational prepare-only proof — no train side-effect artifacts.
+        let fm = FileManager.default
+        let checkpointDir = URL(fileURLWithPath: result.materialize.paths.checkpointPath, isDirectory: true)
+        let artifactsDir = URL(fileURLWithPath: result.materialize.paths.outputPath, isDirectory: true)
+        let checkpointChildren =
+            (try? fm.contentsOfDirectory(atPath: checkpointDir.path)) ?? []
+        let artifactChildren =
+            (try? fm.contentsOfDirectory(atPath: artifactsDir.path)) ?? []
+        XCTAssertTrue(
+            checkpointChildren.isEmpty,
+            "prepare-only dry-run must not write checkpoints; got \(checkpointChildren)"
+        )
+        XCTAssertTrue(
+            artifactChildren.isEmpty,
+            "prepare-only dry-run must not write train artifacts; got \(artifactChildren)"
+        )
+        // No adapter-style outputs under job dir.
+        let jobDir = URL(fileURLWithPath: result.materialize.paths.jobDir, isDirectory: true)
+        let jobListing = try fm.contentsOfDirectory(atPath: jobDir.path)
+        XCTAssertFalse(jobListing.contains("adapter_config.json"))
+        XCTAssertFalse(jobListing.contains { $0.hasSuffix(".safetensors") })
     }
 
     // MARK: - Helpers

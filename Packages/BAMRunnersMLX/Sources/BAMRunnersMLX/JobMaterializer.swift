@@ -237,10 +237,9 @@ public struct JobMaterializer: @unchecked Sendable {
             )
         }
 
-        // Jail model path under library root when it already lives there; allow
-        // external fixture paths only if they resolve under libraryRoot after copy
-        // (caller is responsible for install). We still require absolute paths.
-        let modelPath = request.baseModelPath.path
+        // Absolute paths required; base model must be path-jailed under libraryRoot
+        // before any job dir is created.
+        let modelPath = request.baseModelPath.resolvingSymlinksInPath().path
         guard modelPath.hasPrefix("/") else {
             throw BAMError(code: .pathEscape, message: "baseModelPath must be absolute")
         }
@@ -248,6 +247,11 @@ public struct JobMaterializer: @unchecked Sendable {
         guard sourcePath.hasPrefix("/") else {
             throw BAMError(code: .pathEscape, message: "sourceJSONLURL must be absolute")
         }
+        try PathJail.assertUnderRoot(
+            modelPath,
+            root: request.libraryRoot.path,
+            label: "baseModelPath"
+        )
     }
 
     private func createJobLayout(paths: JobPaths, dataDir: URL) throws {
@@ -281,6 +285,9 @@ public struct JobMaterializer: @unchecked Sendable {
     }
 
     /// Streams the source file, validates rows, writes canonical + templated JSONL.
+    ///
+    /// Uses `JSONLChatParser.forEachValidExample` (chunked `BufferedLineReader`) and
+    /// streams line writes instead of buffering the full file as `[String]`.
     /// - Returns: number of examples written.
     private func writeNormalizedJSONL(
         source: URL,
@@ -298,33 +305,27 @@ public struct JobMaterializer: @unchecked Sendable {
             )
         }
 
-        let handle = try FileHandle(forReadingFrom: source)
-        defer { try? handle.close() }
+        // Truncate / create output files for streaming append.
+        fileManager.createFile(atPath: trainURL.path, contents: nil)
+        fileManager.createFile(atPath: templatedURL.path, contents: nil)
+        let trainHandle = try FileHandle(forWritingTo: trainURL)
+        let templatedHandle = try FileHandle(forWritingTo: templatedURL)
+        defer {
+            try? trainHandle.close()
+            try? templatedHandle.close()
+        }
 
-        var trainLines: [String] = []
-        var templatedLines: [String] = []
-        var lineNumber = 0
         var count = 0
-
-        // Re-parse via public preview for small files is insufficient; stream via validate path.
-        // Use FileHandle line reading mirrored from JSONLChatParser.preview pattern.
-        while true {
-            guard let lineData = try readLine(from: handle) else { break }
-            lineNumber += 1
-            let trimmed = String(data: lineData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if trimmed.isEmpty { continue }
-
-            guard let example = parseExample(line: trimmed) else { continue }
+        try JSONLChatParser.forEachValidExample(fileURL: source) { example, _, _ in
             count += 1
 
-            // Canonical OpenAI messages row
-            let canonical = try encodeCanonical(example)
-            trainLines.append(canonical)
+            let canonical = try self.encodeCanonical(example)
+            try trainHandle.write(contentsOf: Data((canonical + "\n").utf8))
 
-            // Templated single-text row
             let like = ChatExampleLike(
-                messages: example.messages.map { ChatMessageLike(role: $0.role, content: $0.content) }
+                messages: example.messages.map {
+                    ChatMessageLike(role: $0.role, content: $0.content)
+                }
             )
             let text = ChatTemplateRegistry.apply(templateId: templateId, example: like)
             let templatedObj: [String: Any] = [
@@ -335,16 +336,11 @@ public struct JobMaterializer: @unchecked Sendable {
                 withJSONObject: templatedObj,
                 options: [.sortedKeys]
             )
-            if let s = String(data: templatedData, encoding: .utf8) {
-                templatedLines.append(s)
-            }
+            var line = templatedData
+            line.append(UInt8(ascii: "\n"))
+            try templatedHandle.write(contentsOf: line)
         }
 
-        let trainBody = trainLines.joined(separator: "\n") + (trainLines.isEmpty ? "" : "\n")
-        let templatedBody =
-            templatedLines.joined(separator: "\n") + (templatedLines.isEmpty ? "" : "\n")
-        try Data(trainBody.utf8).write(to: trainURL, options: .atomic)
-        try Data(templatedBody.utf8).write(to: templatedURL, options: .atomic)
         return count
     }
 
@@ -357,27 +353,5 @@ public struct JobMaterializer: @unchecked Sendable {
             throw BAMError(code: .datasetInvalid, message: "Failed to encode canonical example")
         }
         return s
-    }
-
-    private func parseExample(line: String) -> ChatExample? {
-        // Prefer reusing validation path: decode via JSONLChatParser preview of single line.
-        let examples = JSONLChatParser.preview(contents: line + "\n", maxExamples: 1)
-        return examples.first
-    }
-
-    private func readLine(from handle: FileHandle) throws -> Data? {
-        var buffer = Data()
-        while true {
-            let chunk = try handle.read(upToCount: 1) ?? Data()
-            if chunk.isEmpty {
-                return buffer.isEmpty ? nil : buffer
-            }
-            if chunk[0] == UInt8(ascii: "\n") {
-                return buffer
-            }
-            if chunk[0] != UInt8(ascii: "\r") {
-                buffer.append(chunk)
-            }
-        }
     }
 }

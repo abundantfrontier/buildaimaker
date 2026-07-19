@@ -135,6 +135,77 @@ final class JobMaterializerTests: XCTestCase {
         }
     }
 
+    func testMaterializeRejectsBaseModelOutsideLibraryRoot() throws {
+        let source = try writeFixtureJSONL()
+        // Model under a sibling temp tree — not under libraryRoot.
+        let outsideRoot = fm.temporaryDirectory
+            .appendingPathComponent("bam-escape-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: outsideRoot) }
+        let outsideModel = outsideRoot.appendingPathComponent("model", isDirectory: true)
+        try fm.createDirectory(at: outsideModel, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: outsideModel.appendingPathComponent("config.json"))
+
+        let jobId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        let request = LLMMaterializeRequest(
+            jobId: jobId,
+            libraryRoot: libraryRoot,
+            sourceJSONLURL: source,
+            baseModelPath: outsideModel,
+            baseModelId: DomainFixtures.baseModelId,
+            baseModelSourceKey: "escape/model",
+            datasetVersionId: DomainFixtures.datasetVersionId
+        )
+
+        XCTAssertThrowsError(try JobMaterializer().materialize(request)) { error in
+            let bam = error as? BAMError
+            XCTAssertEqual(bam?.code, .pathEscape)
+        }
+
+        // Fail closed: no durable job tree under libraryRoot.
+        let jobDir = libraryRoot
+            .appendingPathComponent("jobs", isDirectory: true)
+            .appendingPathComponent(jobId, isDirectory: true)
+        XCTAssertFalse(
+            fm.fileExists(atPath: jobDir.path),
+            "path-escape must not leave a jobs/<id> tree"
+        )
+    }
+
+    func testMaterializeShareGPTToCanonicalOpenAI() throws {
+        let source = libraryRoot.appendingPathComponent("sharegpt.jsonl")
+        let body = """
+            {"conversations":[{"from":"system","value":"Be brief."},{"from":"human","value":"Hi"},{"from":"gpt","value":"Hello there."}]}
+            {"conversations":[{"from":"human","value":"2+2?"},{"from":"gpt","value":"4"}]}
+            """
+        try Data(body.utf8).write(to: source)
+        let modelDir = try writeFixtureModel()
+
+        let result = try JobMaterializer().materialize(
+            LLMMaterializeRequest(
+                libraryRoot: libraryRoot,
+                sourceJSONLURL: source,
+                baseModelPath: modelDir,
+                baseModelId: DomainFixtures.baseModelId,
+                baseModelSourceKey: "buildaimaker/tiny-qwen-mlx-fixture",
+                datasetVersionId: DomainFixtures.datasetVersionId
+            )
+        )
+
+        XCTAssertEqual(result.exampleCount, 2)
+        let trainText = try String(contentsOf: result.normalizedJSONLURL, encoding: .utf8)
+        // Canonical OpenAI messages shape (not ShareGPT conversations/from/value).
+        XCTAssertTrue(trainText.contains("\"messages\""))
+        XCTAssertTrue(trainText.contains("\"role\""))
+        XCTAssertTrue(trainText.contains("\"user\""))
+        XCTAssertTrue(trainText.contains("\"assistant\""))
+        XCTAssertFalse(trainText.contains("\"conversations\""))
+        XCTAssertFalse(trainText.contains("\"from\""))
+
+        let templated = try String(contentsOf: result.templatedJSONLURL, encoding: .utf8)
+        XCTAssertTrue(templated.contains("<|im_start|>"))
+        XCTAssertTrue(templated.contains("\"text\""))
+    }
+
     func testJobLocalPathsUnderLibraryRoot() throws {
         let source = try writeFixtureJSONL()
         let modelDir = try writeFixtureModel()

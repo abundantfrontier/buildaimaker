@@ -230,6 +230,32 @@ public enum JSONLChatParser: Sendable {
         return examples
     }
 
+    /// Streams valid chat examples from a JSONL file using chunked line reads.
+    ///
+    /// Blank lines and invalid rows are skipped (caller should `validate` first when
+    /// fail-closed materialization is required). Used by job materialization.
+    public static func forEachValidExample(
+        fileURL: URL,
+        body: (_ example: ChatExample, _ format: DetectedChatFormat, _ lineNumber: Int) throws -> Void
+    ) throws {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        let reader = BufferedLineReader(handle: handle)
+        var lineNumber = 0
+        while true {
+            guard let lineData = try reader.readLine() else { break }
+            lineNumber += 1
+            let trimmed = String(data: lineData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if trimmed.isEmpty { continue }
+            if case .success(let example, let format) = parseRow(trimmed, line: lineNumber),
+               !example.messages.isEmpty
+            {
+                try body(example, format, lineNumber)
+            }
+        }
+    }
+
     // MARK: - Row parsing
 
     private enum RowParseResult {
@@ -419,19 +445,19 @@ public enum JSONLChatParser: Sendable {
 // MARK: - Buffered line reader
 
 /// Reads LF/CRLF lines from a `FileHandle` using chunked reads (not 1-byte syscalls).
-final class BufferedLineReader {
+public final class BufferedLineReader {
     private let handle: FileHandle
     private var buffer = Data()
     private var reachedEOF = false
     private let chunkSize: Int
 
-    init(handle: FileHandle, chunkSize: Int = 64 * 1024) {
+    public init(handle: FileHandle, chunkSize: Int = 64 * 1024) {
         self.handle = handle
         self.chunkSize = max(1, chunkSize)
     }
 
     /// Returns the next line without the terminator, or `nil` at EOF with no remaining data.
-    func readLine() throws -> Data? {
+    public func readLine() throws -> Data? {
         while true {
             if let newlineIndex = buffer.firstIndex(of: 0x0A) {
                 var line = buffer.subdata(in: buffer.startIndex..<newlineIndex)

@@ -128,9 +128,16 @@ Voice pins (F5-TTS, etc.) land in a separate ADR after PR-VoiceSpike.
 ## Non-goals (this spike)
 
 - Downloading multi-GB wheels in CI
-- Real mlx-lm training
 - F5-TTS / voice runtime
 - App Store sandbox packaging
+
+## LoRA train path (PR-LLM-LoRA)
+
+E2E train uses materialize + `ProcessSupervisor` `prepare`/`run`:
+
+1. **CI-safe fake train** when `BAM_LORA_FAKE=1` or `mlx-lm` is missing — writes stub adapter + `model_card.md` (hold-out loss + sample gens, K25).
+2. **Real path** when managed env has `mlx-lm` — Python entry calls `mlx_lm.lora` API or `python -m mlx_lm lora …` (see `Workers/python/README.md`).
+3. App publishes adapters under `models/adapters/<id>/` and enables `ff.llmTraining` by default for dogfood.
 
 ## Implementation map
 

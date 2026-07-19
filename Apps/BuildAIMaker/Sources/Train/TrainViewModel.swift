@@ -8,7 +8,7 @@ import BAMPersistence
 import BAMRunners
 import BAMRunnersMLX
 
-/// Train wizard: pick dataset + local/fixture model → Validate & dry-run (prepare only).
+/// Train wizard: pick dataset + local/fixture model → dry-run or full LoRA train.
 @MainActor
 final class TrainViewModel: ObservableObject {
     @Published private(set) var datasets: [DatasetRecord] = []
@@ -21,13 +21,20 @@ final class TrainViewModel: ObservableObject {
     @Published var loadError: String?
     @Published var hardwareMessage: String?
     @Published var hardwareOK = true
+    @Published private(set) var llmTrainingEnabled: Bool = FeatureFlags.default.llmTraining
 
     private var datasetService: DatasetLibraryService?
     private let libraryRoot: URL
     private let scanner: LocalModelScanner
+    private let featureFlags: FeatureFlags
 
-    init(libraryRoot: URL = LibraryPaths.libraryRoot) {
+    init(
+        libraryRoot: URL = LibraryPaths.libraryRoot,
+        featureFlags: FeatureFlags = .default
+    ) {
         self.libraryRoot = libraryRoot
+        self.featureFlags = featureFlags
+        self.llmTrainingEnabled = featureFlags.llmTraining
         self.scanner = LocalModelScanner(
             modelsBaseURL: libraryRoot.appendingPathComponent("models/base", isDirectory: true)
         )
@@ -86,6 +93,10 @@ final class TrainViewModel: ObservableObject {
             && datasetService != nil
     }
 
+    var canTrain: Bool {
+        canDryRun && llmTrainingEnabled
+    }
+
     func validateAndDryRun() {
         guard !isRunning else { return }
         guard hardwareOK else {
@@ -107,32 +118,13 @@ final class TrainViewModel: ObservableObject {
         Task {
             defer { isRunning = false }
             do {
-                guard let dataset = try service.dataset(id: datasetId) else {
-                    throw BAMError(code: .datasetInvalid, message: "Dataset not found")
-                }
-                let access = try service.resolveSourceAccess(for: dataset)
-                defer { access.stop() }
+                let ctx = try makeTrainContext(
+                    datasetId: datasetId,
+                    modelPath: modelPath,
+                    service: service
+                )
+                defer { ctx.access.stop() }
 
-                let version = try service.latestVersion(datasetId: datasetId)
-                let versionId = version?.id ?? BAMID.generate()
-
-                let modelURL = URL(fileURLWithPath: modelPath, isDirectory: true)
-                let modelId: String
-                let sourceKey: String
-                if modelURL.lastPathComponent == FixtureModel.installDirectoryName
-                    || modelURL.path.contains(FixtureModel.installDirectoryName)
-                {
-                    modelId = FixtureModel.stableModelID
-                    sourceKey = FixtureModel.sourceKey
-                } else {
-                    modelId = BAMID.generate()
-                    sourceKey = localModels.first(where: { $0.localPath == modelPath })?.displayName
-                        ?? modelURL.lastPathComponent
-                }
-
-                let chatTemplate = ChatTemplateRegistry.qwen25Instruct
-
-                // Prefer materialize + prepare via worker; fall back to materialize-only.
                 var invokeWorker = true
                 var workerURL: URL?
                 do {
@@ -159,12 +151,12 @@ final class TrainViewModel: ObservableObject {
                 )
 
                 let result = try await dryRun.validateAndDryRun(
-                    sourceJSONLURL: access.url,
-                    baseModelPath: modelURL,
-                    baseModelId: modelId,
-                    baseModelSourceKey: sourceKey,
-                    datasetVersionId: versionId,
-                    chatTemplateId: chatTemplate,
+                    sourceJSONLURL: ctx.access.url,
+                    baseModelPath: ctx.modelURL,
+                    baseModelId: ctx.modelId,
+                    baseModelSourceKey: ctx.sourceKey,
+                    datasetVersionId: ctx.versionId,
+                    chatTemplateId: ctx.chatTemplate,
                     workerURL: workerURL
                 )
 
@@ -185,5 +177,149 @@ final class TrainViewModel: ObservableObject {
                 resultSummary = error.localizedDescription
             }
         }
+    }
+
+    /// Full LoRA train: materialize → ProcessSupervisor prepare+run → publish adapter.
+    func trainLoRA() {
+        guard !isRunning else { return }
+        guard llmTrainingEnabled else {
+            resultSummary = "ff.llmTraining is off."
+            return
+        }
+        guard hardwareOK else {
+            resultSummary = hardwareMessage
+            return
+        }
+        guard let datasetId = selectedDatasetId,
+              let modelPath = selectedModelPath,
+              let service = datasetService
+        else {
+            resultSummary = "Select a dataset and a local base model."
+            return
+        }
+
+        isRunning = true
+        resultSummary = nil
+        statusMessage = "LoRA train: materialize → prepare → run…"
+
+        Task {
+            defer { isRunning = false }
+            do {
+                let ctx = try makeTrainContext(
+                    datasetId: datasetId,
+                    modelPath: modelPath,
+                    service: service
+                )
+                defer { ctx.access.stop() }
+
+                let workerURL = try MLXWorkerClient.resolveWorkerExecutable()
+
+                var config = ProcessSupervisorConfig.testing
+                config.helloDeadline = 15
+                config.heartbeatTimeout = 20
+                config.extraEnvironment = [
+                    RuntimePaths.EnvironmentKey.skipInterpreterCheck: "1",
+                    // Dogfood UI defaults to fake unless managed mlx-lm is installed;
+                    // set BAM_LORA_REAL=1 in the environment to force the Python path.
+                    "BAM_LORA_FAKE": ProcessInfo.processInfo.environment["BAM_LORA_REAL"] == "1"
+                        ? "0" : "1",
+                ]
+                if let pins = RuntimePaths.resolvePinsRoot() {
+                    config.extraEnvironment[RuntimePaths.EnvironmentKey.pythonPinsRoot] = pins.path
+                }
+
+                let serviceTrain = LoRATrainService(
+                    libraryRoot: libraryRoot,
+                    supervisorConfig: config,
+                    forceFakeTrain: ProcessInfo.processInfo.environment["BAM_LORA_REAL"] != "1"
+                )
+
+                let result = try await serviceTrain.train(
+                    sourceJSONLURL: ctx.access.url,
+                    baseModelPath: ctx.modelURL,
+                    baseModelId: ctx.modelId,
+                    baseModelSourceKey: ctx.sourceKey,
+                    datasetVersionId: ctx.versionId,
+                    chatTemplateId: ctx.chatTemplate,
+                    workerURL: workerURL
+                )
+
+                var lines = [
+                    "LoRA train \(result.status) (didTrain=\(result.didTrain), fake=\(result.fakeTrain))",
+                    "Job: \(result.materialize.spec.id)",
+                    "Examples: \(result.materialize.exampleCount)",
+                    "Worker: \(result.workerExecutablePath)",
+                ]
+                if let loss = result.finalTrainLoss {
+                    lines.append(String(format: "Final train loss: %.4f", loss))
+                }
+                if let hold = result.holdOutLoss {
+                    lines.append(String(format: "Hold-out loss: %.4f", hold))
+                }
+                if let publish = result.publish {
+                    lines.append("Adapter id: \(publish.artifactId)")
+                    lines.append("Adapter path: \(publish.adapterDirectory.path)")
+                    lines.append("Model card: \(publish.modelCardURL.path)")
+                }
+                if let message = result.message {
+                    lines.append("Message: \(message)")
+                }
+                resultSummary = lines.joined(separator: "\n")
+                statusMessage = result.status == "succeeded"
+                    ? "LoRA train succeeded — adapter under models/adapters/."
+                    : "LoRA train finished with status \(result.status)."
+            } catch {
+                statusMessage = "LoRA train failed"
+                resultSummary = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: - Shared context
+
+    private struct TrainContext {
+        var access: ResolvedSourceAccess
+        var modelURL: URL
+        var modelId: String
+        var sourceKey: String
+        var versionId: String
+        var chatTemplate: String
+    }
+
+    private func makeTrainContext(
+        datasetId: String,
+        modelPath: String,
+        service: DatasetLibraryService
+    ) throws -> TrainContext {
+        guard let dataset = try service.dataset(id: datasetId) else {
+            throw BAMError(code: .datasetInvalid, message: "Dataset not found")
+        }
+        let access = try service.resolveSourceAccess(for: dataset)
+
+        let version = try service.latestVersion(datasetId: datasetId)
+        let versionId = version?.id ?? BAMID.generate()
+
+        let modelURL = URL(fileURLWithPath: modelPath, isDirectory: true)
+        let modelId: String
+        let sourceKey: String
+        if modelURL.lastPathComponent == FixtureModel.installDirectoryName
+            || modelURL.path.contains(FixtureModel.installDirectoryName)
+        {
+            modelId = FixtureModel.stableModelID
+            sourceKey = FixtureModel.sourceKey
+        } else {
+            modelId = BAMID.generate()
+            sourceKey = localModels.first(where: { $0.localPath == modelPath })?.displayName
+                ?? modelURL.lastPathComponent
+        }
+
+        return TrainContext(
+            access: access,
+            modelURL: modelURL,
+            modelId: modelId,
+            sourceKey: sourceKey,
+            versionId: versionId,
+            chatTemplate: ChatTemplateRegistry.qwen25Instruct
+        )
     }
 }

@@ -1,7 +1,10 @@
 import Foundation
 
-/// Product feature flags. All flags default to **off** in the Phase 0 shell.
-/// Enable only via future PRs that ship the corresponding feature.
+/// Product feature flags.
+///
+/// `ff.llmTraining` is **on** by default as of PR-LLM-LoRA (dogfood). Remaining
+/// flags stay off until their shipping PRs enable them. Overrides can still be
+/// applied via `UserDefaults` / dev tooling by constructing a custom `FeatureFlags`.
 public struct FeatureFlags: Sendable, Equatable {
     public var llmTraining: Bool
     public var voiceClone: Bool
@@ -15,7 +18,8 @@ public struct FeatureFlags: Sendable, Equatable {
     public var hfHubDownload: Bool
 
     public init(
-        llmTraining: Bool = false,
+        /// PR-LLM-LoRA: default **true** for dogfood (design table: `ff.llmTraining` on).
+        llmTraining: Bool = true,
         voiceClone: Bool = false,
         voiceFinetune: Bool = false,
         personaPacks: Bool = false,
@@ -36,7 +40,7 @@ public struct FeatureFlags: Sendable, Equatable {
         self.hfHubDownload = hfHubDownload
     }
 
-    /// Default product flags: every flag off (Phase 0 scaffold).
+    /// Default product flags after PR-LLM-LoRA (`llmTraining` on; others off).
     public static let `default` = FeatureFlags()
 
     /// Stable string keys used in config / docs (e.g. `ff.llmTraining`).

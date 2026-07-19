@@ -2,11 +2,22 @@ import XCTest
 import BAMCore
 
 final class FeatureFlagsTests: XCTestCase {
-    func testDefaultFlagsAreAllOff() {
+    func testDefaultFlags_llmTrainingOn_othersOff() {
         let flags = FeatureFlags.default
-        for key in FeatureFlags.Key.allCases {
+        // PR-LLM-LoRA enables ff.llmTraining for dogfood.
+        XCTAssertTrue(flags.llmTraining)
+        XCTAssertTrue(flags.isEnabled(.llmTraining))
+        XCTAssertEqual(FeatureFlags.Key.llmTraining.rawValue, "ff.llmTraining")
+
+        for key in FeatureFlags.Key.allCases where key != .llmTraining {
             XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
         }
+    }
+
+    func testExplicitOverrideCanDisableLLMTraining() {
+        let flags = FeatureFlags(llmTraining: false)
+        XCTAssertFalse(flags.llmTraining)
+        XCTAssertFalse(flags.isEnabled(.llmTraining))
     }
 
     func testLibraryRootUsesApplicationSupport() {

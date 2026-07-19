@@ -49,12 +49,8 @@ struct RootView: View {
         case .voices:
             VoicesView(featureFlags: featureFlags)
         case .personas:
-            PlaceholderDetailView(
-                destination: .personas,
-                subtitle: featureFlags.personaPacks
-                    ? "Compose persona packs."
-                    : "Persona packs are not enabled yet (ff.personaPacks is off)."
-            )
+            // Persona composition + Pack Format v1 import/export (ff.personaPacks on after PR-Persona).
+            PersonasView(featureFlags: featureFlags)
         case .settings:
             SettingsPlaceholderView(featureFlags: featureFlags)
         }

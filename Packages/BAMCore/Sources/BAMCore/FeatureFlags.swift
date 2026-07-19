@@ -2,9 +2,11 @@ import Foundation
 
 /// Product feature flags.
 ///
-/// Defaults after PR-Play-Text / PR-LLM-LoRA:
+/// Defaults after PR-Persona / PR-Play-Text / PR-LLM-LoRA / PR-Voice-UI:
 /// - `ff.llmTraining` **on** (dogfood)
 /// - `ff.playground` **on** (text playground always available)
+/// - `ff.voiceClone` **on**
+/// - `ff.personaPacks` **on** (resolution + Pack Format v1)
 /// Remaining flags stay off until their shipping PRs enable them. Overrides can
 /// still be applied via `UserDefaults` / dev tooling by constructing a custom
 /// `FeatureFlags`.
@@ -29,7 +31,8 @@ public struct FeatureFlags: Sendable, Equatable {
         playground: Bool = true,
         voiceClone: Bool = true,
         voiceFinetune: Bool = false,
-        personaPacks: Bool = false,
+        /// PR-Persona: default **true** — persona resolution + Pack v1 zip.
+        personaPacks: Bool = true,
         talkMode: Bool = false,
         cloudRunner: Bool = false,
         knowledgePacks: Bool = false,
@@ -48,7 +51,7 @@ public struct FeatureFlags: Sendable, Equatable {
         self.hfHubDownload = hfHubDownload
     }
 
-    /// Default product flags (`llmTraining` + `playground` on; others off).
+    /// Default product flags (`llmTraining` + `playground` + `voiceClone` + `personaPacks` on).
     public static let `default` = FeatureFlags()
 
     /// Stable string keys used in config / docs (e.g. `ff.llmTraining`).

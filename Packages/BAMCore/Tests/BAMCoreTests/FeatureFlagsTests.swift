@@ -2,7 +2,7 @@ import XCTest
 import BAMCore
 
 final class FeatureFlagsTests: XCTestCase {
-    func testDefaultFlags_llmTrainingAndPlaygroundOn_othersOff() {
+    func testDefaultFlags_llmTrainingPlaygroundVoiceClonePersonaPacksOn_othersOff() {
         let flags = FeatureFlags.default
         // PR-LLM-LoRA enables ff.llmTraining for dogfood.
         XCTAssertTrue(flags.llmTraining)
@@ -12,12 +12,20 @@ final class FeatureFlagsTests: XCTestCase {
         XCTAssertTrue(flags.playground)
         XCTAssertTrue(flags.isEnabled(.playground))
         XCTAssertEqual(FeatureFlags.Key.playground.rawValue, "ff.playground")
+        // PR-Voice-UI enables ff.voiceClone.
+        XCTAssertTrue(flags.voiceClone)
+        XCTAssertTrue(flags.isEnabled(.voiceClone))
+        // PR-Persona enables ff.personaPacks.
+        XCTAssertTrue(flags.personaPacks)
+        XCTAssertTrue(flags.isEnabled(.personaPacks))
+        XCTAssertEqual(FeatureFlags.Key.personaPacks.rawValue, "ff.personaPacks")
 
-        let alwaysOn: Set<FeatureFlags.Key> = [.llmTraining, .playground]
+        let alwaysOn: Set<FeatureFlags.Key> = [
+            .llmTraining, .playground, .voiceClone, .personaPacks,
+        ]
         for key in FeatureFlags.Key.allCases where !alwaysOn.contains(key) {
             XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
         }
-        XCTAssertTrue(flags.voiceClone)
         XCTAssertFalse(flags.talkMode)
     }
 

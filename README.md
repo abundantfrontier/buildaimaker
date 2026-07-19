@@ -19,6 +19,7 @@ buildaimaker/
 │   ├── BAMPersistence/      # GRDB library.sqlite + migrations
 │   ├── BAMJobs/             # Job queue, state machine, fake TrainingRunner
 │   ├── BAMRunners/          # Runner Protocol v1, process supervisor, path jail
+│   ├── BAMPersonas/         # Persona resolution + Pack Format v1 zip
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
 ├── Workers/                 # Helpers (bam-echo-worker for protocol CI; llm later)
 ├── Catalog/                 # Model catalog (future)
@@ -94,9 +95,9 @@ Flags live in `BAMCore.FeatureFlags`. Defaults after PR-Play-Text / PR-LLM-LoRA:
 |-----|---------|---------|
 | `ff.llmTraining` | **on** | LLM LoRA training UI/path |
 | `ff.playground` | **on** | Text playground (base + adapter chat) |
-| `ff.voiceClone` | off | Voice clone UI/path |
+| `ff.voiceClone` | **on** | Voice clone UI/path |
 | `ff.voiceFinetune` | off | Supervised voice fine-tune (future) |
-| `ff.personaPacks` | off | Persona pack import/export |
+| `ff.personaPacks` | **on** | Persona resolution + pack import/export |
 | `ff.talkMode` | off | Spoken conversation mode |
 | `ff.cloudRunner` | off | Remote/cloud runner (kept off in v1) |
 | `ff.knowledgePacks` | off | Knowledge/RAG packs (Phase 2+) |
@@ -130,4 +131,5 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 - **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
 - **BAMRunnersMLX** — LLM job materializer (normalized JSONL + JobPaths), ChatTemplateRegistry, prepare-only dry-run via `MLXWorkerClient` / echo or `bam-llm-worker`. LoRA train path with CI-safe fake when mlx-lm is missing.
 - **BAMInference** — Composable `LLMBackend` (echo stub + optional mlx-lm generate), ChatPromptFormatter, playground session, transcript JSONL export. Playground UI under sidebar **Playground**.
+- **BAMPersonas** — Persona resolution (`.full` / `.textOnly` / `.voicePreview` / `EMPTY_PERSONA`), Pack Format v1 zip (manifest + persona.json + optional adapter/voice/consent/licenses), Personas UI create/list/export/import. No knowledge-pack keys (K26).
 

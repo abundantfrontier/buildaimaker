@@ -8,6 +8,7 @@
 | [adr/0001-llm-runtime.md](./adr/0001-llm-runtime.md) | Managed Python + mlx-lm train path |
 | [adr/0002-voice-engine.md](./adr/0002-voice-engine.md) | F5-TTS voice clone engine |
 | [adr/0003-apple-foundation-models.md](./adr/0003-apple-foundation-models.md) | Apple on-device LLM + LoRA adapters vs open MLX |
+| [dogfood-test-data.md](./dogfood-test-data.md) | Public + in-repo datasets/models/voice for testing |
 
 ## Architecture snapshot
 

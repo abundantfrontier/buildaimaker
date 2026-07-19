@@ -276,19 +276,29 @@ struct TalkView: View {
 
     private var pttButton: some View {
         let enabled = model.canPTT || model.isPTTDown
-        return Text(model.isPTTDown ? "Release" : "Push to talk")
+        let label: String = {
+            if model.isPTTDown { return "Release" }
+            if model.isBargeInEligible { return "Barge-in (hold)" }
+            return "Push to talk"
+        }()
+        return Text(label)
             .font(.headline)
             .foregroundStyle(.white)
             .padding(.horizontal, 28)
             .padding(.vertical, 14)
             .background(
                 Capsule()
-                    .fill(model.isPTTDown ? Color.red.opacity(0.9) : Color.accentColor)
+                    .fill(
+                        model.isPTTDown
+                            ? Color.red.opacity(0.9)
+                            : (model.isBargeInEligible ? Color.orange : Color.accentColor)
+                    )
                     .opacity(enabled ? 1 : 0.4)
             )
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
+                        // canPTT stays true during TTS so barge-in is reachable.
                         if !model.isPTTDown, model.canPTT {
                             model.pttDown()
                         }
@@ -299,8 +309,8 @@ struct TalkView: View {
                         }
                     }
             )
-            .help("Hold to capture speech; release to run STT→LLM→TTS. Press again during TTS to barge-in.")
-            .accessibilityLabel("Push to talk")
+            .help("Hold to capture speech; release to run STT→LLM→TTS. Press again during TTS to barge-in (stops speech).")
+            .accessibilityLabel(model.isBargeInEligible ? "Barge in push to talk" : "Push to talk")
     }
 
     private var phaseColor: Color {

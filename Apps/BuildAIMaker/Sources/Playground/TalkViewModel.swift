@@ -46,6 +46,10 @@ final class TalkViewModel: ObservableObject {
     private let coordinator: TalkCoordinator
     private let baseScanner: LocalModelScanner
     private var partialTimer: Timer?
+    /// Phase poll while a turn is in flight (keeps UI + barge-in gate current).
+    private var phasePollTimer: Timer?
+    /// Serializes `isBusy` clear so a barged-in turn's defer cannot clear a newer turn.
+    private var endTurnToken: Int = 0
 
     init(
         libraryRoot: URL = LibraryPaths.libraryRoot,
@@ -121,8 +125,25 @@ final class TalkViewModel: ObservableObject {
         }
     }
 
+    /// Whether the user may press Push-to-talk.
+    ///
+    /// Barge-in: PTT stays enabled while a turn is in flight (especially TTS).
+    /// Previously `!isBusy` blocked the whole STT→LLM→TTS span, so product UI
+    /// could never interrupt speech despite coordinator support.
     var canPTT: Bool {
-        talkEnabled && !isBusy && selectedBasePath != nil
+        guard talkEnabled, selectedBasePath != nil else { return false }
+        if isPTTDown { return true }
+        // Block only while STT is finalizing (avoid double-finalize races).
+        // LLM / TTS: allow barge-in (coordinator stops TTS; LLM may finish).
+        if isBusy, phase == .finalizingSTT || phase == .requestingPermission {
+            return false
+        }
+        return true
+    }
+
+    /// True when PTT would barge-in rather than start a cold listen.
+    var isBargeInEligible: Bool {
+        isBusy && (phase == .synthesizingTTS || phase == .playing || phase == .generatingLLM)
     }
 
     var phaseLabel: String {
@@ -147,6 +168,16 @@ final class TalkViewModel: ObservableObject {
         tccDenied = false
         syncCoordinatorConfig()
 
+        // Barge-in: invalidate the in-flight end-turn's ownership of `isBusy` so
+        // its defer cannot clear busy state for the new listen / later end.
+        if isBusy {
+            endTurnToken += 1
+            stopPhasePolling()
+            // New listen is not "busy end pipeline" until pttUp.
+            isBusy = false
+            statusMessage = "Barge-in — listening…"
+        }
+
         Task {
             do {
                 try await coordinator.pushToTalkBegan()
@@ -169,12 +200,22 @@ final class TalkViewModel: ObservableObject {
         guard isPTTDown else { return }
         isPTTDown = false
         stopPartialPolling()
+        endTurnToken += 1
+        let token = endTurnToken
         isBusy = true
+        startPhasePolling()
 
         Task {
-            defer { isBusy = false }
+            defer {
+                if token == endTurnToken {
+                    isBusy = false
+                    stopPhasePolling()
+                }
+            }
             do {
                 let turn = try await coordinator.pushToTalkEnded()
+                // Ignore stale results after barge-in started a newer turn.
+                guard token == endTurnToken else { return }
                 messages = await coordinator.messages
                 lastTimestamps = turn.timestamps
                 lastTTSProgress = turn.tts?.wasCancelled == true ? 0 : 1
@@ -191,13 +232,16 @@ final class TalkViewModel: ObservableObject {
                 }
                 await refreshFromCoordinator()
             } catch let error as BAMError where error.code == .tccMicDenied {
+                guard token == endTurnToken else { return }
                 tccDenied = true
                 errorMessage = MicPermissionMessaging.deniedMessage
                 await refreshFromCoordinator()
             } catch is CancellationError {
+                guard token == endTurnToken else { return }
                 statusMessage = "Turn cancelled (barge-in)."
                 await refreshFromCoordinator()
             } catch {
+                guard token == endTurnToken else { return }
                 errorMessage = error.localizedDescription
                 await refreshFromCoordinator()
             }
@@ -259,5 +303,21 @@ final class TalkViewModel: ObservableObject {
     private func stopPartialPolling() {
         partialTimer?.invalidate()
         partialTimer = nil
+    }
+
+    /// Poll coordinator phase while end-turn runs so barge-in eligibility tracks TTS.
+    private func startPhasePolling() {
+        stopPhasePolling()
+        phasePollTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.refreshFromCoordinator()
+            }
+        }
+    }
+
+    private func stopPhasePolling() {
+        phasePollTimer?.invalidate()
+        phasePollTimer = nil
     }
 }

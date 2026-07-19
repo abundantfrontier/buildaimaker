@@ -93,6 +93,22 @@ struct SettingsPlaceholderView: View {
                     }
                 }
             }
+
+            // K22 / PR-Remote-Fake: remote backend is interface-only; no real cloud/SSH in v1.
+            Section("Remote training") {
+                LabeledContent("Status") {
+                    Text(CloudPolicy.deferredMessage)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent(FeatureFlags.Key.cloudRunner.rawValue) {
+                    Text(featureFlags.cloudRunner ? "On" : "Off")
+                        .foregroundStyle(featureFlags.cloudRunner ? .primary : .secondary)
+                }
+                Text("Local Apple Silicon only for v1. Real cloud/SSH deferred until after product-market fit. Fake remote runner exists for API stability only.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

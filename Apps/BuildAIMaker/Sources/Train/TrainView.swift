@@ -4,7 +4,7 @@ import BAMModelCatalog
 import BAMResourcesUI
 import BAMRunnersMLX
 
-/// Train wizard: select dataset + model → dry-run or full LoRA train (`ff.llmTraining`).
+/// Train wizard: select dataset + model → Validate & dry-run (materialize + prepare only).
 struct TrainView: View {
     @StateObject private var model = TrainViewModel()
 
@@ -52,22 +52,9 @@ struct TrainView: View {
                     Label("Validate & dry-run", systemImage: "checkmark.shield")
                 }
             }
+            .buttonStyle(.borderedProminent)
             .disabled(!model.canDryRun)
             .help("Materialize job dir and invoke worker prepare only (no LoRA weight updates).")
-
-            if model.llmTrainingEnabled {
-                Button {
-                    model.trainLoRA()
-                } label: {
-                    Label("Train LoRA", systemImage: "flame")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canTrain)
-                .help(
-                    "E2E LoRA: materialize → prepare → run. Writes adapter under models/adapters/ "
-                        + "with model card (hold-out loss + sample gens). Uses fake train when mlx-lm is unavailable."
-                )
-            }
         }
         .padding(12)
     }
@@ -75,18 +62,6 @@ struct TrainView: View {
     private var content: some View {
         Form {
             hardwareFitSection
-
-            Section("Feature flag") {
-                LabeledContent("ff.llmTraining") {
-                    Text(model.llmTrainingEnabled ? "on" : "off")
-                        .foregroundStyle(model.llmTrainingEnabled ? .primary : .secondary)
-                }
-                if !model.llmTrainingEnabled {
-                    Text("Full LoRA train is disabled. Dry-run still works.")
-                        .font(.caption)
-                        .foregroundStyle(BAMColors.tertiaryLabel)
-                }
-            }
 
             Section("Dataset") {
                 if model.datasets.isEmpty {
@@ -145,13 +120,10 @@ struct TrainView: View {
                 }
             }
 
-            Section("Train") {
+            Section("Dry-run") {
                 Text(
-                    "Dry-run materializes jobs/<id>/ and sends prepare only. "
-                        + "Train LoRA runs prepare + run via ProcessSupervisor, then publishes "
-                        + "the adapter under models/adapters/ with a K25 model card "
-                        + "(hold-out loss + sample generations). "
-                        + "CI / machines without mlx-lm use BAM_LORA_FAKE stub train."
+                    "Writes normalized JSONL + JobPaths under jobs/<id>/, then sends worker prepare only. "
+                        + "Does not run LoRA or update weights (ff.llmTraining stays off)."
                 )
                 .font(.callout)
                 .foregroundStyle(BAMColors.secondaryLabel)
@@ -160,16 +132,6 @@ struct TrainView: View {
                     Text(status)
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)
-                }
-
-                if model.needsRuntimeRepair {
-                    Label(
-                        RuntimeRecovery.shortCTA,
-                        systemImage: "exclamationmark.shield"
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .help(RuntimeRecovery.fullGuidance)
                 }
 
                 if let summary = model.resultSummary {

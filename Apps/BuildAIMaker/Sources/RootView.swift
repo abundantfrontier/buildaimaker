@@ -1,5 +1,6 @@
 import SwiftUI
 import BAMCore
+import BAMConsent
 import BAMResourcesUI
 
 struct RootView: View {
@@ -49,12 +50,7 @@ struct RootView: View {
                 subtitle: "Chat against base models and adapters."
             )
         case .voices:
-            PlaceholderDetailView(
-                destination: .voices,
-                subtitle: featureFlags.voiceClone
-                    ? "Manage voice profiles."
-                    : "Voice cloning is not enabled yet (ff.voiceClone is off)."
-            )
+            VoicesPlaceholderView(featureFlags: featureFlags)
         case .personas:
             PlaceholderDetailView(
                 destination: .personas,
@@ -75,6 +71,7 @@ struct RootView: View {
 /// Settings shell: feature flags + managed training runtime install stub.
 struct SettingsPlaceholderView: View {
     let featureFlags: FeatureFlags
+    @State private var showConsent = false
 
     @State private var installProgress = RuntimeInstallProgress()
     @State private var installMessage: String?
@@ -188,12 +185,65 @@ struct SettingsPlaceholderView: View {
                         Text(featureFlags.isEnabled(key) ? "On" : "Off")
                             .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
                     }
+                    .buttonStyle(.borderedProminent)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle(SidebarDestination.voices.title)
             }
         }
-        .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .navigationTitle(SidebarDestination.settings.title)
+    }
+
+    private var subtitle: String {
+        if featureFlags.voiceClone {
+            return "Manage voice profiles. Consent records are required before cloning."
+        }
+        return "Voice cloning is not enabled yet (ff.voiceClone is off). You can still create consent records."
+    }
+}
+
+/// Settings shell: feature flags + consent attestation entry point.
+struct SettingsPlaceholderView: View {
+    let featureFlags: FeatureFlags
+    @State private var showConsent = false
+
+    var body: some View {
+        Group {
+            if showConsent {
+                ConsentLibraryShell(onDismiss: { showConsent = false })
+            } else {
+                Form {
+                    Section("About") {
+                        LabeledContent("App", value: AppIdentity.displayName)
+                        LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
+                        LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
+                        LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
+                    }
+
+                    Section("Voice consent") {
+                        Text(
+                            "Create and review consent records bound by canonical content hash before voice cloning."
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        Button("Manage consent records…") {
+                            showConsent = true
+                        }
+                    }
+
+                    Section("Feature flags") {
+                        ForEach(FeatureFlags.Key.allCases, id: \.rawValue) { key in
+                            LabeledContent(key.rawValue) {
+                                Text(featureFlags.isEnabled(key) ? "On" : "Off")
+                                    .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
+                            }
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .navigationTitle(SidebarDestination.settings.title)
+            }
+        }
     }
 
     private var byteProgressLabel: String {

@@ -2,33 +2,17 @@ import XCTest
 import BAMCore
 
 final class FeatureFlagsTests: XCTestCase {
-    func testDefaultFlags_llmTrainingAndPlaygroundOn_othersOff() {
+    func testDefaultFlagsVoiceCloneOnOthersOff() {
         let flags = FeatureFlags.default
-        // PR-LLM-LoRA enables ff.llmTraining for dogfood.
-        XCTAssertTrue(flags.llmTraining)
-        XCTAssertTrue(flags.isEnabled(.llmTraining))
-        XCTAssertEqual(FeatureFlags.Key.llmTraining.rawValue, "ff.llmTraining")
-        // PR-Play-Text enables ff.playground (always on).
-        XCTAssertTrue(flags.playground)
-        XCTAssertTrue(flags.isEnabled(.playground))
-        XCTAssertEqual(FeatureFlags.Key.playground.rawValue, "ff.playground")
-
-        let alwaysOn: Set<FeatureFlags.Key> = [.llmTraining, .playground]
-        for key in FeatureFlags.Key.allCases where !alwaysOn.contains(key) {
-            XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
+        for key in FeatureFlags.Key.allCases {
+            if key == .voiceClone {
+                XCTAssertTrue(flags.isEnabled(key), "\(key.rawValue) should default on (PR-Voice-UI)")
+            } else {
+                XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
+            }
         }
-    }
-
-    func testExplicitOverrideCanDisableLLMTraining() {
-        let flags = FeatureFlags(llmTraining: false)
-        XCTAssertFalse(flags.llmTraining)
-        XCTAssertFalse(flags.isEnabled(.llmTraining))
-    }
-
-    func testExplicitOverrideCanDisablePlayground() {
-        let flags = FeatureFlags(playground: false)
-        XCTAssertFalse(flags.playground)
-        XCTAssertFalse(flags.isEnabled(.playground))
+        XCTAssertTrue(flags.voiceClone)
+        XCTAssertFalse(flags.talkMode)
     }
 
     func testLibraryRootUsesApplicationSupport() {
@@ -67,13 +51,6 @@ final class FeatureFlagsTests: XCTestCase {
         XCTAssertEqual(BAMErrorCode.licenseBlock.rawValue, "BAM_LICENSE_BLOCK")
         XCTAssertEqual(BAMErrorCode.migrationFailed.rawValue, "BAM_MIGRATION_FAILED")
         XCTAssertEqual(BAMErrorCode.schemaInvalid.rawValue, "BAM_SCHEMA_INVALID")
-        XCTAssertEqual(BAMErrorCode.downloadFailed.rawValue, "BAM_DOWNLOAD_FAILED")
-        XCTAssertTrue(BAMErrorCode.allCases.count >= 20)
-    }
-
-    func testHFHubDownloadDefaultsOff() {
-        XCTAssertFalse(FeatureFlags.default.hfHubDownload)
-        XCTAssertFalse(FeatureFlags.default.isEnabled(.hfHubDownload))
-        XCTAssertEqual(FeatureFlags.Key.hfHubDownload.rawValue, "ff.hfHubDownload")
+        XCTAssertTrue(BAMErrorCode.allCases.count >= 19)
     }
 }

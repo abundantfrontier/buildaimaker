@@ -1,7 +1,6 @@
 import SwiftUI
-import AppKit
 import BAMCore
-import BAMPersistence
+import BAMConsent
 import BAMResourcesUI
 
 struct RootView: View {
@@ -37,30 +36,21 @@ struct RootView: View {
                 subtitle: "Browse base models and adapters."
             )
         case .train:
-            // Train wizard: dry-run + full LoRA when ff.llmTraining (default on after PR-LLM-LoRA).
-            TrainView()
+            PlaceholderDetailView(
+                destination: .train,
+                subtitle: featureFlags.llmTraining
+                    ? "Configure a fine-tuning job."
+                    : "LLM training is not enabled yet (ff.llmTraining is off)."
+            )
         case .jobs:
-            PlaceholderDetailView(
-                destination: .jobs,
-                subtitle: "Queue, progress, and job history."
-            )
+            JobsView()
         case .playground:
-            // Text playground: base + optional adapter, A/B toggle, JSONL export (ff.playground always on).
-            if featureFlags.playground {
-                PlaygroundView()
-            } else {
-                PlaceholderDetailView(
-                    destination: .playground,
-                    subtitle: "Playground is not enabled (ff.playground is off)."
-                )
-            }
-        case .voices:
             PlaceholderDetailView(
-                destination: .voices,
-                subtitle: featureFlags.voiceClone
-                    ? "Manage voice profiles."
-                    : "Voice cloning is not enabled yet (ff.voiceClone is off)."
+                destination: .playground,
+                subtitle: "Chat against base models and adapters."
             )
+        case .voices:
+            VoicesView(featureFlags: featureFlags)
         case .personas:
             PlaceholderDetailView(
                 destination: .personas,
@@ -78,149 +68,208 @@ struct RootView: View {
     }
 }
 
-/// Settings shell: about, feature flags, and library archive backup.
+/// Settings shell: feature flags + managed training runtime install stub + consent.
 struct SettingsPlaceholderView: View {
     let featureFlags: FeatureFlags
+    @State private var showConsent = false
 
-    @State private var includeModelWeights = false
-    @State private var isExporting = false
-    @State private var exportStatus: String?
-    @State private var exportError: String?
+    @State private var installProgress = RuntimeInstallProgress()
+    @State private var installMessage: String?
+    @State private var isInstalling = false
+    @State private var helperValidationMessage: String?
+
+    private var installer: RuntimeInstaller {
+        RuntimeInstaller(appVersion: RuntimePaths.spikeAppVersion)
+    }
+
+    private var runtimeStatus: RuntimeInstallStatus {
+        installer.status()
+    }
 
     var body: some View {
-        Form {
-            Section("About") {
-                LabeledContent("App", value: AppIdentity.displayName)
-                LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
-                LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
-                LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
-            }
+        Group {
+            if showConsent {
+                ConsentLibraryShell(onDismiss: { showConsent = false })
+            } else {
+                Form {
+                    Section("About") {
+                        LabeledContent("App", value: AppIdentity.displayName)
+                        LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
+                        LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
+                        LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
+                    }
 
-            Section {
-                Text(LibraryArchiveExporter.defaultWeightsSkipNote)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Toggle("Include model weights", isOn: $includeModelWeights)
-                    .help("When off, models/base and models/adapters are omitted from the archive.")
-
-                Button("Export library archive…") {
-                    exportLibraryArchive()
-                }
-                .disabled(isExporting)
-
-                if isExporting {
-                    ProgressView("Exporting…")
-                        .controlSize(.small)
-                }
-                if let exportStatus {
-                    Text(exportStatus)
+                    Section {
+                        LabeledContent("Status") {
+                            Text(runtimeStatus.isInstalled ? "Installed" : "Not installed")
+                                .foregroundStyle(runtimeStatus.isInstalled ? .primary : .secondary)
+                        }
+                        LabeledContent("App version pin", value: runtimeStatus.appVersion)
+                        LabeledContent("Env root", value: runtimeStatus.envRoot.path)
+                        LabeledContent("Size budget", value: runtimeStatus.sizeBudgetLabel)
+                        Text(
+                            "Training uses a managed Python environment (mlx-lm + optional voice stack). Download is multi-gigabyte (\(runtimeStatus.sizeBudgetLabel)); wheels install under Application Support after the notarized app is installed—not inside the .app bundle."
+                        )
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                }
-                if let exportError {
-                    Text(exportError)
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                        .textSelection(.enabled)
-                }
-            } header: {
-                Text("Library durability")
-            } footer: {
-                Text(
-                    "Creates a zip of library.sqlite (SQLite online backup), config, consent, personas, datasets, voices, and jobs. Python envs and download cache are always skipped from this panel. Prefer exporting when the app is idle for the calmest snapshot."
-                )
-            }
 
-            Section("Feature flags") {
-                ForEach(FeatureFlags.Key.allCases, id: \.rawValue) { key in
-                    LabeledContent(key.rawValue) {
-                        Text(featureFlags.isEnabled(key) ? "On" : "Off")
-                            .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
+                        if isInstalling || installProgress.phase == .downloading || installProgress.phase == .preparing {
+                            ProgressView(value: installProgress.fractionCompleted) {
+                                Text(installProgress.message.isEmpty ? "Installing…" : installProgress.message)
+                            } currentValueLabel: {
+                                Text(byteProgressLabel)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if let installMessage {
+                            Text(installMessage)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if let err = runtimeStatus.lastError {
+                            Text(err)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+
+                        Button {
+                            Task { await runInstallStub() }
+                        } label: {
+                            Label(
+                                runtimeStatus.isInstalled ? "Repair training runtime" : "Install training runtime",
+                                systemImage: "arrow.down.circle"
+                            )
+                        }
+                        .disabled(isInstalling || !featureFlags.llmTraining)
+                        .help(
+                            featureFlags.llmTraining
+                                ? "Download managed Python wheels (\(runtimeStatus.sizeBudgetLabel) budget)."
+                                : "Enable ff.llmTraining to install the training runtime."
+                        )
+
+                        if !featureFlags.llmTraining {
+                            Text("ff.llmTraining is off — install control is disabled in this shell.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("Training runtime")
+                    } footer: {
+                        Text("Two-layer trust: UI launches only TeamID-signed Helpers/bam-*-worker via WorkerSpawn.prepareHelperLaunch (L1); helper verifies runtime-pins.json before exec (L2). Fail closed: BAM_RUNTIME_INTEGRITY.")
+                    }
+
+                    Section {
+                        Text("Before any Process launch, the supervisor must call WorkerSpawn.prepareHelperLaunch (L1 TeamID / validity). This control exercises that gate without starting a worker.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+
+                        if let helperValidationMessage {
+                            Text(helperValidationMessage)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+
+                        Button {
+                            validateHelperL1()
+                        } label: {
+                            Label("Validate helper (L1)", systemImage: "checkmark.shield")
+                        }
+                        .help("Resolve bam-llm-worker and run WorkerTrust via WorkerSpawn.prepareHelperLaunch.")
+                    } header: {
+                        Text("Worker trust")
+                    }
+
+                    Section("Voice consent") {
+                        Text(
+                            "Create and review consent records bound by canonical content hash before voice cloning."
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        Button("Manage consent records…") {
+                            showConsent = true
+                        }
+                    }
+
+                    Section("Feature flags") {
+                        ForEach(FeatureFlags.Key.allCases, id: \.rawValue) { key in
+                            LabeledContent(key.rawValue) {
+                                Text(featureFlags.isEnabled(key) ? "On" : "Off")
+                                    .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
+                            }
+                        }
                     }
                 }
-            }
-
-            // K22 / PR-Remote-Fake: remote backend is interface-only; no real cloud/SSH in v1.
-            Section("Remote training") {
-                LabeledContent("Status") {
-                    Text(CloudPolicy.deferredMessage)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent(FeatureFlags.Key.cloudRunner.rawValue) {
-                    Text(featureFlags.cloudRunner ? "On" : "Off")
-                        .foregroundStyle(featureFlags.cloudRunner ? .primary : .secondary)
-                }
-                Text("Local Apple Silicon only for v1. Real cloud/SSH deferred until after product-market fit. Fake remote runner exists for API stability only.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .formStyle(.grouped)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .navigationTitle(SidebarDestination.settings.title)
             }
         }
-        .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .navigationTitle(SidebarDestination.settings.title)
     }
 
-    /// Presents a save panel, then runs export off the main actor.
-    private func exportLibraryArchive() {
-        exportStatus = nil
-        exportError = nil
+    private var byteProgressLabel: String {
+        let received = installProgress.bytesReceived
+        let expected = installProgress.bytesExpected
+        guard expected > 0 else { return "" }
+        return "\(formatBytes(received)) / \(formatBytes(expected))"
+    }
 
-        let panel = NSSavePanel()
-        panel.canCreateDirectories = true
-        panel.allowedContentTypes = [.zip]
-        panel.nameFieldStringValue = LibraryArchiveExporter.suggestedArchiveFileName()
-        panel.title = "Export library archive"
-        panel.message = includeModelWeights
-            ? "Full archive including model weights. library.sqlite is snapshotted via online backup."
-            : "Archive excludes large model weights (recommended). library.sqlite is snapshotted via online backup."
-        panel.prompt = "Export"
+    private func formatBytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
 
-        guard panel.runModal() == .OK, let url = panel.url else {
-            return
-        }
-
-        isExporting = true
-        let includeWeights = includeModelWeights
-        DispatchQueue.global(qos: .userInitiated).async {
-            let options = LibraryArchiveExportOptions(
-                includeModelWeights: includeWeights,
-                includePythonEnvs: false,
-                includeDownloadCache: false,
-                compressToZip: true
+    /// L1 call site: only path the UI uses to approve a helper before spawn.
+    private func validateHelperL1() {
+        do {
+            let bundleURL: URL? = {
+                let b = Bundle.main.bundleURL
+                let helpers = WorkerTrust.helpersDirectory(inBundle: b)
+                if FileManager.default.fileExists(atPath: helpers.path) {
+                    return b
+                }
+                return nil
+            }()
+            let prepared = try WorkerSpawn.prepareHelperLaunch(
+                helperName: WorkerSpawn.llmWorkerName,
+                bundleURL: bundleURL,
+                mode: WorkerTrust.defaultMode
             )
-            do {
-                // Exporter fails closed with BAM_EXPORT_FAILED if library root / sqlite is missing.
-                let result = try LibraryArchiveExporter.exportDefaultLibrary(
-                    to: url,
-                    options: options
-                )
-                DispatchQueue.main.async {
-                    isExporting = false
-                    exportStatus =
-                        "Exported \(result.includedRelativePaths.count) entries (~\(Self.formatBytes(result.bytesCopied))) → \(result.archiveURL.path)"
-                    exportError = nil
-                }
-            } catch let error as BAMError {
-                DispatchQueue.main.async {
-                    isExporting = false
-                    exportError = error.errorDescription ?? error.code.rawValue
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    isExporting = false
-                    exportError = error.localizedDescription
-                }
-            }
+            helperValidationMessage =
+                "L1 OK (\(prepared.mode)): \(prepared.url.path)"
+        } catch let error as BAMError {
+            helperValidationMessage = error.errorDescription ?? error.code.rawValue
+        } catch {
+            helperValidationMessage = String(describing: error)
         }
     }
 
-    private static func formatBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
+    @MainActor
+    private func runInstallStub() async {
+        isInstalling = true
+        installMessage = nil
+        installProgress = RuntimeInstallProgress(
+            phase: .preparing,
+            bytesReceived: 0,
+            bytesExpected: runtimeStatus.sizeBudgetBytes,
+            message: "Starting…"
+        )
+        let result = await installer.installStub { progress in
+            Task { @MainActor in
+                installProgress = progress
+            }
+        }
+        isInstalling = false
+        switch result {
+        case .success:
+            installProgress.phase = .complete
+            installMessage = "Training runtime installed."
+        case .failure(let error):
+            installProgress.phase = .failed
+            installMessage = error.errorDescription
+                ?? "Install not performed (\(error.code.rawValue)). Multi-GB download is deferred in this spike."
+        }
     }
 }

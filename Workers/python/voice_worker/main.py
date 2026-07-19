@@ -8,6 +8,14 @@ This module:
    ``voice_profile`` directory (profile.json + copied reference.wav + empty cache).
 
 See Docs/adr/0002-voice-engine.md for engine pin, SPDX, and install size budget.
+
+Exit codes (CLI only — not supervised NDJSON train path):
+  0  success / hello
+  1  handled failure (e.g. missing ref wav)
+  2  reserved (protocol/usage; matches WorkerExitCode.protocolError)
+  3  spike-CLI-only BAM_LICENSE_BLOCK (XTTS etc.); **not** a WorkerExitCode.
+     Supervised workers must emit protocol error with code BAM_LICENSE_BLOCK and
+     exit 1 (handledFailure) — never exit 3 under ProcessSupervisor.
 """
 
 from __future__ import annotations
@@ -26,6 +34,39 @@ WORKER_ID = "bam-voice-worker"
 WORKER_VERSION = "0.1.0"
 DEFAULT_ENGINE_ID = "f5-tts"
 PROFILE_SCHEMA_VERSION = 1
+
+# AGPL / non-default engines — must never write a profile with these ids.
+# Shared by library API and CLI (defense in depth; not CLI-only).
+BLOCKED_ENGINE_IDS = frozenset({"xtts", "xtts-v2", "coqui-xtts"})
+
+# Spike CLI-only exit for BAM_LICENSE_BLOCK. Not in WorkerExitCode; see module docstring.
+CLI_EXIT_LICENSE_BLOCK = 3
+
+
+class LicenseBlockError(ValueError):
+    """Raised when engine_id is non-default / license-blocked (e.g. XTTS AGPL)."""
+
+    def __init__(self, engine_id: str, message: Optional[str] = None) -> None:
+        self.engine_id = engine_id
+        self.code = "BAM_LICENSE_BLOCK"
+        super().__init__(
+            message
+            or (
+                f"BAM_LICENSE_BLOCK: engine {engine_id!r} is AGPL / non-default; "
+                f"use engine-id {DEFAULT_ENGINE_ID} (see Docs/adr/0002-voice-engine.md)"
+            )
+        )
+
+
+def is_blocked_engine(engine_id: str) -> bool:
+    """True when ``engine_id`` is on the non-default / AGPL denylist (case-insensitive)."""
+    return (engine_id or "").strip().lower() in BLOCKED_ENGINE_IDS
+
+
+def assert_engine_allowed(engine_id: str) -> None:
+    """Raise ``LicenseBlockError`` if engine is blocked (XTTS family, etc.)."""
+    if is_blocked_engine(engine_id):
+        raise LicenseBlockError(engine_id)
 
 
 def _iso_now() -> str:
@@ -71,6 +112,7 @@ def build_profile(
     reference_audio_hash: str,
     stub: bool,
 ) -> dict[str, Any]:
+    assert_engine_allowed(engine_id)
     profile: dict[str, Any] = {
         "v": PROFILE_SCHEMA_VERSION,
         "kind": "voice_profile",
@@ -110,7 +152,14 @@ def write_stub_voice_profile(
         profile.json
         reference.wav
         engine_cache/   (empty placeholder for engine-specific cache)
+
+    Raises:
+      LicenseBlockError: blocked engine id (XTTS family) — before any write.
+      FileNotFoundError: reference wav missing.
     """
+    # Gate before any mkdir/copy so library callers share the CLI policy.
+    assert_engine_allowed(engine_id)
+
     if not ref_wav.is_file():
         raise FileNotFoundError(f"reference wav not found: {ref_wav}")
 
@@ -199,12 +248,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "clone":
-        if args.engine_id and args.engine_id.lower() in {"xtts", "xtts-v2", "coqui-xtts"}:
-            sys.stderr.write(
-                "BAM_LICENSE_BLOCK: XTTS-v2 is AGPL and non-default; "
-                "use engine-id f5-tts (see Docs/adr/0002-voice-engine.md)\n"
-            )
-            return 3
         try:
             result = write_stub_voice_profile(
                 ref_wav=args.ref_wav,
@@ -215,6 +258,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 language=args.language,
                 sample_text=args.sample_text,
             )
+        except LicenseBlockError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return CLI_EXIT_LICENSE_BLOCK
         except FileNotFoundError as exc:
             sys.stderr.write(f"error: {exc}\n")
             return 1

@@ -156,6 +156,55 @@ final class VoiceCloneMaterializerTests: XCTestCase {
         }
     }
 
+    func testMaterializeRejectsXTTSBeforeJobDirs() throws {
+        let staging = root.appendingPathComponent("voices/staging", isDirectory: true)
+        let ref = try writeRefWav(named: "ref.wav", under: staging)
+        let job = JobSpec.voiceClone(
+            id: DomainFixtures.voiceCloneJobId,
+            engineId: "xtts-v2",
+            consentRecordId: DomainFixtures.consentRecordId,
+            consentContentHash: DomainFixtures.voiceCloneJobSpec.consentContentHash ?? "sha256:x"
+        )
+        XCTAssertThrowsError(
+            try VoiceCloneMaterializer.materialize(
+                job: job,
+                libraryRoot: root,
+                referenceAudioPath: ref.path
+            )
+        ) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .licenseBlock)
+        }
+        // No partial job tree.
+        let jobDir = root
+            .appendingPathComponent("jobs")
+            .appendingPathComponent(DomainFixtures.voiceCloneJobId)
+        XCTAssertFalse(fm.fileExists(atPath: jobDir.path))
+    }
+
+    func testMaterializeWithStubProfileRejectsXTTSBeforeJobDirs() throws {
+        let staging = root.appendingPathComponent("voices/staging", isDirectory: true)
+        let ref = try writeRefWav(named: "ref.wav", under: staging)
+        let job = JobSpec.voiceClone(
+            id: DomainFixtures.voiceCloneJobId,
+            engineId: "coqui-xtts",
+            consentRecordId: DomainFixtures.consentRecordId,
+            consentContentHash: "sha256:abc"
+        )
+        XCTAssertThrowsError(
+            try VoiceCloneMaterializer.materializeWithStubProfile(
+                job: job,
+                libraryRoot: root,
+                referenceAudioPath: ref.path
+            )
+        ) { error in
+            XCTAssertEqual((error as? BAMError)?.code, .licenseBlock)
+        }
+        let jobDir = root
+            .appendingPathComponent("jobs")
+            .appendingPathComponent(DomainFixtures.voiceCloneJobId)
+        XCTAssertFalse(fm.fileExists(atPath: jobDir.path))
+    }
+
     func testMaterializeWithStubProfileEndToEnd() throws {
         let staging = root.appendingPathComponent("voices/staging", isDirectory: true)
         let ref = try writeRefWav(named: "ref.wav", under: staging)

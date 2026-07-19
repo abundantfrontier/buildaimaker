@@ -14,6 +14,13 @@ public enum VoiceCloneMaterializer: Sendable {
     public static let referenceFileName = "reference.wav"
     public static let engineCacheDirectoryName = "engine_cache"
 
+    /// AGPL / non-default engine ids — never write job.json or profiles with these.
+    public static let blockedEngineIds: Set<String> = [
+        "xtts",
+        "xtts-v2",
+        "coqui-xtts",
+    ]
+
     /// Result of materializing a voice-clone job workspace.
     public struct JobMaterialization: Sendable, Equatable {
         public var spec: JobSpec
@@ -51,11 +58,42 @@ public enum VoiceCloneMaterializer: Sendable {
         }
     }
 
+    // MARK: - Engine license gate (ADR 0002)
+
+    /// Effective engine id for a job (explicit `engineId` or default `f5-tts`).
+    public static func resolvedEngineId(for job: JobSpec) -> String {
+        if let engineId = job.engineId, !engineId.isEmpty {
+            return engineId
+        }
+        return defaultEngineId
+    }
+
+    /// True when engine id is on the non-default / AGPL denylist (case-insensitive).
+    public static func isBlockedEngine(_ engineId: String) -> Bool {
+        blockedEngineIds.contains(engineId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    /// Throw `BAM_LICENSE_BLOCK` before any mkdir/write when engine is blocked.
+    public static func assertEngineAllowed(_ engineId: String) throws {
+        guard !isBlockedEngine(engineId) else {
+            throw BAMError(
+                code: .licenseBlock,
+                message: "engine \(engineId) is AGPL / non-default; use engineId \(defaultEngineId) (ADR 0002)"
+            )
+        }
+    }
+
+    /// Reject blocked `job.engineId` (or defaulted engine) early.
+    public static func assertJobEngineAllowed(_ job: JobSpec) throws {
+        try assertEngineAllowed(resolvedEngineId(for: job))
+    }
+
     // MARK: - JobSpec / JobPaths
 
     /// Build jailed `JobPaths` for a voice-clone job. Does not touch the filesystem.
     ///
     /// - Throws: `BAMError.schemaInvalid` if modality is not `voiceClone`.
+    /// - Throws: `BAMError.licenseBlock` if `job.engineId` is XTTS family.
     /// - Throws: `BAMError.pathEscape` / modality validation failures from `PathJail` when
     ///   `validate` is true (default).
     public static func makePaths(
@@ -70,6 +108,7 @@ public enum VoiceCloneMaterializer: Sendable {
                 message: "VoiceCloneMaterializer requires modality voiceClone, got \(job.modality.rawValue)"
             )
         }
+        try assertJobEngineAllowed(job)
 
         let paths = JobPathsFactory.make(
             jobId: job.id,
@@ -89,6 +128,8 @@ public enum VoiceCloneMaterializer: Sendable {
     }
 
     /// Create jobDir / artifacts / checkpoints / logs and write `job.json`.
+    ///
+    /// License gate runs **before** mkdir so blocked engines leave no partial tree.
     public static func materializeJobLayout(
         job: JobSpec,
         paths: JobPaths,
@@ -100,6 +141,7 @@ public enum VoiceCloneMaterializer: Sendable {
                 message: "VoiceCloneMaterializer requires modality voiceClone"
             )
         }
+        try assertJobEngineAllowed(job)
         try validateVoicePaths(paths)
 
         let dirs = [paths.jobDir, paths.outputPath, paths.checkpointPath, paths.logPath]
@@ -123,6 +165,8 @@ public enum VoiceCloneMaterializer: Sendable {
         referenceAudioPath: String,
         fileManager: FileManager = .default
     ) throws -> JobMaterialization {
+        // License gate first — before paths/mkdir — so XTTS never creates job dirs.
+        try assertJobEngineAllowed(job)
         let paths = try makePaths(
             job: job,
             libraryRoot: libraryRoot,
@@ -154,15 +198,7 @@ public enum VoiceCloneMaterializer: Sendable {
         sampleText: String? = "Hello, this is a preview of my voice.",
         fileManager: FileManager = .default
     ) throws -> VoiceProfileMaterialization {
-        if engineId.lowercased() == "xtts"
-            || engineId.lowercased() == "xtts-v2"
-            || engineId.lowercased() == "coqui-xtts"
-        {
-            throw BAMError(
-                code: .licenseBlock,
-                message: "XTTS-v2 is AGPL and non-default; use engineId f5-tts (ADR 0002)"
-            )
-        }
+        try assertEngineAllowed(engineId)
 
         guard fileManager.fileExists(atPath: referenceWavURL.path) else {
             throw BAMError(
@@ -219,6 +255,8 @@ public enum VoiceCloneMaterializer: Sendable {
     }
 
     /// Materialize job layout and a stub voice_profile under `paths.outputPath`.
+    ///
+    /// License gate runs before any filesystem mutation (via `materialize`).
     public static func materializeWithStubProfile(
         job: JobSpec,
         libraryRoot: URL,
@@ -226,6 +264,7 @@ public enum VoiceCloneMaterializer: Sendable {
         voiceProfileId: String? = nil,
         fileManager: FileManager = .default
     ) throws -> (JobMaterialization, VoiceProfileMaterialization) {
+        try assertJobEngineAllowed(job)
         let jobMat = try materialize(
             job: job,
             libraryRoot: libraryRoot,

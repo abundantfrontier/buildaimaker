@@ -2,11 +2,16 @@ import Foundation
 
 /// Product feature flags.
 ///
-/// `ff.llmTraining` is **on** by default as of PR-LLM-LoRA (dogfood). Remaining
-/// flags stay off until their shipping PRs enable them. Overrides can still be
-/// applied via `UserDefaults` / dev tooling by constructing a custom `FeatureFlags`.
+/// Defaults after PR-Play-Text / PR-LLM-LoRA:
+/// - `ff.llmTraining` **on** (dogfood)
+/// - `ff.playground` **on** (text playground always available)
+/// Remaining flags stay off until their shipping PRs enable them. Overrides can
+/// still be applied via `UserDefaults` / dev tooling by constructing a custom
+/// `FeatureFlags`.
 public struct FeatureFlags: Sendable, Equatable {
     public var llmTraining: Bool
+    /// Text playground (base + optional adapter chat). Always on after PR-Play-Text.
+    public var playground: Bool
     public var voiceClone: Bool
     public var voiceFinetune: Bool
     public var personaPacks: Bool
@@ -20,6 +25,8 @@ public struct FeatureFlags: Sendable, Equatable {
     public init(
         /// PR-LLM-LoRA: default **true** for dogfood (design table: `ff.llmTraining` on).
         llmTraining: Bool = true,
+        /// PR-Play-Text: default **true** — text playground always available.
+        playground: Bool = true,
         voiceClone: Bool = false,
         voiceFinetune: Bool = false,
         personaPacks: Bool = false,
@@ -30,6 +37,7 @@ public struct FeatureFlags: Sendable, Equatable {
         hfHubDownload: Bool = false
     ) {
         self.llmTraining = llmTraining
+        self.playground = playground
         self.voiceClone = voiceClone
         self.voiceFinetune = voiceFinetune
         self.personaPacks = personaPacks
@@ -40,12 +48,13 @@ public struct FeatureFlags: Sendable, Equatable {
         self.hfHubDownload = hfHubDownload
     }
 
-    /// Default product flags after PR-LLM-LoRA (`llmTraining` on; others off).
+    /// Default product flags (`llmTraining` + `playground` on; others off).
     public static let `default` = FeatureFlags()
 
     /// Stable string keys used in config / docs (e.g. `ff.llmTraining`).
     public enum Key: String, CaseIterable, Sendable {
         case llmTraining = "ff.llmTraining"
+        case playground = "ff.playground"
         case voiceClone = "ff.voiceClone"
         case voiceFinetune = "ff.voiceFinetune"
         case personaPacks = "ff.personaPacks"
@@ -59,6 +68,7 @@ public struct FeatureFlags: Sendable, Equatable {
     public func isEnabled(_ key: Key) -> Bool {
         switch key {
         case .llmTraining: return llmTraining
+        case .playground: return playground
         case .voiceClone: return voiceClone
         case .voiceFinetune: return voiceFinetune
         case .personaPacks: return personaPacks

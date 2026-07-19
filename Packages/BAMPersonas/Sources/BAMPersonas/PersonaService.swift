@@ -219,9 +219,22 @@ public final class PersonaService: @unchecked Sendable {
         let importer = PersonaPackImporter(fileManager: fileManager)
         let result = try importer.importPack(zipURL: zipURL, stagingDirectory: staging)
 
-        // Persist consent when present.
+        // Persist consent when present (import-safe: same-hash no-op; hash conflict fails).
         if let consent = result.consent {
-            try consentPersister?(consent)
+            if let existing = try library.consent(id: consent.id) {
+                let existingHash = ConsentRecord.normalizeHash(existing.contentHash)
+                let incomingHash = ConsentRecord.normalizeHash(consent.contentHash)
+                if existingHash != incomingHash {
+                    throw BAMError(
+                        code: .consentTamper,
+                        message:
+                            "Pack consent conflicts with existing record \(consent.id) (contentHash mismatch)"
+                    )
+                }
+                // Same hash — keep existing evidence; do not re-insert.
+            } else {
+                try consentPersister?(consent)
+            }
             if let mem = library as? InMemoryPersonaLibrary {
                 mem.upsert(consent: consent)
             }

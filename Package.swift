@@ -94,6 +94,7 @@ let package = Package(
                 "BAMCore",
                 "BAMModels",
                 "BAMPersistence",
+                "BAMConsent",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Packages/BAMPersonas/Tests/BAMPersonasTests"

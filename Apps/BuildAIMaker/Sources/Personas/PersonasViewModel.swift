@@ -77,7 +77,8 @@ final class PersonasViewModel: ObservableObject {
             library: grdbLib,
             libraryRoot: root,
             consentPersister: { record in
-                _ = try consentService.persist(record)
+                // Import-safe: same-hash no-op when consent already exists (export→re-import).
+                _ = try consentService.persistForImport(record)
             },
             voicePersister: { profile in
                 try VoiceProfileStore(database: db).upsert(profile)

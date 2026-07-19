@@ -37,7 +37,7 @@ struct RootView: View {
         case .jobs:
             JobsView()
         case .playground:
-            // Text playground: base + optional adapter, A/B toggle, JSONL export (ff.playground always on).
+            // Text + Talk playground: chat, PTT STT→LLM→TTS (ff.playground / ff.talkMode).
             if featureFlags.playground {
                 PlaygroundView()
             } else {

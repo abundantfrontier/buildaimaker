@@ -2,9 +2,11 @@ import Foundation
 
 /// Product feature flags.
 ///
-/// Defaults after PR-Play-Text / PR-LLM-LoRA:
+/// Defaults after PR-Talk:
 /// - `ff.llmTraining` **on** (dogfood)
 /// - `ff.playground` **on** (text playground always available)
+/// - `ff.voiceClone` **on**
+/// - `ff.talkMode` **on** (STT → LLM → TTS)
 /// Remaining flags stay off until their shipping PRs enable them. Overrides can
 /// still be applied via `UserDefaults` / dev tooling by constructing a custom
 /// `FeatureFlags`.
@@ -15,6 +17,7 @@ public struct FeatureFlags: Sendable, Equatable {
     public var voiceClone: Bool
     public var voiceFinetune: Bool
     public var personaPacks: Bool
+    /// Spoken conversation: push-to-talk STT → LLM → TTS (PR-Talk).
     public var talkMode: Bool
     public var cloudRunner: Bool
     public var knowledgePacks: Bool
@@ -30,7 +33,8 @@ public struct FeatureFlags: Sendable, Equatable {
         voiceClone: Bool = true,
         voiceFinetune: Bool = false,
         personaPacks: Bool = false,
-        talkMode: Bool = false,
+        /// PR-Talk: default **true** — Talk mode STT+LLM+TTS.
+        talkMode: Bool = true,
         cloudRunner: Bool = false,
         knowledgePacks: Bool = false,
         telemetryOptIn: Bool = false,
@@ -48,7 +52,7 @@ public struct FeatureFlags: Sendable, Equatable {
         self.hfHubDownload = hfHubDownload
     }
 
-    /// Default product flags (`llmTraining` + `playground` on; others off).
+    /// Default product flags (llmTraining, playground, voiceClone, talkMode on).
     public static let `default` = FeatureFlags()
 
     /// Stable string keys used in config / docs (e.g. `ff.llmTraining`).

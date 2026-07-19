@@ -94,10 +94,10 @@ Flags live in `BAMCore.FeatureFlags`. Defaults after PR-Play-Text / PR-LLM-LoRA:
 |-----|---------|---------|
 | `ff.llmTraining` | **on** | LLM LoRA training UI/path |
 | `ff.playground` | **on** | Text playground (base + adapter chat) |
-| `ff.voiceClone` | off | Voice clone UI/path |
+| `ff.voiceClone` | **on** | Voice clone UI/path |
 | `ff.voiceFinetune` | off | Supervised voice fine-tune (future) |
 | `ff.personaPacks` | off | Persona pack import/export |
-| `ff.talkMode` | off | Spoken conversation mode |
+| `ff.talkMode` | **on** | Talk mode STT→LLM→TTS (push-to-talk, barge-in) |
 | `ff.cloudRunner` | off | Remote/cloud runner (kept off in v1) |
 | `ff.knowledgePacks` | off | Knowledge/RAG packs (Phase 2+) |
 | `ff.telemetryOptIn` | off | Opt-in diagnostics |

@@ -45,7 +45,7 @@ let package = Package(
         .testTarget(name: "BAMCoreTests", dependencies: ["BAMCore"], path: "Packages/BAMCore/Tests/BAMCoreTests"),
         .testTarget(name: "BAMModelsTests", dependencies: ["BAMModels", "BAMCore"], path: "Packages/BAMModels/Tests/BAMModelsTests"),
         .testTarget(name: "BAMPersistenceTests", dependencies: ["BAMPersistence", "BAMModels", "BAMCore", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"),
-        .testTarget(name: "BAMDatasetsTests", dependencies: ["BAMDatasets", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMDatasets/Tests/BAMDatasetsTests"),
+        .testTarget(name: "BAMDatasetsTests", dependencies: ["BAMDatasets", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMDatasets/Tests/BAMDatasetsTests", resources: [.copy("Fixtures")]),
         .testTarget(name: "BAMModelCatalogTests", dependencies: ["BAMModelCatalog", "BAMModels", "BAMCore"], path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"),
         .testTarget(name: "BAMConsentTests", dependencies: ["BAMConsent", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMConsent/Tests/BAMConsentTests"),
         .testTarget(name: "BAMJobsTests", dependencies: ["BAMJobs", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMJobs/Tests/BAMJobsTests"),

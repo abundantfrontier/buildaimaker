@@ -69,20 +69,12 @@ public struct LLMCompletionResult: Sendable, Equatable {
 /// Implementations must be safe to call from the UI process for short turns;
 /// heavy inference may spawn a subprocess but must not block the main actor
 /// when used via `async`.
+///
+/// STT/TTS backends live in `STTBackend.swift` / `TTSBackend.swift` (PR-Talk).
 public protocol LLMBackend: Sendable {
     /// Stable backend identifier (e.g. `echo`, `mlx-generate`).
     var backendId: String { get }
 
     /// Complete one chat turn and return the assistant message.
     func complete(_ request: LLMCompletionRequest) async throws -> LLMCompletionResult
-}
-
-/// Optional STT backend protocol (Talk mode lands in PR-Talk; reserved here).
-public protocol STTBackend: Sendable {
-    var backendId: String { get }
-}
-
-/// Optional TTS backend protocol (Talk mode lands in PR-Talk; reserved here).
-public protocol TTSBackend: Sendable {
-    var backendId: String { get }
 }

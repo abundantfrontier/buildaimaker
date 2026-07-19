@@ -3,26 +3,41 @@ import BAMCore
 import BAMInference
 import BAMResourcesUI
 
-/// Text playground: select base model + optional adapter, chat, A/B adapter off, export JSONL.
+/// Playground shell: Text chat + Talk mode (STT→LLM→TTS) panes.
 struct PlaygroundView: View {
-    @StateObject private var model = PlaygroundViewModel()
+    @StateObject private var textModel = PlaygroundViewModel()
+    @StateObject private var talkModel = TalkViewModel()
+    @State private var pane: TalkViewModel.PaneMode = .text
+
+    private let featureFlags = FeatureFlags.default
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if !model.playgroundEnabled {
-                flagOffBanner
+            panePicker
+            Divider()
+            Group {
+                switch pane {
+                case .text:
+                    textPane
+                case .talk:
+                    if featureFlags.talkMode {
+                        TalkView(model: talkModel)
+                    } else {
+                        talkDisabledPlaceholder
+                    }
+                }
             }
-            configBar
-            Divider()
-            transcript
-            Divider()
-            composer
         }
         .background(BAMColors.detailBackground)
         .navigationTitle(SidebarDestination.playground.title)
-        .onAppear { model.bootstrap() }
+        .onAppear {
+            textModel.bootstrap()
+            if featureFlags.talkMode {
+                talkModel.bootstrap()
+            }
+        }
     }
 
     private var header: some View {
@@ -30,64 +45,128 @@ struct PlaygroundView: View {
             Label("Playground", systemImage: SidebarDestination.playground.systemImage)
                 .font(.headline)
             Spacer()
-            if let latency = model.lastLatencyMs {
-                Text("\(Int(latency)) ms · \(model.backendId)")
+            if pane == .text, let latency = textModel.lastLatencyMs {
+                Text("\(Int(latency)) ms · \(textModel.backendId)")
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+            }
+            if pane == .talk {
+                Text(talkModel.phaseLabel)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
             }
             Button {
-                model.reload()
+                if pane == .text {
+                    textModel.reload()
+                } else {
+                    talkModel.reload()
+                }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .help("Rescan base models and adapters")
 
-            Button {
-                model.clearTranscript()
-            } label: {
-                Label("Clear", systemImage: "trash")
-            }
-            .disabled(model.messages.isEmpty)
-            .help("Clear chat transcript")
+            if pane == .text {
+                Button {
+                    textModel.clearTranscript()
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                }
+                .disabled(textModel.messages.isEmpty)
+                .help("Clear chat transcript")
 
-            Menu {
-                Button("Export conversation (1 row)") {
-                    model.exportTranscript(paired: false)
+                Menu {
+                    Button("Export conversation (1 row)") {
+                        textModel.exportTranscript(paired: false)
+                    }
+                    Button("Export user/assistant pairs") {
+                        textModel.exportTranscript(paired: true)
+                    }
+                } label: {
+                    Label("Export JSONL", systemImage: "square.and.arrow.up")
                 }
-                Button("Export user/assistant pairs") {
-                    model.exportTranscript(paired: true)
+                .disabled(!textModel.canExport)
+                .help("Export transcript as OpenAI-messages JSONL dataset candidate")
+            } else {
+                Button {
+                    talkModel.clearTranscript()
+                } label: {
+                    Label("Clear", systemImage: "trash")
                 }
-            } label: {
-                Label("Export JSONL", systemImage: "square.and.arrow.up")
+                .disabled(talkModel.messages.isEmpty)
+                .help("Clear Talk transcript")
             }
-            .disabled(!model.canExport)
-            .help("Export transcript as OpenAI-messages JSONL dataset candidate")
         }
         .padding(12)
     }
 
-    private var flagOffBanner: some View {
-        Text("ff.playground is off — playground UI is disabled.")
-            .font(.caption)
-            .foregroundStyle(.orange)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
+    private var panePicker: some View {
+        HStack {
+            Picker("Mode", selection: $pane) {
+                ForEach(TalkViewModel.PaneMode.allCases) { mode in
+                    if mode == .talk && !featureFlags.talkMode {
+                        Text("\(mode.title) (off)").tag(mode)
+                    } else {
+                        Text(mode.title).tag(mode)
+                    }
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 240)
+            Spacer()
+            Text(pane == .text ? "Text chat" : "Push-to-talk · STT→LLM→TTS")
+                .font(.caption)
+                .foregroundStyle(BAMColors.tertiaryLabel)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
-    private var configBar: some View {
+    private var talkDisabledPlaceholder: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "mic.slash")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(BAMColors.secondaryLabel)
+            Text("Talk mode is not enabled (ff.talkMode is off).")
+                .font(.callout)
+                .foregroundStyle(BAMColors.tertiaryLabel)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Text pane (existing playground)
+
+    private var textPane: some View {
+        VStack(spacing: 0) {
+            if !textModel.playgroundEnabled {
+                Text("ff.playground is off — playground UI is disabled.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
+            textConfigBar
+            Divider()
+            textTranscript
+            Divider()
+            textComposer
+        }
+    }
+
+    private var textConfigBar: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Base model")
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)
-                    if model.baseModels.isEmpty {
+                    if textModel.baseModels.isEmpty {
                         Text("No local base models")
                             .foregroundStyle(BAMColors.tertiaryLabel)
                             .font(.callout)
                     } else {
-                        Picker("Base model", selection: $model.selectedBasePath) {
-                            ForEach(model.baseModels) { m in
+                        Picker("Base model", selection: $textModel.selectedBasePath) {
+                            ForEach(textModel.baseModels) { m in
                                 Text(m.displayName)
                                     .tag(Optional(m.localPath))
                             }
@@ -101,26 +180,29 @@ struct PlaygroundView: View {
                     Text("Adapter (optional)")
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)
-                    Picker("Adapter", selection: $model.selectedAdapterPath) {
+                    Picker("Adapter", selection: $textModel.selectedAdapterPath) {
                         Text("None").tag(Optional<String>.none)
-                        ForEach(model.adapters) { a in
+                        ForEach(textModel.adapters) { a in
                             Text(a.displayName)
                                 .tag(Optional(a.localPath))
                         }
                     }
                     .labelsHidden()
                     .frame(maxWidth: 280)
-                    .disabled(model.adapters.isEmpty)
+                    .disabled(textModel.adapters.isEmpty)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("A/B adapter")
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)
-                    Toggle(model.adapterEnabled ? "Adapter on" : "Adapter off (base only)", isOn: $model.adapterEnabled)
-                        .toggleStyle(.switch)
-                        .disabled(model.selectedAdapterPath == nil)
-                        .help("Toggle adapter off to compare base-only replies")
+                    Toggle(
+                        textModel.adapterEnabled ? "Adapter on" : "Adapter off (base only)",
+                        isOn: $textModel.adapterEnabled
+                    )
+                    .toggleStyle(.switch)
+                    .disabled(textModel.selectedAdapterPath == nil)
+                    .help("Toggle adapter off to compare base-only replies")
                 }
 
                 Spacer()
@@ -130,29 +212,29 @@ struct PlaygroundView: View {
                 Text("System prompt")
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
-                TextField("System override", text: $model.systemPrompt, axis: .vertical)
+                TextField("System override", text: $textModel.systemPrompt, axis: .vertical)
                     .lineLimit(2...4)
                     .textFieldStyle(.roundedBorder)
             }
 
-            if let status = model.statusMessage {
+            if let status = textModel.statusMessage {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
             }
-            if let export = model.exportMessage {
+            if let export = textModel.exportMessage {
                 Text(export)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
                     .textSelection(.enabled)
             }
-            if let err = model.errorMessage {
+            if let err = textModel.errorMessage {
                 Label(err, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
 
-            Text("ff.playground: \(model.playgroundEnabled ? "on" : "off") · backend: \(model.backendId)")
+            Text("ff.playground: \(textModel.playgroundEnabled ? "on" : "off") · backend: \(textModel.backendId)")
                 .font(.caption2)
                 .foregroundStyle(BAMColors.tertiaryLabel)
         }
@@ -160,9 +242,9 @@ struct PlaygroundView: View {
         .padding(.vertical, 10)
     }
 
-    private var transcript: some View {
+    private var textTranscript: some View {
         Group {
-            if model.messages.isEmpty {
+            if textModel.messages.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "bubble.left.and.bubble.right")
                         .font(.system(size: 36, weight: .light))
@@ -179,15 +261,15 @@ struct PlaygroundView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 10) {
-                            ForEach(model.messages) { message in
+                            ForEach(textModel.messages) { message in
                                 messageBubble(message)
                                     .id(message.id)
                             }
                         }
                         .padding(12)
                     }
-                    .onChange(of: model.messages.count) {
-                        if let last = model.messages.last {
+                    .onChange(of: textModel.messages.count) {
+                        if let last = textModel.messages.last {
                             withAnimation {
                                 proxy.scrollTo(last.id, anchor: .bottom)
                             }
@@ -230,26 +312,26 @@ struct PlaygroundView: View {
         }
     }
 
-    private var composer: some View {
+    private var textComposer: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Message…", text: $model.draft, axis: .vertical)
+            TextField("Message…", text: $textModel.draft, axis: .vertical)
                 .lineLimit(1...5)
                 .textFieldStyle(.roundedBorder)
-                .onSubmit { model.send() }
-                .disabled(!model.playgroundEnabled || model.isGenerating)
+                .onSubmit { textModel.send() }
+                .disabled(!textModel.playgroundEnabled || textModel.isGenerating)
 
-            if model.isGenerating {
+            if textModel.isGenerating {
                 ProgressView()
                     .controlSize(.small)
                     .frame(width: 28, height: 28)
             } else {
                 Button {
-                    model.send()
+                    textModel.send()
                 } label: {
                     Label("Send", systemImage: "paperplane.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.canSend)
+                .disabled(!textModel.canSend)
                 .keyboardShortcut(.return, modifiers: [.command])
             }
         }

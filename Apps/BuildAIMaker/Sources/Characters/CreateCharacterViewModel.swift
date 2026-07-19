@@ -3,10 +3,50 @@ import BAMAudioFX
 import BAMCharacterStudio
 import BAMCore
 import BAMDatasets
+import BAMModelCatalog
 import BAMModels
 import BAMPersistence
 import Foundation
 import SwiftUI
+
+/// Whether a train-ready base model is present (wizard does not load one by default).
+enum WizardModelStatus: Equatable {
+    case noneInstalled
+    case fixtureOnly
+    case hasLocalModels(count: Int)
+
+    var title: String {
+        switch self {
+        case .noneInstalled: return "No base model installed"
+        case .fixtureOnly: return "Fixture model installed (for testing)"
+        case .hasLocalModels(let n): return "\(n) local base model(s) found"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .noneInstalled:
+            return "This wizard does not turn on a chat/train model. It only builds story data + voice FX. Install a model later under Advanced → Models if you want real fine-tuning."
+        case .fixtureOnly:
+            return "A tiny offline fixture is on disk for dry-run/fake LoRA tests. It is not a full chat model. The wizard still does not run or select it for you."
+        case .hasLocalModels:
+            return "Models are on disk for Advanced → Train later. The wizard does not auto-select or load them while creating the character."
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .noneInstalled: return "cpu"
+        case .fixtureOnly: return "shippingbox"
+        case .hasLocalModels: return "checkmark.circle"
+        }
+    }
+
+    var isReadyForRealTrain: Bool {
+        if case .hasLocalModels = self { return true }
+        return false
+    }
+}
 
 @MainActor
 final class CreateCharacterViewModel: ObservableObject {
@@ -35,13 +75,13 @@ final class CreateCharacterViewModel: ObservableObject {
         var instruction: String {
             switch self {
             case .meet:
-                return "Type a name and pick a creature type, then press Continue."
+                return "Type a name and pick a creature type, then press Continue. (No AI model is loaded yet.)"
             case .mind:
-                return "Paste a short story (or leave blank), then press Build how they talk."
+                return "Paste a story, then Build how they talk — this creates training text only, not a live model."
             case .voice:
-                return "Pick a voice preset, press Hear their voice, then Finish & save."
+                return "Pick a voice preset and Hear their voice (FX sound, not a real speech model)."
             case .done:
-                return "Character saved. Choose what to do next below."
+                return "Character saved. No chat model was enabled by the wizard — open Playground or Train next."
             }
         }
     }
@@ -52,6 +92,8 @@ final class CreateCharacterViewModel: ObservableObject {
     @Published var isWorking = false
     @Published var lastError: String?
     @Published var isPlayingPreview = false
+    @Published var modelStatus: WizardModelStatus = .noneInstalled
+    @Published var isInstallingFixture = false
 
     private let store = CharacterLibraryStore()
     private let corpus = CorpusBuilder()
@@ -144,6 +186,40 @@ final class CreateCharacterViewModel: ObservableObject {
         lastError = nil
         isPlayingPreview = false
         audioPlayer?.stop()
+        refreshModelStatus()
+    }
+
+    /// Probe library for fixture / scanned base models (wizard never auto-selects them).
+    func refreshModelStatus() {
+        let installer = ModelInstallService()
+        let fixture = installer.isFixtureInstalled()
+        let scanned = (try? LocalModelScanner().scan()) ?? []
+        // Fixture dir alone counts as fixture; extra non-fixture dirs as local models.
+        let nonFixture = scanned.filter {
+            !$0.directoryName.contains("fixture")
+                && $0.directoryName != FixtureModel.installDirectoryName
+        }
+        if !nonFixture.isEmpty {
+            modelStatus = .hasLocalModels(count: nonFixture.count)
+        } else if fixture {
+            modelStatus = .fixtureOnly
+        } else {
+            modelStatus = .noneInstalled
+        }
+    }
+
+    func installFixtureForLater() {
+        isInstallingFixture = true
+        lastError = nil
+        defer { isInstallingFixture = false }
+        do {
+            _ = try ModelInstallService().installFixture(overwrite: true)
+            OnboardingStore().markCompleted(.installFixture)
+            refreshModelStatus()
+            statusMessage = "Fixture installed for later Train tests. Wizard still does not run a chat model."
+        } catch {
+            lastError = (error as? BAMError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     func applySpeciesPreset(_ preset: CreatureSpeciesPreset) {

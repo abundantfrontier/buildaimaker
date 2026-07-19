@@ -24,6 +24,7 @@ struct CreateCharacterWizardView: View {
             progressBar
             Divider()
             whatToDoNowBanner
+            modelStatusBanner
             Divider()
             content
             if let err = model.lastError {
@@ -46,10 +47,12 @@ struct CreateCharacterWizardView: View {
         }
         .onAppear {
             activateKeyWindow()
+            model.refreshModelStatus()
             focusedField = .name
         }
         .onChange(of: model.step) { _, newStep in
             activateKeyWindow()
+            model.refreshModelStatus()
             switch newStep {
             case .meet: focusedField = .name
             case .mind: focusedField = .story
@@ -114,6 +117,55 @@ struct CreateCharacterWizardView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.accentColor.opacity(0.08))
+    }
+
+    /// Always-visible: wizard does not enable/load a chat or train model by default.
+    private var modelStatusBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: model.modelStatus.symbol)
+                    .font(.title3)
+                    .foregroundStyle(model.modelStatus.isReadyForRealTrain ? Color.green : Color.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("AI model for chat / fine-tune")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                    Text(model.modelStatus.title)
+                        .font(.callout.weight(.semibold))
+                    Text(model.modelStatus.detail)
+                        .font(.caption)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 12) {
+                if case .noneInstalled = model.modelStatus {
+                    Button {
+                        model.installFixtureForLater()
+                    } label: {
+                        if model.isInstallingFixture {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Install test fixture (optional)")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.isInstallingFixture)
+                    .help("Copies a tiny offline model for Advanced → Train tests. Does not start chatting.")
+                }
+                Text("This wizard: story data + voice FX only")
+                    .font(.caption2.weight(.medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.08))
     }
 
     @ViewBuilder
@@ -208,7 +260,7 @@ struct CreateCharacterWizardView: View {
             Text("Step 2 — How they talk")
                 .font(.title2.weight(.semibold))
 
-            Text("Paste a short story, lore, or sample lines. We turn that into practice dialogues.")
+            Text("Paste a short story, lore, or sample lines. We turn that into practice dialogues (a dataset). No language model is selected or loaded here.")
                 .foregroundStyle(BAMColors.secondaryLabel)
 
             MacTextEditor(text: $model.draft.storyPaste, minHeight: 120)
@@ -268,7 +320,7 @@ struct CreateCharacterWizardView: View {
             Text("Step 3 — How they sound")
                 .font(.title2.weight(.semibold))
 
-            Text("Pick a preset (or tweak sliders), then hear a short creature voice. This is FX — not a real human clone.")
+            Text("Pick a preset (or tweak sliders), then hear a short creature sound. This is audio FX only — not a neural speech model and not tied to a chat model.")
                 .foregroundStyle(BAMColors.secondaryLabel)
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
@@ -338,6 +390,23 @@ struct CreateCharacterWizardView: View {
             .background(Color.secondary.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
+            GroupBox("About models") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(model.modelStatus.title)
+                        .font(.callout.weight(.semibold))
+                    Text(
+                        """
+                        The wizard never enables a chat model by default. \
+                        You built training text (mind) and a FX voice preview. \
+                        To actually fine-tune: Advanced → Models (install weights) → Train (pick dataset + model).
+                        """
+                    )
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             Text("What you can do next")
                 .font(.headline)
 
@@ -346,7 +415,7 @@ struct CreateCharacterWizardView: View {
                     isPresented = false
                     onGoPlayground?()
                 } label: {
-                    Label("Open Playground (chat / talk)", systemImage: "bubble.left.and.bubble.right")
+                    Label("Open Playground (stub chat unless you set a model later)", systemImage: "bubble.left.and.bubble.right")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.borderedProminent)
@@ -371,10 +440,6 @@ struct CreateCharacterWizardView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
             }
-
-            Text("Advanced (optional): open Train to fine-tune the mind on a real model later.")
-                .font(.caption)
-                .foregroundStyle(BAMColors.secondaryLabel)
         }
     }
 

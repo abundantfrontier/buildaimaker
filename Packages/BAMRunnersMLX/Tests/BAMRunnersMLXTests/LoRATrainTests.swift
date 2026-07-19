@@ -40,6 +40,32 @@ final class LoRATrainTests: XCTestCase {
         XCTAssertTrue(md.contains("fake"))
     }
 
+    func testModelCardWriterLoadRoundTrip() throws {
+        let dir = libraryRoot.appendingPathComponent("card-roundtrip", isDirectory: true)
+        let original = ModelCardContent(
+            title: "RoundTrip",
+            baseModelSourceKey: "buildaimaker/tiny-qwen-mlx-fixture",
+            method: "lora",
+            jobId: "job-rt",
+            adapterArtifactId: "art-rt",
+            holdOutLoss: 1.11,
+            trainLoss: 0.77,
+            sampleGenerations: ModelCardContent.stubSamples(),
+            fakeTrain: true
+        )
+        _ = try ModelCardWriter.write(content: original, toDirectory: dir)
+        let loaded = ModelCardWriter.load(fromDirectory: dir)
+        XCTAssertNotNil(loaded)
+        XCTAssertEqual(loaded?.holdOutLoss, 1.11)
+        XCTAssertEqual(loaded?.trainLoss, 0.77)
+        XCTAssertEqual(loaded?.jobId, "job-rt")
+        XCTAssertEqual(loaded?.adapterArtifactId, "art-rt")
+        XCTAssertEqual(loaded?.sampleGenerations.count, 2)
+        XCTAssertEqual(loaded?.sampleGenerations.first?.prompt, "Hello!")
+        XCTAssertEqual(loaded?.fakeTrain, true)
+        XCTAssertEqual(loaded?.method, "lora")
+    }
+
     func testAdapterArtifactWriterPublishesUnderModelsAdapters() throws {
         let paths = try makeMaterializedPaths()
         let spec = JobSpec.llm(

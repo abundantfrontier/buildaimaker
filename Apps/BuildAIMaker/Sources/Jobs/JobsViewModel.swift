@@ -115,6 +115,8 @@ final class JobsViewModel: ObservableObject {
             do {
                 try await controller.cancel(jobId: jobId)
                 statusMessage = "Cancel requested"
+                // M2: cancel within product path (latency measured separately in dogfood).
+                MVPMetricsStore.shared.increment(.jobCancelled)
             } catch {
                 statusMessage = error.localizedDescription
             }

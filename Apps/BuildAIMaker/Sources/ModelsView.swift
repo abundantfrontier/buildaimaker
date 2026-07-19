@@ -2,11 +2,13 @@ import SwiftUI
 import BAMCore
 import BAMModelCatalog
 import BAMResourcesUI
+import BAMRunnersMLX
 
-/// Models detail: living catalog, offline fixture install, local scan under library root.
+/// Models detail: living catalog, offline fixture install, local scan, adapter model cards.
 struct ModelsView: View {
     @State private var catalogEntries: [CatalogEntry] = []
     @State private var localModels: [ScannedLocalModel] = []
+    @State private var adapters: [AdapterCardRow] = []
     /// Full-page error only when the living catalog fails to load.
     @State private var catalogError: String?
     /// Section-local banner when local scan fails; catalog still shown.
@@ -16,6 +18,7 @@ struct ModelsView: View {
     @State private var isInstallingFixture = false
     @State private var fixtureInstalled = false
     @State private var isLoading = true
+    @State private var selectedAdapterPath: String?
 
     private let featureFlags = FeatureFlags.default
 
@@ -158,6 +161,37 @@ struct ModelsView: View {
                     .font(.caption2)
                     .textSelection(.enabled)
             }
+
+            Section {
+                if adapters.isEmpty {
+                    Text("No LoRA adapters yet. Complete a train (or fake train) under Train.")
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                } else {
+                    ForEach(adapters) { row in
+                        DisclosureGroup(
+                            isExpanded: Binding(
+                                get: { selectedAdapterPath == row.localPath },
+                                set: { expanded in
+                                    selectedAdapterPath = expanded ? row.localPath : nil
+                                }
+                            )
+                        ) {
+                            ModelCardDetailView(card: row.card)
+                        } label: {
+                            AdapterSummaryRow(row: row)
+                        }
+                    }
+                }
+            } header: {
+                Text("Adapters (model cards)")
+            } footer: {
+                Text(
+                    "K25 MVP eval: hold-out validation loss + sample generations on each adapter card. "
+                        + LibraryPaths.modelsAdapters.path
+                )
+                .font(.caption2)
+                .textSelection(.enabled)
+            }
         }
         .listStyle(.inset)
     }
@@ -187,6 +221,44 @@ struct ModelsView: View {
             scanError = error.localizedDescription
             localModels = []
         }
+
+        adapters = Self.scanAdapterCards()
+    }
+
+    private static func scanAdapterCards(
+        adaptersRoot: URL = LibraryPaths.modelsAdapters,
+        fileManager: FileManager = .default
+    ) -> [AdapterCardRow] {
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: adaptersRoot.path, isDirectory: &isDir),
+              isDir.boolValue
+        else { return [] }
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: adaptersRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        var rows: [AdapterCardRow] = []
+        for url in contents {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true else { continue }
+            let name = url.lastPathComponent
+            guard LibraryPaths.validatedPathComponent(name) != nil else { continue }
+            let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+            let card = ModelCardWriter.load(fromDirectory: resolved)
+                ?? ModelCardContent(title: name)
+            rows.append(
+                AdapterCardRow(
+                    directoryName: name,
+                    localPath: resolved.path,
+                    card: card
+                )
+            )
+        }
+        return rows.sorted {
+            $0.directoryName.localizedCaseInsensitiveCompare($1.directoryName) == .orderedAscending
+        }
     }
 
     private func installFixture() {
@@ -202,6 +274,7 @@ struct ModelsView: View {
             installMessage = result.alreadyPresent
                 ? "Reinstalled fixture at \(result.modelRecord.localPath)"
                 : "Installed fixture at \(result.modelRecord.localPath)"
+            OnboardingStore().markCompleted(.installFixture)
             // Rescan local models only (keep catalog).
             do {
                 localModels = try LocalModelScanner().scan()
@@ -297,5 +370,145 @@ private struct LocalModelRow: View {
             name,
             systemImage: present ? "checkmark.circle.fill" : "circle"
         )
+    }
+}
+
+// MARK: - Adapter model cards (K25)
+
+struct AdapterCardRow: Identifiable, Equatable {
+    var directoryName: String
+    var localPath: String
+    var card: ModelCardContent
+
+    var id: String { localPath }
+}
+
+private struct AdapterSummaryRow: View {
+    let row: AdapterCardRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(row.card.title)
+                    .font(.body.weight(.medium))
+                Spacer()
+                if row.card.fakeTrain {
+                    Text("Fake")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.25), in: Capsule())
+                }
+                Text(row.card.method)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(BAMColors.separator.opacity(0.35), in: Capsule())
+            }
+            Text(row.localPath)
+                .font(.caption)
+                .foregroundStyle(BAMColors.secondaryLabel)
+                .textSelection(.enabled)
+            HStack(spacing: 12) {
+                if let hold = row.card.holdOutLoss {
+                    Text(String(format: "Hold-out: %.4f", hold))
+                } else {
+                    Text("Hold-out: n/a")
+                }
+                if let train = row.card.trainLoss {
+                    Text(String(format: "Train: %.4f", train))
+                }
+                Text("Samples: \(row.card.sampleGenerations.count)")
+            }
+            .font(.caption2)
+            .foregroundStyle(BAMColors.tertiaryLabel)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Displays K25 hold-out loss + sample generations from an adapter model card.
+struct ModelCardDetailView: View {
+    let card: ModelCardContent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                LabeledContent("Method", value: card.method)
+                if let jobId = card.jobId {
+                    LabeledContent("Job", value: jobId)
+                }
+                if let artifact = card.adapterArtifactId {
+                    LabeledContent("Artifact", value: artifact)
+                }
+                if let base = card.baseModelSourceKey ?? card.baseModelId {
+                    LabeledContent("Base", value: base)
+                }
+                if let hp = card.hyperparametersSummary {
+                    LabeledContent("Hyperparams", value: hp)
+                }
+            }
+            .font(.caption)
+
+            Divider()
+
+            Text("Evaluation (MVP / K25)")
+                .font(.caption.weight(.semibold))
+            if let hold = card.holdOutLoss {
+                Text(String(format: "Hold-out validation loss: %.6f", hold))
+                    .font(.callout.monospacedDigit())
+            } else {
+                Text("Hold-out validation loss: n/a (no val split)")
+                    .font(.callout)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+            }
+            if let train = card.trainLoss {
+                Text(String(format: "Final train loss: %.6f", train))
+                    .font(.callout.monospacedDigit())
+            }
+
+            Text("Sample generations")
+                .font(.caption.weight(.semibold))
+                .padding(.top, 4)
+            if card.sampleGenerations.isEmpty {
+                Text("None recorded.")
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+            } else {
+                ForEach(Array(card.sampleGenerations.enumerated()), id: \.offset) { idx, sample in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(idx + 1). Prompt")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(BAMColors.tertiaryLabel)
+                        Text(sample.prompt)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                        Text("Completion")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(BAMColors.tertiaryLabel)
+                        Text(sample.completion)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(BAMColors.separator.opacity(0.15))
+                    )
+                }
+            }
+
+            if !card.notes.isEmpty {
+                Text("Notes")
+                    .font(.caption.weight(.semibold))
+                ForEach(card.notes, id: \.self) { note in
+                    Text("• \(note)")
+                        .font(.caption2)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                }
+            }
+        }
+        .padding(.vertical, 6)
     }
 }

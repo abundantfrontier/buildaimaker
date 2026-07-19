@@ -172,6 +172,8 @@ final class TrainViewModel: ObservableObject {
                 ]
                 resultSummary = lines.joined(separator: "\n")
                 statusMessage = "Validate & dry-run succeeded."
+                // First-run checklist: dry-run counts toward train step.
+                OnboardingStore().markCompleted(.dryRunOrTrain)
             } catch {
                 statusMessage = "Dry-run failed"
                 resultSummary = error.localizedDescription
@@ -268,6 +270,11 @@ final class TrainViewModel: ObservableObject {
                 statusMessage = result.status == "succeeded"
                     ? "LoRA train succeeded — adapter under models/adapters/."
                     : "LoRA train finished with status \(result.status)."
+                if result.status == "succeeded" {
+                    // M1: completed a LoRA fine-tune in-app (fake or real).
+                    MVPMetricsStore.shared.increment(.trainCompleted)
+                    OnboardingStore().markCompleted(.dryRunOrTrain)
+                }
             } catch {
                 statusMessage = "LoRA train failed"
                 resultSummary = error.localizedDescription

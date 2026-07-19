@@ -2,6 +2,7 @@ import SwiftUI
 import BAMCore
 import BAMModelCatalog
 import BAMResourcesUI
+import BAMConsent
 
 struct RootView: View {
     @State private var selection: SidebarDestination? = .home

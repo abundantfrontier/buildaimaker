@@ -27,7 +27,7 @@ public struct FeatureFlags: Sendable, Equatable {
         llmTraining: Bool = true,
         /// PR-Play-Text: default **true** — text playground always available.
         playground: Bool = true,
-        voiceClone: Bool = false,
+        voiceClone: Bool = true,
         voiceFinetune: Bool = false,
         personaPacks: Bool = false,
         talkMode: Bool = false,

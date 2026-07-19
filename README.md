@@ -127,14 +127,11 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
 - **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
 - **BAMRunners** — Runner Protocol v1 (NDJSON), `ProcessSupervisor`, path jail, `cancel.flag` + SIGTERM/SIGKILL, golden NDJSON fixtures. Default queue still uses `FakeTrainingRunner`; optional `JobQueueController.makeWithSupervisedRunner`.
+- **BAMRunnersMLX** — LLM job materializer (normalized JSONL + JobPaths), ChatTemplateRegistry, prepare-only dry-run via `MLXWorkerClient` / echo or `bam-llm-worker`. No weight updates. Train wizard: Validate & dry-run.
 
 ## Non-goals (current tree)
 
-No real mlx-lm / F5-TTS training yet (see PR-LLM-Materialize / PR-VoiceSpike). No real dataset import UI yet.
+No real mlx-lm LoRA training yet (see PR-LLM-LoRA). No F5-TTS training yet (PR-VoiceSpike). `ff.llmTraining` remains off.
 
 ## Merged stack note
 This branch base merges Protocol + Datasets + Catalog/Fixture + PyEnv for LLM materialization.
-
-
-## Merged stack
-Base merges Protocol + Datasets + Catalog/Fixture for materialize work.

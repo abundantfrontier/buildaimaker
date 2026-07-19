@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "BAMModelCatalog", targets: ["BAMModelCatalog"]),
         .library(name: "BAMJobs", targets: ["BAMJobs"]),
         .library(name: "BAMRunners", targets: ["BAMRunners"]),
+        .library(name: "BAMRunnersMLX", targets: ["BAMRunnersMLX"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
@@ -51,10 +52,31 @@ let package = Package(
             dependencies: ["BAMCore", "BAMModels", "BAMJobs"],
             path: "Packages/BAMRunners/Sources/BAMRunners"
         ),
+        .target(
+            name: "BAMRunnersMLX",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMDatasets",
+                "BAMJobs",
+                "BAMRunners",
+            ],
+            path: "Packages/BAMRunnersMLX/Sources/BAMRunnersMLX"
+        ),
         .target(name: "BAMResourcesUI", dependencies: ["BAMCore"], path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"),
         .executableTarget(
             name: "BuildAIMaker",
-            dependencies: ["BAMCore", "BAMModels", "BAMPersistence", "BAMDatasets", "BAMModelCatalog", "BAMJobs", "BAMRunners", "BAMResourcesUI"],
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+                "BAMDatasets",
+                "BAMModelCatalog",
+                "BAMJobs",
+                "BAMRunners",
+                "BAMRunnersMLX",
+                "BAMResourcesUI",
+            ],
             path: "Apps/BuildAIMaker/Sources"
         ),
         .executableTarget(name: "bam-echo-worker", path: "Workers/bam-echo-worker/Sources"),
@@ -69,7 +91,8 @@ let package = Package(
         .testTarget(
             name: "BAMDatasetsTests",
             dependencies: ["BAMDatasets", "BAMModels", "BAMCore", "BAMPersistence", .product(name: "GRDB", package: "GRDB.swift")],
-            path: "Packages/BAMDatasets/Tests/BAMDatasetsTests"
+            path: "Packages/BAMDatasets/Tests/BAMDatasetsTests",
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(name: "BAMModelCatalogTests", dependencies: ["BAMModelCatalog", "BAMModels", "BAMCore"], path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"),
         .testTarget(
@@ -82,6 +105,19 @@ let package = Package(
             dependencies: ["BAMRunners", "BAMJobs", "BAMModels", "BAMCore"],
             path: "Packages/BAMRunners/Tests/BAMRunnersTests",
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "BAMRunnersMLXTests",
+            dependencies: [
+                "BAMRunnersMLX",
+                "BAMRunners",
+                "BAMJobs",
+                "BAMModels",
+                "BAMDatasets",
+                "BAMCore",
+                "BAMPersistence",
+            ],
+            path: "Packages/BAMRunnersMLX/Tests/BAMRunnersMLXTests"
         ),
     ]
 )

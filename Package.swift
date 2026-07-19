@@ -10,11 +10,14 @@ let package = Package(
         .library(name: "BAMCore", targets: ["BAMCore"]),
         .library(name: "BAMModels", targets: ["BAMModels"]),
         .library(name: "BAMPersistence", targets: ["BAMPersistence"]),
+        .library(name: "BAMDatasets", targets: ["BAMDatasets"]),
+        .library(name: "BAMModelCatalog", targets: ["BAMModelCatalog"]),
         .library(name: "BAMJobs", targets: ["BAMJobs"]),
         .library(name: "BAMRunners", targets: ["BAMRunners"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
+        .executable(name: "bam-llm-worker", targets: ["bam-llm-worker"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -37,6 +40,28 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Packages/BAMPersistence/Sources/BAMPersistence"
+        ),
+        .target(
+            name: "BAMDatasets",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Packages/BAMDatasets/Sources/BAMDatasets"
+        ),
+        .target(
+            name: "BAMModelCatalog",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+            ],
+            path: "Packages/BAMModelCatalog/Sources/BAMModelCatalog",
+            resources: [
+                .copy("Resources/models.json"),
+                .copy("Resources/fixtures"),
+            ]
         ),
         .target(
             name: "BAMJobs",
@@ -68,6 +93,8 @@ let package = Package(
                 "BAMCore",
                 "BAMModels",
                 "BAMPersistence",
+                "BAMDatasets",
+                "BAMModelCatalog",
                 "BAMJobs",
                 "BAMRunners",
                 "BAMResourcesUI",
@@ -77,6 +104,11 @@ let package = Package(
         .executableTarget(
             name: "bam-echo-worker",
             path: "Workers/bam-echo-worker/Sources"
+        ),
+        .executableTarget(
+            name: "bam-llm-worker",
+            dependencies: ["BAMCore"],
+            path: "Workers/bam-llm-worker/Sources"
         ),
         .testTarget(
             name: "BAMCoreTests",
@@ -97,6 +129,26 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"
+        ),
+        .testTarget(
+            name: "BAMDatasetsTests",
+            dependencies: [
+                "BAMDatasets",
+                "BAMModels",
+                "BAMCore",
+                "BAMPersistence",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Packages/BAMDatasets/Tests/BAMDatasetsTests"
+        ),
+        .testTarget(
+            name: "BAMModelCatalogTests",
+            dependencies: [
+                "BAMModelCatalog",
+                "BAMModels",
+                "BAMCore",
+            ],
+            path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"
         ),
         .testTarget(
             name: "BAMJobsTests",

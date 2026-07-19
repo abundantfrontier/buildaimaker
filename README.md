@@ -110,3 +110,6 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 ## Non-goals (current tree)
 
 No real mlx-lm / F5-TTS training yet (see PR-LLM-Materialize / PR-VoiceSpike). No real dataset import UI yet.
+
+## Merged stack note
+This branch base merges Protocol + Datasets + Catalog/Fixture + PyEnv for LLM materialization.

@@ -17,10 +17,10 @@ buildaimaker/
 │   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
 │   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
 │   ├── BAMPersistence/      # GRDB library.sqlite + migrations
-│   ├── BAMModelCatalog/     # Living catalog + local models/base scan
+│   ├── BAMJobs/             # Job queue, state machine, fake TrainingRunner
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
 ├── Workers/                 # Training workers (future)
-├── Catalog/models.json      # Living supported model list (Qwen2.5 Instruct MLX)
+├── Catalog/                 # Model catalog (future)
 ├── Docs/                    # Design docs
 └── Package.swift            # Root SPM package
 ```
@@ -95,7 +95,7 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore, BAMModels, BAMPersistence (no GPU)
+- `swift test` — BAMCore, BAMModels, BAMPersistence, BAMJobs (no GPU)
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
@@ -103,7 +103,8 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
 - **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
+- **BAMJobs** — Queue controller (concurrency 1), v1 state machine (no pause), heartbeat interrupt, `FakeTrainingRunner` synthetic progress, Jobs UI.
 
 ## Non-goals (current tree)
 
-No training runners, no Python env, no real dataset import UI yet.
+No real process supervisor / Python workers yet (see PR-Protocol). No real dataset import UI yet.

@@ -66,6 +66,26 @@ Run unit tests:
 swift test
 ```
 
+## Offline fixture model
+
+CI and offline dogfood use a **tiny bundled fixture**, not multi-GB weights:
+
+| Path | Role |
+|------|------|
+| `Workers/fixtures/models/tiny-qwen-mlx/` | Living fixture (stub config + tokenizer JSON) |
+| `Packages/BAMModelCatalog/.../Resources/fixtures/tiny-qwen-mlx/` | Same files, bundled for install |
+| Catalog `sourceKey` | `buildaimaker/tiny-qwen-mlx-fixture` |
+
+**Real MLX weights** (e.g. `mlx-community/Qwen2.5-*-Instruct-4bit`) download separately via the optional Hugging Face Hub path when `ff.hfHubDownload` is on, or by placing files under `models/base/`. The fixture’s `model.safetensors` is a placeholder only (`WEIGHTS_NOT_INCLUDED.txt`).
+
+In the Models UI, **Install fixture model** copies the fixture into:
+
+```text
+~/Library/Application Support/BuildAIMaker/models/base/tiny-qwen-mlx-fixture/
+```
+
+with **no network**. Unit tests cover this offline path only.
+
 ## Feature flags
 
 All flags live in `BAMCore.FeatureFlags` and **default to off**:
@@ -80,6 +100,7 @@ All flags live in `BAMCore.FeatureFlags` and **default to off**:
 | `ff.cloudRunner` | Remote/cloud runner (kept off in v1) |
 | `ff.knowledgePacks` | Knowledge/RAG packs (Phase 2+) |
 | `ff.telemetryOptIn` | Opt-in diagnostics |
+| `ff.hfHubDownload` | Optional HF Hub model download (dogfood; CI stays offline) |
 
 ## Library root
 
@@ -113,3 +134,7 @@ No real mlx-lm / F5-TTS training yet (see PR-LLM-Materialize / PR-VoiceSpike). N
 
 ## Merged stack note
 This branch base merges Protocol + Datasets + Catalog/Fixture + PyEnv for LLM materialization.
+
+
+## Merged stack
+Base merges Protocol + Datasets + Catalog/Fixture for materialize work.

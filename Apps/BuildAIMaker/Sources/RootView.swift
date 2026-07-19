@@ -1,5 +1,6 @@
 import SwiftUI
 import BAMCore
+import BAMModelCatalog
 import BAMResourcesUI
 
 struct RootView: View {
@@ -28,10 +29,7 @@ struct RootView: View {
             DatasetsView()
 
         case .models:
-            PlaceholderDetailView(
-                destination: .models,
-                subtitle: "Browse base models and adapters."
-            )
+            ModelsView()
         case .train:
             PlaceholderDetailView(
                 destination: .train,

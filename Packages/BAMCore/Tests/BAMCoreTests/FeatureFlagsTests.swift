@@ -45,6 +45,13 @@ final class FeatureFlagsTests: XCTestCase {
         XCTAssertEqual(BAMErrorCode.licenseBlock.rawValue, "BAM_LICENSE_BLOCK")
         XCTAssertEqual(BAMErrorCode.migrationFailed.rawValue, "BAM_MIGRATION_FAILED")
         XCTAssertEqual(BAMErrorCode.schemaInvalid.rawValue, "BAM_SCHEMA_INVALID")
-        XCTAssertTrue(BAMErrorCode.allCases.count >= 19)
+        XCTAssertEqual(BAMErrorCode.downloadFailed.rawValue, "BAM_DOWNLOAD_FAILED")
+        XCTAssertTrue(BAMErrorCode.allCases.count >= 20)
+    }
+
+    func testHFHubDownloadDefaultsOff() {
+        XCTAssertFalse(FeatureFlags.default.hfHubDownload)
+        XCTAssertFalse(FeatureFlags.default.isEnabled(.hfHubDownload))
+        XCTAssertEqual(FeatureFlags.Key.hfHubDownload.rawValue, "ff.hfHubDownload")
     }
 }

@@ -2,17 +2,26 @@ import BAMCharacterStudio
 import BAMResourcesUI
 import SwiftUI
 
-/// List of saved characters + Create wizard (clear single entry point).
+/// List of saved characters + Create / Continue wizard.
 struct CharactersView: View {
     @Binding var selection: SidebarDestination?
     @State private var drafts: [CharacterDraft] = []
-    @State private var showCreate = false
+    @State private var showWizard = false
+    @State private var resumeDraft: CharacterDraft?
     @State private var loadError: String?
 
     private let store = CharacterLibraryStore()
 
     init(selection: Binding<SidebarDestination?> = .constant(nil)) {
         self._selection = selection
+    }
+
+    private var inProgress: [CharacterDraft] {
+        drafts.filter { !$0.isComplete }
+    }
+
+    private var completed: [CharacterDraft] {
+        drafts.filter(\.isComplete)
     }
 
     var body: some View {
@@ -30,44 +39,51 @@ struct CharactersView: View {
                     Text(
                         """
                         One path: Create → name → story → voice → save.
-                        Takes a few minutes; no Advanced screens required.
+                        If you leave mid-way, progress is saved — use Continue.
                         """
                     )
                 } actions: {
                     Button("Create a character") {
-                        showCreate = true
+                        openNew()
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                 }
             } else {
                 List {
+                    if !inProgress.isEmpty {
+                        Section {
+                            Text("You left these unfinished. Tap Continue to pick up where you stopped.")
+                                .font(.caption)
+                                .foregroundStyle(BAMColors.secondaryLabel)
+                            ForEach(inProgress) { draft in
+                                characterRow(draft, showContinue: true)
+                            }
+                            .onDelete { delete(from: inProgress, at: $0) }
+                        } header: {
+                            Text("Continue creating")
+                        }
+                    }
+
                     Section {
                         Button {
-                            showCreate = true
+                            openNew()
                         } label: {
-                            Label("Create another character", systemImage: "plus.circle.fill")
+                            Label("Create a new character", systemImage: "plus.circle.fill")
                         }
                     }
-                    Section("Your characters") {
-                        ForEach(drafts) { draft in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(draft.displayTitle)
-                                    .font(.headline)
-                                Text(draft.resolvedSpecies)
-                                    .font(.subheadline)
-                                    .foregroundStyle(BAMColors.secondaryLabel)
-                                HStack(spacing: 10) {
-                                    statusPill(draft.datasetId != nil, "Mind")
-                                    statusPill(draft.previewAudioPath != nil, "Voice")
-                                }
+
+                    if !completed.isEmpty {
+                        Section("Finished characters") {
+                            ForEach(completed) { draft in
+                                characterRow(draft, showContinue: false)
                             }
-                            .padding(.vertical, 4)
+                            .onDelete { delete(from: completed, at: $0) }
                         }
-                        .onDelete(perform: delete)
                     }
+
                     Section {
-                        Text("Next: open Playground to chat, or Advanced → Train to fine-tune a mind on a model.")
+                        Text("Next: Playground to chat, or Advanced → Train to fine-tune on a model.")
                             .font(.caption)
                             .foregroundStyle(BAMColors.secondaryLabel)
                         Button {
@@ -83,16 +99,20 @@ struct CharactersView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showCreate = true
+                    openNew()
                 } label: {
                     Label("Create", systemImage: "plus")
                 }
             }
         }
-        .sheet(isPresented: $showCreate, onDismiss: reload) {
+        .sheet(isPresented: $showWizard, onDismiss: {
+            resumeDraft = nil
+            reload()
+        }) {
             NavigationStack {
                 CreateCharacterWizardView(
-                    isPresented: $showCreate,
+                    isPresented: $showWizard,
+                    resumeDraft: resumeDraft,
                     onGoPlayground: {
                         selection = .playground
                     }
@@ -102,6 +122,46 @@ struct CharactersView: View {
             .background(SheetKeyWindowActivator())
         }
         .onAppear(perform: reload)
+    }
+
+    @ViewBuilder
+    private func characterRow(_ draft: CharacterDraft, showContinue: Bool) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(draft.displayTitle)
+                    .font(.headline)
+                Text(draft.resolvedSpecies)
+                    .font(.subheadline)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                Text(draft.progressLabel)
+                    .font(.caption)
+                    .foregroundStyle(showContinue ? Color.orange : BAMColors.secondaryLabel)
+                HStack(spacing: 10) {
+                    statusPill(!draft.examples.isEmpty || draft.datasetId != nil, "Mind")
+                    statusPill(draft.previewAudioPath != nil, "Voice")
+                    if draft.isComplete {
+                        statusPill(true, "Saved")
+                    }
+                }
+            }
+            Spacer()
+            if showContinue || !draft.isComplete {
+                Button("Continue") {
+                    openResume(draft)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button("Edit") {
+                    openResume(draft)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            openResume(draft)
+        }
     }
 
     private func statusPill(_ ok: Bool, _ title: String) -> some View {
@@ -114,6 +174,16 @@ struct CharactersView: View {
             .clipShape(Capsule())
     }
 
+    private func openNew() {
+        resumeDraft = nil
+        showWizard = true
+    }
+
+    private func openResume(_ draft: CharacterDraft) {
+        resumeDraft = draft
+        showWizard = true
+    }
+
     private func reload() {
         do {
             drafts = try store.list()
@@ -123,9 +193,9 @@ struct CharactersView: View {
         }
     }
 
-    private func delete(at offsets: IndexSet) {
+    private func delete(from source: [CharacterDraft], at offsets: IndexSet) {
         for i in offsets {
-            try? store.delete(id: drafts[i].id)
+            try? store.delete(id: source[i].id)
         }
         reload()
     }

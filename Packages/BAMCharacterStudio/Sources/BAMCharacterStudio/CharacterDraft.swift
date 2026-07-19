@@ -90,6 +90,10 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     public var datasetId: String?
     public var voiceProfilePath: String?
     public var previewAudioPath: String?
+    /// Wizard step raw value (0=meet, 1=mind, 2=voice, 3=done). Used to resume.
+    public var wizardStepRaw: Int
+    /// True after user hits Finish & save.
+    public var isComplete: Bool
     public var createdAt: String
     public var updatedAt: String
 
@@ -115,6 +119,8 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         datasetId: String? = nil,
         voiceProfilePath: String? = nil,
         previewAudioPath: String? = nil,
+        wizardStepRaw: Int = 0,
+        isComplete: Bool = false,
         createdAt: String = ISO8601DateFormatter().string(from: Date()),
         updatedAt: String = ISO8601DateFormatter().string(from: Date())
     ) {
@@ -139,6 +145,8 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         self.datasetId = datasetId
         self.voiceProfilePath = voiceProfilePath
         self.previewAudioPath = previewAudioPath
+        self.wizardStepRaw = wizardStepRaw
+        self.isComplete = isComplete
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -154,5 +162,74 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     public var displayTitle: String {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return n.isEmpty ? "Untitled character" : n
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, speciesPreset, customSpecies, vibe, storyPaste, styleTags, riffCount
+        case voicePreset, size, grit, atmosphere
+        case textureBuzzSaw, textureSongbird, textureDrip, textureServo
+        case bible, examples, datasetId, voiceProfilePath, previewAudioPath
+        case wizardStepRaw, isComplete, createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        speciesPreset = try c.decodeIfPresent(CreatureSpeciesPreset.self, forKey: .speciesPreset) ?? .alien
+        customSpecies = try c.decodeIfPresent(String.self, forKey: .customSpecies) ?? ""
+        vibe = try c.decodeIfPresent(String.self, forKey: .vibe) ?? ""
+        storyPaste = try c.decodeIfPresent(String.self, forKey: .storyPaste) ?? ""
+        styleTags = try c.decodeIfPresent([StyleTag].self, forKey: .styleTags) ?? []
+        riffCount = try c.decodeIfPresent(Int.self, forKey: .riffCount) ?? 2
+        voicePreset = try c.decodeIfPresent(String.self, forKey: .voicePreset) ?? CreatureSpeciesPreset.alien.voicePresetRawValue
+        size = try c.decodeIfPresent(Double.self, forKey: .size) ?? 0.5
+        grit = try c.decodeIfPresent(Double.self, forKey: .grit) ?? 0.35
+        atmosphere = try c.decodeIfPresent(Double.self, forKey: .atmosphere) ?? 0.4
+        textureBuzzSaw = try c.decodeIfPresent(Bool.self, forKey: .textureBuzzSaw) ?? false
+        textureSongbird = try c.decodeIfPresent(Bool.self, forKey: .textureSongbird) ?? false
+        textureDrip = try c.decodeIfPresent(Bool.self, forKey: .textureDrip) ?? false
+        textureServo = try c.decodeIfPresent(Bool.self, forKey: .textureServo) ?? false
+        bible = try c.decodeIfPresent(CharacterBible.self, forKey: .bible)
+        examples = try c.decodeIfPresent([DialogueExample].self, forKey: .examples) ?? []
+        datasetId = try c.decodeIfPresent(String.self, forKey: .datasetId)
+        voiceProfilePath = try c.decodeIfPresent(String.self, forKey: .voiceProfilePath)
+        previewAudioPath = try c.decodeIfPresent(String.self, forKey: .previewAudioPath)
+        wizardStepRaw = try c.decodeIfPresent(Int.self, forKey: .wizardStepRaw) ?? 0
+        // Older saves without isComplete: treat as complete if they had voice preview.
+        if let complete = try c.decodeIfPresent(Bool.self, forKey: .isComplete) {
+            isComplete = complete
+        } else {
+            isComplete = previewAudioPath != nil && (!examples.isEmpty || datasetId != nil)
+        }
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ISO8601DateFormatter().string(from: Date())
+        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt) ?? createdAt
+    }
+
+    /// In-progress if never finished, or missing mind/voice.
+    public var isInProgress: Bool {
+        if isComplete { return false }
+        // Any saved draft without finish counts as resumable.
+        return true
+    }
+
+    public var progressLabel: String {
+        if isComplete { return "Complete" }
+        switch wizardStepRaw {
+        case 0: return "In progress — Name"
+        case 1: return examples.isEmpty ? "In progress — Story" : "In progress — Story done"
+        case 2: return previewAudioPath == nil ? "In progress — Voice" : "In progress — almost done"
+        case 3: return "Complete"
+        default: return "In progress"
+        }
+    }
+
+    /// Sensible step to reopen on (never past what's done).
+    public var resumeStepRaw: Int {
+        if isComplete { return 3 }
+        if previewAudioPath != nil { return 2 }
+        if !examples.isEmpty || datasetId != nil { return 1 }
+        if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return 1 }
+        return max(0, min(wizardStepRaw, 2))
     }
 }

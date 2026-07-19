@@ -8,6 +8,8 @@ import SwiftUI
 struct CreateCharacterWizardView: View {
     @StateObject private var model = CreateCharacterViewModel()
     @Binding var isPresented: Bool
+    /// When set, resume this draft instead of starting blank.
+    var resumeDraft: CharacterDraft? = nil
     /// Optional: jump to Playground after finish.
     var onGoPlayground: (() -> Void)?
     @FocusState private var focusedField: Field?
@@ -35,28 +37,53 @@ struct CreateCharacterWizardView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, 8)
             }
+            if let status = model.statusMessage {
+                Text(status)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 4)
+            }
             Divider()
             footer
         }
         .background(BAMColors.detailBackground)
-        .navigationTitle("Create a character")
+        .navigationTitle(resumeDraft == nil ? "Create a character" : "Continue character")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { isPresented = false }
+                Button(model.step == .done ? "Close" : "Save & close") {
+                    if model.step != .done {
+                        model.saveAndExit()
+                    }
+                    isPresented = false
+                }
             }
         }
         .onAppear {
             activateKeyWindow()
+            model.load(draft: resumeDraft)
             model.refreshModelStatus()
-            focusedField = .name
+            focusedField = model.step == .mind ? .story : .name
+        }
+        .onDisappear {
+            if model.step != .done {
+                model.saveAndExit()
+            }
         }
         .onChange(of: model.step) { _, newStep in
             activateKeyWindow()
             model.refreshModelStatus()
+            model.persistDraft()
             switch newStep {
             case .meet: focusedField = .name
             case .mind: focusedField = .story
             case .voice, .done: focusedField = nil
+            }
+        }
+        .onChange(of: model.draft.name) { _, _ in
+            if model.canGoNextFromMeet {
+                model.persistDraft()
             }
         }
     }
@@ -452,28 +479,37 @@ struct CreateCharacterWizardView: View {
                     model.goBack()
                 }
             }
+            if model.step != .done {
+                Button("Save & close") {
+                    model.saveAndExit()
+                    isPresented = false
+                }
+                .help("Keeps progress. Open Characters and Continue anytime.")
+            }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
                 Text(model.primaryActionHint)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
                     .multilineTextAlignment(.trailing)
-                Button {
-                    model.performPrimaryAction()
-                } label: {
-                    if model.isWorking {
-                        ProgressView()
-                            .controlSize(.small)
-                            .padding(.horizontal, 12)
-                    } else {
-                        Text(model.primaryActionTitle)
-                            .frame(minWidth: 160)
+                if model.step != .done {
+                    Button {
+                        model.performPrimaryAction()
+                    } label: {
+                        if model.isWorking {
+                            ProgressView()
+                                .controlSize(.small)
+                                .padding(.horizontal, 12)
+                        } else {
+                            Text(model.primaryActionTitle)
+                                .frame(minWidth: 160)
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(!model.primaryActionEnabled || model.isWorking)
+                    .keyboardShortcut(.defaultAction)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!model.primaryActionEnabled || model.isWorking)
-                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)

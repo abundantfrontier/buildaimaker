@@ -99,6 +99,46 @@ final class CreateCharacterViewModel: ObservableObject {
     private let corpus = CorpusBuilder()
     private var audioPlayer: AVAudioPlayer?
 
+    /// Load an existing draft to resume (or start fresh if nil).
+    func load(draft existing: CharacterDraft?) {
+        if let existing {
+            draft = existing
+            let raw = existing.resumeStepRaw
+            step = Step(rawValue: min(raw, 2)) ?? .meet
+            if existing.isComplete {
+                step = .done
+            }
+            statusMessage = existing.isComplete
+                ? nil
+                : "Resumed — \(existing.progressLabel). Continue with the green button."
+        } else {
+            draft = CharacterDraft()
+            step = .meet
+            statusMessage = nil
+        }
+        lastError = nil
+        isPlayingPreview = false
+        audioPlayer?.stop()
+        refreshModelStatus()
+    }
+
+    /// Persist current wizard state so Cancel / crash / leave path can resume.
+    @discardableResult
+    func persistDraft(markComplete: Bool = false) -> Bool {
+        draft.wizardStepRaw = step.rawValue
+        if markComplete {
+            draft.isComplete = true
+            draft.wizardStepRaw = Step.done.rawValue
+        }
+        do {
+            try store.save(draft)
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
     var canGoNextFromMeet: Bool {
         !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -154,9 +194,11 @@ final class CreateCharacterViewModel: ObservableObject {
         case .meet:
             guard canGoNextFromMeet else { return }
             step = .mind
+            persistDraft()
         case .mind:
             if mindBuilt {
                 step = .voice
+                persistDraft()
             } else {
                 buildMind(importDataset: true)
                 // Stay on mind so user sees previews; they press Continue again.
@@ -177,6 +219,7 @@ final class CreateCharacterViewModel: ObservableObject {
         step = prev
         statusMessage = nil
         lastError = nil
+        persistDraft()
     }
 
     func resetForAnother() {
@@ -187,6 +230,15 @@ final class CreateCharacterViewModel: ObservableObject {
         isPlayingPreview = false
         audioPlayer?.stop()
         refreshModelStatus()
+    }
+
+    /// Call when user dismisses the sheet without finishing — keeps draft for Continue.
+    func saveAndExit() {
+        if step != .done {
+            draft.isComplete = false
+            persistDraft()
+            statusMessage = "Progress saved. Open this character again to continue."
+        }
     }
 
     /// Probe library for fixture / scanned base models (wizard never auto-selects them).
@@ -271,7 +323,7 @@ final class CreateCharacterViewModel: ObservableObject {
             }
         }
 
-        try? store.save(draft)
+        persistDraft()
     }
 
     func riffMore() {
@@ -285,7 +337,7 @@ final class CreateCharacterViewModel: ObservableObject {
         draft.examples = next.examples
         draft.bible = next.bible
         statusMessage = "Riffed +3 lines (now \(next.rowCount))."
-        try? store.save(draft)
+        persistDraft()
     }
 
     func renderVoicePreview() {
@@ -304,7 +356,7 @@ final class CreateCharacterViewModel: ObservableObject {
             draft.previewAudioPath = result.audioURL.path
             draft.voiceProfilePath = result.profileURL.path
             statusMessage = "Voice ready (\(params.preset.title)). Press “Finish & save” below."
-            try store.save(draft)
+            persistDraft()
             playPreview()
         } catch {
             lastError = error.localizedDescription
@@ -325,17 +377,13 @@ final class CreateCharacterViewModel: ObservableObject {
     }
 
     func saveCharacter() {
-        do {
-            // Ensure mind exists even if user skipped rebuilding.
-            if draft.examples.isEmpty {
-                buildMind(importDataset: true)
-            }
-            try store.save(draft)
-            statusMessage = nil
-            step = .done
-        } catch {
-            lastError = error.localizedDescription
+        // Ensure mind exists even if user skipped rebuilding.
+        if draft.examples.isEmpty {
+            buildMind(importDataset: true)
         }
+        guard persistDraft(markComplete: true) else { return }
+        statusMessage = nil
+        step = .done
     }
 
     func currentFXParams() -> CreatureFXParams {

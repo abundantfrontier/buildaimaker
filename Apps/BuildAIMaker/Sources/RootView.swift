@@ -1,5 +1,7 @@
 import SwiftUI
+import AppKit
 import BAMCore
+import BAMPersistence
 import BAMResourcesUI
 
 struct RootView: View {
@@ -75,9 +77,14 @@ struct RootView: View {
     }
 }
 
-/// Lightweight settings shell listing feature-flag state (all off in scaffold).
+/// Settings shell: about, feature flags, and library archive backup.
 struct SettingsPlaceholderView: View {
     let featureFlags: FeatureFlags
+
+    @State private var includeModelWeights = false
+    @State private var isExporting = false
+    @State private var exportStatus: String?
+    @State private var exportError: String?
 
     var body: some View {
         Form {
@@ -86,6 +93,42 @@ struct SettingsPlaceholderView: View {
                 LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
                 LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
                 LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
+            }
+
+            Section {
+                Text(LibraryArchiveExporter.defaultWeightsSkipNote)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Include model weights", isOn: $includeModelWeights)
+                    .help("When off, models/base and models/adapters are omitted from the archive.")
+
+                Button("Export library archive…") {
+                    exportLibraryArchive()
+                }
+                .disabled(isExporting)
+
+                if isExporting {
+                    ProgressView("Exporting…")
+                        .controlSize(.small)
+                }
+                if let exportStatus {
+                    Text(exportStatus)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if let exportError {
+                    Text(exportError)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("Library durability")
+            } footer: {
+                Text("Creates a zip of library.sqlite, config, consent, personas, datasets, voices, and jobs. Python envs and download cache are always skipped from this panel.")
             }
 
             Section("Feature flags") {
@@ -100,5 +143,65 @@ struct SettingsPlaceholderView: View {
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle(SidebarDestination.settings.title)
+    }
+
+    /// Presents a save panel, then runs export off the main actor.
+    private func exportLibraryArchive() {
+        exportStatus = nil
+        exportError = nil
+
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = LibraryArchiveExporter.suggestedArchiveFileName()
+        panel.title = "Export library archive"
+        panel.message = includeModelWeights
+            ? "Full archive including model weights."
+            : "Archive excludes large model weights (recommended)."
+        panel.prompt = "Export"
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        isExporting = true
+        let includeWeights = includeModelWeights
+        DispatchQueue.global(qos: .userInitiated).async {
+            let options = LibraryArchiveExportOptions(
+                includeModelWeights: includeWeights,
+                includePythonEnvs: false,
+                includeDownloadCache: false,
+                compressToZip: true
+            )
+            do {
+                // Ensure library root exists so a first-run export has a clear error if empty.
+                let result = try LibraryArchiveExporter.exportDefaultLibrary(
+                    to: url,
+                    options: options
+                )
+                DispatchQueue.main.async {
+                    isExporting = false
+                    exportStatus =
+                        "Exported \(result.includedRelativePaths.count) entries (~\(Self.formatBytes(result.bytesCopied))) → \(result.archiveURL.path)"
+                    exportError = nil
+                }
+            } catch let error as BAMError {
+                DispatchQueue.main.async {
+                    isExporting = false
+                    exportError = error.errorDescription ?? error.code.rawValue
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    isExporting = false
+                    exportError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 }

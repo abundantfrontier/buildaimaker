@@ -101,7 +101,7 @@ No codesigning secrets are required for package builds. A full `.app` bundle / D
 ## Domain packages
 
 - **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
-- **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
+- **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …); `LibraryArchiveExporter` for Settings → “Export library archive…” (zip of sqlite + metadata; model weights skipped by default).
 
 ## Non-goals (current tree)
 

@@ -1,5 +1,7 @@
 import SwiftUI
 import BAMCore
+import BAMConsent
+import BAMPersistence
 import BAMResourcesUI
 
 struct RootView: View {
@@ -52,12 +54,7 @@ struct RootView: View {
                 subtitle: "Chat against base models and adapters."
             )
         case .voices:
-            PlaceholderDetailView(
-                destination: .voices,
-                subtitle: featureFlags.voiceClone
-                    ? "Manage voice profiles."
-                    : "Voice cloning is not enabled yet (ff.voiceClone is off)."
-            )
+            VoicesPlaceholderView(featureFlags: featureFlags)
         case .personas:
             PlaceholderDetailView(
                 destination: .personas,
@@ -75,30 +72,131 @@ struct RootView: View {
     }
 }
 
-/// Lightweight settings shell listing feature-flag state (all off in scaffold).
-struct SettingsPlaceholderView: View {
+/// Voices shell: consent attestation available before full voice-clone UI (PR-Voice-UI).
+struct VoicesPlaceholderView: View {
     let featureFlags: FeatureFlags
+    @State private var showConsent = false
+    @State private var consentService: ConsentService?
 
     var body: some View {
-        Form {
-            Section("About") {
-                LabeledContent("App", value: AppIdentity.displayName)
-                LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
-                LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
-                LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
-            }
-
-            Section("Feature flags") {
-                ForEach(FeatureFlags.Key.allCases, id: \.rawValue) { key in
-                    LabeledContent(key.rawValue) {
-                        Text(featureFlags.isEnabled(key) ? "On" : "Off")
-                            .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
+        Group {
+            if showConsent, let consentService {
+                ConsentRecordsView(service: consentService)
+            } else {
+                VStack(spacing: 16) {
+                    Image(systemName: SidebarDestination.voices.systemImage)
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text(SidebarDestination.voices.title)
+                        .font(.title2.weight(.semibold))
+                    Text(subtitle)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                    Button("Voice consent attestations…") {
+                        openConsent()
                     }
+                    .buttonStyle(.borderedProminent)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle(SidebarDestination.voices.title)
             }
         }
-        .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .navigationTitle(SidebarDestination.settings.title)
+    }
+
+    private var subtitle: String {
+        if featureFlags.voiceClone {
+            return "Manage voice profiles. Consent records are required before cloning."
+        }
+        return "Voice cloning is not enabled yet (ff.voiceClone is off). You can still create consent records."
+    }
+
+    private func openConsent() {
+        do {
+            if consentService == nil {
+                let db = try BAMPersistence.LibraryDatabase.openDefault()
+                let store = ConsentStore(
+                    database: db,
+                    consentDirectory: LibraryPaths.consent,
+                    writeJSONFiles: true
+                )
+                consentService = ConsentService(store: store)
+            }
+            showConsent = true
+        } catch {
+            // Fall back to in-memory so the form is still reachable if library open fails.
+            if let mem = try? ConsentService.makeInMemory(writeJSONFiles: false) {
+                consentService = mem
+                showConsent = true
+            }
+        }
+    }
+}
+
+/// Settings shell: feature flags + consent attestation entry point.
+struct SettingsPlaceholderView: View {
+    let featureFlags: FeatureFlags
+    @State private var showConsent = false
+    @State private var consentService: ConsentService?
+
+    var body: some View {
+        Group {
+            if showConsent, let consentService {
+                ConsentRecordsView(service: consentService)
+            } else {
+                Form {
+                    Section("About") {
+                        LabeledContent("App", value: AppIdentity.displayName)
+                        LabeledContent("Runner protocol", value: "v\(ProtocolVersions.runnerProtocolVersion)")
+                        LabeledContent("Library schema", value: "v\(ProtocolVersions.librarySchemaVersion)")
+                        LabeledContent("Library root", value: LibraryPaths.libraryRoot.path)
+                    }
+
+                    Section("Voice consent") {
+                        Text(
+                            "Create and review consent records bound by canonical content hash before voice cloning."
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        Button("Manage consent records…") {
+                            openConsent()
+                        }
+                    }
+
+                    Section("Feature flags") {
+                        ForEach(FeatureFlags.Key.allCases, id: \.rawValue) { key in
+                            LabeledContent(key.rawValue) {
+                                Text(featureFlags.isEnabled(key) ? "On" : "Off")
+                                    .foregroundStyle(featureFlags.isEnabled(key) ? .primary : .secondary)
+                            }
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .navigationTitle(SidebarDestination.settings.title)
+            }
+        }
+    }
+
+    private func openConsent() {
+        do {
+            if consentService == nil {
+                let db = try BAMPersistence.LibraryDatabase.openDefault()
+                let store = ConsentStore(
+                    database: db,
+                    consentDirectory: LibraryPaths.consent,
+                    writeJSONFiles: true
+                )
+                consentService = ConsentService(store: store)
+            }
+            showConsent = true
+        } catch {
+            if let mem = try? ConsentService.makeInMemory(writeJSONFiles: false) {
+                consentService = mem
+                showConsent = true
+            }
+        }
     }
 }

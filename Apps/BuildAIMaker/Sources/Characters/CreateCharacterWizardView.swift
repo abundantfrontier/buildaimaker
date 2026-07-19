@@ -4,10 +4,12 @@ import BAMCharacterStudio
 import BAMResourcesUI
 import SwiftUI
 
-/// CS-1…CS-3: Meet → Story (paste→corpus) → Voice (presets/FX) → Done.
+/// Linear Create Character flow: Name → Story → Voice → Done (no dead ends).
 struct CreateCharacterWizardView: View {
     @StateObject private var model = CreateCharacterViewModel()
     @Binding var isPresented: Bool
+    /// Optional: jump to Playground after finish.
+    var onGoPlayground: (() -> Void)?
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -19,51 +21,18 @@ struct CreateCharacterWizardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            stepHeader
+            progressBar
             Divider()
-            // Avoid ScrollView wrapping primary text fields on macOS — it steals focus.
-            Group {
-                switch model.step {
-                case .meet:
-                    ScrollView {
-                        meetStep
-                            .padding(24)
-                            .frame(maxWidth: 720, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                case .mind:
-                    mindStep
-                        .padding(24)
-                        .frame(maxWidth: 720, alignment: .leading)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                case .voice:
-                    ScrollView {
-                        voiceStep
-                            .padding(24)
-                            .frame(maxWidth: 720, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                case .done:
-                    ScrollView {
-                        doneStep
-                            .padding(24)
-                            .frame(maxWidth: 720, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            whatToDoNowBanner
+            Divider()
+            content
             if let err = model.lastError {
                 Text(err)
                     .foregroundStyle(.red)
                     .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 24)
-            }
-            if let status = model.statusMessage {
-                Text(status)
-                    .foregroundStyle(BAMColors.secondaryLabel)
-                    .font(.callout)
-                    .padding(.horizontal, 24)
+                    .padding(.top, 8)
             }
             Divider()
             footer
@@ -72,12 +41,12 @@ struct CreateCharacterWizardView: View {
         .navigationTitle("Create a character")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Close") { isPresented = false }
+                Button("Cancel") { isPresented = false }
             }
         }
         .onAppear {
             activateKeyWindow()
-            focusedField = model.step == .mind ? .story : .name
+            focusedField = .name
         }
         .onChange(of: model.step) { _, newStep in
             activateKeyWindow()
@@ -89,54 +58,113 @@ struct CreateCharacterWizardView: View {
         }
     }
 
-    private func activateKeyWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        // Prefer the sheet/window hosting this view.
-        if let key = NSApp.keyWindow {
-            key.makeKeyAndOrderFront(nil)
-        } else {
-            NSApp.windows.first(where: \.isVisible)?.makeKeyAndOrderFront(nil)
-        }
-    }
+    // MARK: - Progress
 
-    private var stepHeader: some View {
-        HStack(spacing: 12) {
-            ForEach(CreateCharacterViewModel.Step.allCases.filter { $0 != .done }) { s in
-                VStack(spacing: 4) {
-                    Circle()
-                        .fill(s.rawValue <= model.step.rawValue ? Color.accentColor : Color.secondary.opacity(0.3))
-                        .frame(width: 10, height: 10)
-                    Text(s.title)
-                        .font(.caption2)
-                        .foregroundStyle(s == model.step ? .primary : BAMColors.secondaryLabel)
+    private var progressBar: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(CreateCharacterViewModel.Step.userSteps.enumerated()), id: \.element.id) { index, s in
+                let n = index + 1
+                let active = model.step == s
+                let done = model.step.rawValue > s.rawValue || (model.step == .done && s != .done)
+                HStack(spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .fill(done || active ? Color.accentColor : Color.secondary.opacity(0.25))
+                            .frame(width: 28, height: 28)
+                        if done && !active {
+                            Image(systemName: "checkmark")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white)
+                        } else {
+                            Text("\(n)")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(active || done ? .white : .secondary)
+                        }
+                    }
+                    Text(s.shortTitle)
+                        .font(.caption.weight(active ? .semibold : .regular))
+                        .foregroundStyle(active ? .primary : BAMColors.secondaryLabel)
                 }
+                .frame(maxWidth: .infinity)
                 if s != .voice {
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.25))
-                        .frame(height: 1)
-                        .frame(maxWidth: 40)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(BAMColors.tertiaryLabel)
                 }
             }
-            Spacer()
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    private var whatToDoNowBanner: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "arrow.right.circle.fill")
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("What to do now")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                Text(model.step.instruction)
+                    .font(.body.weight(.medium))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.08))
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        Group {
+            switch model.step {
+            case .meet:
+                ScrollView {
+                    meetStep
+                        .padding(24)
+                        .frame(maxWidth: 720, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            case .mind:
+                mindStep
+                    .padding(24)
+                    .frame(maxWidth: 720, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            case .voice:
+                ScrollView {
+                    voiceStep
+                        .padding(24)
+                        .frame(maxWidth: 720, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            case .done:
+                ScrollView {
+                    doneStep
+                        .padding(24)
+                        .frame(maxWidth: 720, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Steps
 
     private var meetStep: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Meet them")
+            Text("Step 1 — Name & type")
                 .font(.title2.weight(.semibold))
-            Text("Name your character and pick a creature vibe. You can change the voice later.")
-                .foregroundStyle(BAMColors.secondaryLabel)
 
-            TextField("Name", text: $model.draft.name)
-                .textFieldStyle(.roundedBorder)
-                .focused($focusedField, equals: .name)
+            LabeledContent("Name (required)") {
+                TextField("e.g. Zorp, Swamp Priest, Unit-7", text: $model.draft.name)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .name)
+            }
 
-            Text("Species / vibe")
+            Text("What kind of creature?")
                 .font(.headline)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
                 ForEach(CreatureSpeciesPreset.allCases) { preset in
@@ -158,223 +186,273 @@ struct CreateCharacterWizardView: View {
             }
 
             if model.draft.speciesPreset == .custom {
-                TextField("Custom species", text: $model.draft.customSpecies)
+                TextField("Describe the species", text: $model.draft.customSpecies)
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .customSpecies)
             }
 
-            TextField("Vibe (optional)", text: $model.draft.vibe, axis: .vertical)
-                .lineLimit(2...4)
+            Text("Vibe (optional)")
+                .font(.headline)
+            TextField("e.g. polite outsider, grumpy, curious", text: $model.draft.vibe)
                 .textFieldStyle(.roundedBorder)
                 .focused($focusedField, equals: .vibe)
+
+            if !model.canGoNextFromMeet {
+                tip("Type a name, then press Continue below.")
+            }
         }
     }
 
     private var mindStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Their story")
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Step 2 — How they talk")
                 .font(.title2.weight(.semibold))
-            Text("Paste lore, backstory, or sample lines. We’ll turn it into practice dialogues (how they talk).")
+
+            Text("Paste a short story, lore, or sample lines. We turn that into practice dialogues.")
                 .foregroundStyle(BAMColors.secondaryLabel)
 
-            MacTextEditor(text: $model.draft.storyPaste, minHeight: 160)
-                .frame(minHeight: 160, maxHeight: 220)
-                .focused($focusedField, equals: .story)
+            MacTextEditor(text: $model.draft.storyPaste, minHeight: 120)
+                .frame(minHeight: 120, maxHeight: 160)
 
-            Text("How they talk")
-                .font(.headline)
-            FlowTags(
-                tags: StyleTag.allCases,
-                selection: $model.draft.styleTags
-            )
-
-            Stepper("Extra riff lines: \(model.draft.riffCount)", value: $model.draft.riffCount, in: 0...8)
-
-            HStack {
-                Button("Build how they talk") {
-                    model.buildMind(importDataset: true)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isWorking || !model.canBuildMind)
-
-                Button("More like this") {
-                    model.riffMore()
-                }
-                .disabled(model.draft.examples.isEmpty || model.isWorking)
+            DisclosureGroup("Speech style (optional)") {
+                FlowTags(tags: StyleTag.allCases, selection: $model.draft.styleTags)
+                    .padding(.top, 8)
             }
 
-            if !model.draft.examples.isEmpty {
-                Text("Preview (\(model.draft.examples.count) lines)")
-                    .font(.headline)
+            if model.mindBuilt {
+                Label(
+                    "Mind ready — \(model.draft.examples.count) practice lines saved.",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .foregroundStyle(.green)
+                .font(.callout)
+
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.draft.examples.prefix(6)) { ex in
+                        ForEach(model.draft.examples.prefix(4)) { ex in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("You: \(ex.user)")
-                                    .font(.callout.weight(.semibold))
+                                    .font(.caption.weight(.semibold))
                                 Text(ex.assistant)
-                                    .font(.callout)
+                                    .font(.caption)
                                     .foregroundStyle(BAMColors.secondaryLabel)
                             }
-                            .padding(10)
+                            .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Color.secondary.opacity(0.08))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
-                        if let rules = model.draft.bible?.speechRules, !rules.isEmpty {
-                            Text("Speech rules: \(rules.joined(separator: " "))")
-                                .font(.caption)
-                                .foregroundStyle(BAMColors.secondaryLabel)
-                        }
                     }
                 }
-                .frame(maxHeight: 200)
+                .frame(maxHeight: 160)
+
+                HStack {
+                    Button("Rebuild from paste") {
+                        model.buildMind(importDataset: true)
+                    }
+                    .disabled(model.isWorking)
+                    Button("Add more lines") {
+                        model.riffMore()
+                    }
+                    .disabled(model.isWorking)
+                }
+                .font(.callout)
+            } else {
+                tip("Click the green button below: “Build how they talk”. You don’t need perfect writing.")
             }
         }
     }
 
     private var voiceStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Their voice")
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Step 3 — How they sound")
                 .font(.title2.weight(.semibold))
-            Text("Presets + simple sliders. Textures layer under speech (ducked so words stay clear).")
+
+            Text("Pick a preset (or tweak sliders), then hear a short creature voice. This is FX — not a real human clone.")
                 .foregroundStyle(BAMColors.secondaryLabel)
 
-            Text("Preset")
-                .font(.headline)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
                 ForEach(CreatureVoicePreset.allCases) { preset in
                     Button {
                         model.applyVoicePreset(preset)
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(preset.title).font(.callout.weight(.semibold))
-                            Text(preset.teachTip)
-                                .font(.caption2)
-                                .foregroundStyle(BAMColors.secondaryLabel)
-                                .lineLimit(3)
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            model.draft.voicePreset == preset.rawValue
-                                ? Color.accentColor.opacity(0.15)
-                                : Color.secondary.opacity(0.08)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Text(preset.title)
+                            .font(.callout.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(10)
+                            .background(
+                                model.draft.voicePreset == preset.rawValue
+                                    ? Color.accentColor.opacity(0.15)
+                                    : Color.secondary.opacity(0.08)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
+                    .help(preset.teachTip)
                 }
+            }
+
+            if let teach = CreatureVoicePreset(rawValue: model.draft.voicePreset)?.teachTip {
+                tip(teach)
             }
 
             let fx = model.currentFXParams()
-            labeledSlider("Size — \(fx.sizeLabel)", value: $model.draft.size, tip: "Lower = bigger creature.")
-            labeledSlider("Grit — \(fx.gritLabel)", value: $model.draft.grit, tip: "Adds metal, dirt, or edge.")
-            labeledSlider("Atmosphere — \(fx.atmosphereLabel)", value: $model.draft.atmosphere, tip: "If words get muddy, turn this down.")
+            labeledSlider("Size — \(fx.sizeLabel)", value: $model.draft.size)
+            labeledSlider("Grit — \(fx.gritLabel)", value: $model.draft.grit)
+            labeledSlider("Atmosphere — \(fx.atmosphereLabel)", value: $model.draft.atmosphere)
 
-            Text("Textures")
-                .font(.headline)
-            Toggle(isOn: $model.draft.textureBuzzSaw) {
-                textureLabel(.buzzSaw)
-            }
-            Toggle(isOn: $model.draft.textureSongbird) {
-                textureLabel(.songbird)
-            }
-            Toggle(isOn: $model.draft.textureDrip) {
-                textureLabel(.drip)
-            }
-            Toggle(isOn: $model.draft.textureServo) {
-                textureLabel(.servo)
-            }
-
-            HStack {
-                Button("Preview voice") {
-                    model.renderVoicePreview()
+            DisclosureGroup("Textures under the voice (optional)") {
+                VStack(alignment: .leading) {
+                    Toggle("Buzz saw", isOn: $model.draft.textureBuzzSaw)
+                    Toggle("Songbird", isOn: $model.draft.textureSongbird)
+                    Toggle("Drip", isOn: $model.draft.textureDrip)
+                    Toggle("Servo", isOn: $model.draft.textureServo)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isWorking)
+                .padding(.top, 6)
+            }
 
-                if model.draft.previewAudioPath != nil {
-                    Button("Play again") {
-                        model.playPreview()
-                    }
-                }
+            if model.voiceReady {
+                Label("Voice preview ready — you can finish.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Button("Play again") { model.playPreview() }
+            } else {
+                tip("Click the green button below to generate and hear their voice, then you’ll save.")
             }
         }
     }
 
     private var doneStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Character ready")
+        VStack(alignment: .leading, spacing: 16) {
+            Text("All set — \(model.draft.displayTitle)")
                 .font(.title2.weight(.semibold))
-            Text(model.draft.displayTitle)
-                .font(.title3)
             Text(model.draft.resolvedSpecies)
                 .foregroundStyle(BAMColors.secondaryLabel)
-            if model.draft.datasetId != nil {
-                Label("Mind saved to Datasets", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+
+            VStack(alignment: .leading, spacing: 8) {
+                checkRow(model.draft.datasetId != nil, "Mind: practice lines saved (Datasets)")
+                checkRow(model.draft.previewAudioPath != nil, "Voice: creature FX preview saved")
+                checkRow(true, "Character card saved under Characters")
             }
-            if model.draft.previewAudioPath != nil {
-                Label("Voice preview rendered", systemImage: "waveform")
-                    .foregroundStyle(.green)
-            }
-            Text("Next (later): Teach (fine-tune) and Talk. For now open Playground or Advanced → Datasets / Train.")
-                .font(.callout)
-                .foregroundStyle(BAMColors.secondaryLabel)
-            Button("Done") { isPresented = false }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Text("What you can do next")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    isPresented = false
+                    onGoPlayground?()
+                } label: {
+                    Label("Open Playground (chat / talk)", systemImage: "bubble.left.and.bubble.right")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+
+                Button {
+                    isPresented = false
+                } label: {
+                    Label("Back to Characters list", systemImage: "theatermasks")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
+                Button {
+                    model.resetForAnother()
+                    focusedField = .name
+                } label: {
+                    Label("Create another character", systemImage: "plus")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
+
+            Text("Advanced (optional): open Train to fine-tune the mind on a real model later.")
+                .font(.caption)
+                .foregroundStyle(BAMColors.secondaryLabel)
         }
     }
 
+    // MARK: - Footer (single primary action)
+
     private var footer: some View {
-        HStack {
+        HStack(alignment: .center, spacing: 16) {
             if model.step != .meet && model.step != .done {
                 Button("Back") {
-                    if let prev = CreateCharacterViewModel.Step(rawValue: model.step.rawValue - 1) {
-                        model.step = prev
-                    }
+                    model.goBack()
                 }
             }
             Spacer()
-            if model.step == .meet {
-                Button("Next") { model.step = .mind }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!model.canGoNextFromMeet)
-            } else if model.step == .mind {
-                Button("Next") { model.step = .voice }
-                    .buttonStyle(.borderedProminent)
-            } else if model.step == .voice {
-                Button("Save character") {
-                    model.saveCharacter()
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(model.primaryActionHint)
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .multilineTextAlignment(.trailing)
+                Button {
+                    model.performPrimaryAction()
+                } label: {
+                    if model.isWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.horizontal, 12)
+                    } else {
+                        Text(model.primaryActionTitle)
+                            .frame(minWidth: 160)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!model.primaryActionEnabled || model.isWorking)
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
     }
 
-    private func labeledSlider(_ title: String, value: Binding<Double>, tip: String) -> some View {
+    // MARK: - Helpers
+
+    private func tip(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lightbulb.fill")
+                .foregroundStyle(.orange)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(BAMColors.secondaryLabel)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func checkRow(_ ok: Bool, _ text: String) -> some View {
+        Label(text, systemImage: ok ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(ok ? .green : BAMColors.secondaryLabel)
+            .font(.callout)
+    }
+
+    private func labeledSlider(_ title: String, value: Binding<Double>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
             Slider(value: value, in: 0...1)
-            Text(tip)
-                .font(.caption)
-                .foregroundStyle(BAMColors.secondaryLabel)
         }
     }
 
-    private func textureLabel(_ id: CreatureTextureID) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(id.title)
-            Text(id.teachTip)
-                .font(.caption)
-                .foregroundStyle(BAMColors.secondaryLabel)
+    private func activateKeyWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let key = NSApp.keyWindow {
+            key.makeKeyAndOrderFront(nil)
+        } else {
+            NSApp.windows.first(where: \.isVisible)?.makeKeyAndOrderFront(nil)
         }
     }
 }
 
-// Simple wrapping chip selector
 private struct FlowTags: View {
     let tags: [StyleTag]
     @Binding var selection: [StyleTag]
@@ -390,20 +468,15 @@ private struct FlowTags: View {
                         selection.append(tag)
                     }
                 } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(tag.title)
-                            .font(.caption.weight(.semibold))
-                        Text(tag.hint)
-                            .font(.caption2)
-                            .foregroundStyle(BAMColors.secondaryLabel)
-                            .lineLimit(2)
-                    }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(on ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    Text(tag.title)
+                        .font(.caption.weight(.semibold))
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(on ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
+                .help(tag.hint)
             }
         }
     }

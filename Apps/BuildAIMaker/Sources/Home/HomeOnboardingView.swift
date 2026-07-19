@@ -47,17 +47,30 @@ struct HomeOnboardingView: View {
             Text(AppIdentity.displayName)
                 .font(.largeTitle.weight(.semibold))
             Text(
-                "Create fictional characters: paste a story, shape how they talk, give them a creature voice, then play. Requires \(AppIdentity.minimumUnifiedMemoryGB) GB unified memory for training."
+                "Make a fictional creature in four guided steps: name → story → voice → save. Then chat in Playground."
             )
             .font(.body)
             .foregroundStyle(BAMColors.secondaryLabel)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("1. Characters → Create", systemImage: "1.circle.fill")
+                Label("2. Follow the green button at the bottom of each step", systemImage: "2.circle.fill")
+                Label("3. When finished, open Playground to chat", systemImage: "3.circle.fill")
+            }
+            .font(.callout)
+            .foregroundStyle(BAMColors.secondaryLabel)
+
             Button {
                 selection = .characters
             } label: {
-                Label("Create a character", systemImage: "theatermasks")
+                Label("Start: Create a character", systemImage: "theatermasks")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+
+            Text("Advanced (Datasets, Train, Jobs…) is optional — only for deeper fine-tuning later.")
+                .font(.caption)
+                .foregroundStyle(BAMColors.tertiaryLabel)
         }
     }
 

@@ -18,12 +18,30 @@ final class CreateCharacterViewModel: ObservableObject {
 
         var id: Int { rawValue }
 
-        var title: String {
+        static var userSteps: [Step] { [.meet, .mind, .voice] }
+
+        var shortTitle: String {
             switch self {
-            case .meet: return "Meet them"
-            case .mind: return "Their story"
-            case .voice: return "Their voice"
-            case .done: return "Ready"
+            case .meet: return "Name"
+            case .mind: return "Story"
+            case .voice: return "Voice"
+            case .done: return "Done"
+            }
+        }
+
+        var title: String { shortTitle }
+
+        /// Shown in the “What to do now” banner.
+        var instruction: String {
+            switch self {
+            case .meet:
+                return "Type a name and pick a creature type, then press Continue."
+            case .mind:
+                return "Paste a short story (or leave blank), then press Build how they talk."
+            case .voice:
+                return "Pick a voice preset, press Hear their voice, then Finish & save."
+            case .done:
+                return "Character saved. Choose what to do next below."
             }
         }
     }
@@ -46,6 +64,86 @@ final class CreateCharacterViewModel: ObservableObject {
     var canBuildMind: Bool {
         !draft.storyPaste.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var mindBuilt: Bool { !draft.examples.isEmpty }
+    var voiceReady: Bool { draft.previewAudioPath != nil }
+
+    var primaryActionTitle: String {
+        switch step {
+        case .meet: return "Continue → Story"
+        case .mind:
+            return mindBuilt ? "Continue → Voice" : "Build how they talk"
+        case .voice:
+            return voiceReady ? "Finish & save" : "Hear their voice"
+        case .done: return "Close"
+        }
+    }
+
+    var primaryActionHint: String {
+        switch step {
+        case .meet:
+            return canGoNextFromMeet ? "Next: write how they talk" : "Enter a name first"
+        case .mind:
+            return mindBuilt
+                ? "Story is ready — continue to voice"
+                : "Builds practice dialogues from your paste"
+        case .voice:
+            return voiceReady
+                ? "Saves the character to your library"
+                : "Generates a short creature sound preview"
+        case .done:
+            return "Use the buttons above"
+        }
+    }
+
+    var primaryActionEnabled: Bool {
+        switch step {
+        case .meet: return canGoNextFromMeet
+        case .mind: return canBuildMind || mindBuilt
+        case .voice: return true
+        case .done: return true
+        }
+    }
+
+    func performPrimaryAction() {
+        lastError = nil
+        switch step {
+        case .meet:
+            guard canGoNextFromMeet else { return }
+            step = .mind
+        case .mind:
+            if mindBuilt {
+                step = .voice
+            } else {
+                buildMind(importDataset: true)
+                // Stay on mind so user sees previews; they press Continue again.
+            }
+        case .voice:
+            if voiceReady {
+                saveCharacter()
+            } else {
+                renderVoicePreview()
+            }
+        case .done:
+            break
+        }
+    }
+
+    func goBack() {
+        guard let prev = Step(rawValue: step.rawValue - 1), prev != .done else { return }
+        step = prev
+        statusMessage = nil
+        lastError = nil
+    }
+
+    func resetForAnother() {
+        draft = CharacterDraft()
+        step = .meet
+        statusMessage = nil
+        lastError = nil
+        isPlayingPreview = false
+        audioPlayer?.stop()
     }
 
     func applySpeciesPreset(_ preset: CreatureSpeciesPreset) {
@@ -84,13 +182,14 @@ final class CreateCharacterViewModel: ObservableObject {
         )
         draft.bible = result.bible
         draft.examples = result.examples
-        statusMessage = "Built \(result.rowCount) practice lines (\(result.bible.generator))."
+        statusMessage = "Built \(result.rowCount) practice lines. Press Continue → Voice when ready."
 
         if importDataset {
             do {
                 let id = try saveDataset(jsonl: result.jsonl, name: "\(draft.displayTitle) mind")
                 draft.datasetId = id
-                statusMessage = "Saved how they talk (\(result.rowCount) lines) to Datasets."
+                statusMessage =
+                    "Saved \(result.rowCount) practice lines. Press “Continue → Voice” below."
             } catch {
                 lastError = (error as? BAMError)?.errorDescription ?? error.localizedDescription
             }
@@ -128,7 +227,7 @@ final class CreateCharacterViewModel: ObservableObject {
             )
             draft.previewAudioPath = result.audioURL.path
             draft.voiceProfilePath = result.profileURL.path
-            statusMessage = "Voice preview ready (\(params.preset.title))."
+            statusMessage = "Voice ready (\(params.preset.title)). Press “Finish & save” below."
             try store.save(draft)
             playPreview()
         } catch {
@@ -151,8 +250,12 @@ final class CreateCharacterViewModel: ObservableObject {
 
     func saveCharacter() {
         do {
+            // Ensure mind exists even if user skipped rebuilding.
+            if draft.examples.isEmpty {
+                buildMind(importDataset: true)
+            }
             try store.save(draft)
-            statusMessage = "Character saved."
+            statusMessage = nil
             step = .done
         } catch {
             lastError = error.localizedDescription

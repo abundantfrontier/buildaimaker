@@ -24,7 +24,7 @@ struct RootView: View {
         case .home:
             HomeOnboardingView(selection: $selection)
         case .characters:
-            CharactersView()
+            CharactersView(selection: $selection)
         case .datasets:
             DatasetsView()
 

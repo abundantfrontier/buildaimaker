@@ -1,0 +1,34 @@
+# requirements.lock — pinned sketch for PR-PyEnv (SPIKE).
+# These pins are placeholders for integrity hashing + SPDX inventory.
+# Do NOT download multi-GB wheels in CI. Real pins land when training ships.
+#
+# Format: pip-style name==version  # SPDX: <license>
+# Generate with: pip freeze after a clean Apple Silicon install of requirements.txt
+#
+# Expected download size budget: 3–8 GB (CPython venv + wheels + caches).
+# See Docs/adr/0001-llm-runtime.md.
+
+mlx==0.22.1  # SPDX: MIT
+mlx-lm==0.21.5  # SPDX: MIT
+mlx-metal==0.22.1  # SPDX: MIT
+numpy==2.1.3  # SPDX: BSD-3-Clause
+huggingface-hub==0.26.5  # SPDX: Apache-2.0
+safetensors==0.4.5  # SPDX: Apache-2.0
+sentencepiece==0.2.0  # SPDX: Apache-2.0
+protobuf==5.28.3  # SPDX: BSD-3-Clause
+filelock==3.16.1  # SPDX: Unlicense
+fsspec==2024.10.0  # SPDX: BSD-3-Clause
+packaging==24.2  # SPDX: Apache-2.0 OR BSD-2-Clause
+pyyaml==6.0.2  # SPDX: MIT
+requests==2.32.3  # SPDX: Apache-2.0
+tqdm==4.67.1  # SPDX: MPL-2.0 AND MIT
+typing-extensions==4.12.2  # SPDX: PSF-2.0
+certifi==2024.8.30  # SPDX: MPL-2.0
+charset-normalizer==3.4.0  # SPDX: MIT
+idna==3.10  # SPDX: BSD-3-Clause
+urllib3==2.2.3  # SPDX: MIT
+jinja2==3.1.4  # SPDX: BSD-3-Clause
+markupsafe==3.0.2  # SPDX: BSD-3-Clause
+regex==2024.11.6  # SPDX: Apache-2.0
+tokenizers==0.20.3  # SPDX: Apache-2.0
+transformers==4.46.3  # SPDX: Apache-2.0

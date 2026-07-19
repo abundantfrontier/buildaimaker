@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://buildaimaker.local/schemas/runtime-pins.schema.json",
+  "title": "BuildAIMaker runtime-pins",
+  "description": "L2 integrity pins for managed Python: lockfile hash, interpreter path, entry module hashes. TeamID is never applied to venv/CPython.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "appVersion",
+    "lockfile",
+    "interpreterRelativePath",
+    "entries"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version of this pin file."
+    },
+    "appVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "App version that owns this managed env (maps to envs/python/<appVersion>/)."
+    },
+    "sizeBudgetBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Upper bound for progress UI / install guardrails (bytes)."
+    },
+    "sizeBudgetLabel": {
+      "type": "string",
+      "description": "Human-readable size budget (e.g. \"3–8 GB\")."
+    },
+    "lockfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relativePath", "sha256"],
+      "properties": {
+        "relativePath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path relative to the Workers/python pins root."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Lowercase hex SHA-256 of the lockfile bytes."
+        }
+      }
+    },
+    "interpreterRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Interpreter path relative to the managed env root (e.g. bin/python3)."
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "relativePath", "sha256"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable entry id (e.g. llm_worker.main)."
+          },
+          "relativePath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path relative to the Workers/python pins root."
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Lowercase hex SHA-256 of the entry module bytes."
+          }
+        }
+      }
+    }
+  }
+}

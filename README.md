@@ -14,13 +14,13 @@ Native macOS app for **local-first AI fine-tuning** (LLM + voice later) on Apple
 buildaimaker/
 ├── Apps/BuildAIMaker/       # macOS SwiftUI app shell
 ├── Packages/
-│   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
-│   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
-│   ├── BAMPersistence/      # GRDB library.sqlite + migrations
+│   ├── BAMCore/             # Feature flags, paths, errors, runtime integrity
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
-├── Workers/                 # Training workers (future)
+├── Workers/
+│   ├── python/              # Lockfile, runtime-pins.json, entry modules
+│   └── bam-llm-worker/      # Thin L1 helper stub (TeamID-signed in release)
 ├── Catalog/                 # Model catalog (future)
-├── Docs/                    # Design docs
+├── Docs/                    # Design docs + ADRs
 └── Package.swift            # Root SPM package
 ```
 
@@ -94,15 +94,17 @@ See `BAMCore.LibraryPaths` for the full on-disk layout.
 GitHub Actions (`.github/workflows/ci.yml`) runs on macOS:
 
 - `swift build` — packages + app target
-- `swift test` — BAMCore, BAMModels, BAMPersistence (no GPU)
+- `swift test` — BAMCore tests
 
 No codesigning secrets are required for package builds. A full `.app` bundle / Developer ID notarization path will land with distribution work.
 
-## Domain packages
+## Managed Python (PR-PyEnv spike)
 
-- **BAMModels** — `JobModality` / `DatasetModality`, `JobSpec` / `JobPaths`, `ConsentRecord` + canonical `contentHash`, persona JSON (no knowledge keys), fixtures.
-- **BAMPersistence** — GRDB `library.sqlite` migration v1 (datasets, jobs, personas, consent, …).
+- Pins: `Workers/python/runtime-pins.json` (lockfile + entry SHA-256)
+- Helper: `swift run bam-llm-worker` (set `BAM_SKIP_INTERPRETER_CHECK=1` without a venv)
+- ADR: `Docs/adr/0001-llm-runtime.md` (two-layer trust, notarization, SPDX, 3–8 GB budget)
+- CI does **not** download multi-GB wheels
 
 ## Non-goals (current tree)
 
-No training runners, no Python env, no real dataset import UI yet.
+No real mlx-lm training, no F5-TTS, no multi-GB CI installs. Domain packages and GRDB arrive in adjacent PRs.

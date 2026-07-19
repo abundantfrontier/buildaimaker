@@ -37,7 +37,7 @@ struct RootView: View {
                 subtitle: "Browse base models and adapters."
             )
         case .train:
-            // Dry-run / materialize wizard (prepare only). Full train remains behind ff.llmTraining.
+            // Train wizard: dry-run + full LoRA when ff.llmTraining (default on after PR-LLM-LoRA).
             TrainView()
         case .jobs:
             PlaceholderDetailView(

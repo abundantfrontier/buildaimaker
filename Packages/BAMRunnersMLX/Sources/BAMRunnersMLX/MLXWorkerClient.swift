@@ -10,7 +10,7 @@ public struct MLXDryRunResult: Sendable, Equatable {
     public var workerId: String?
     public var capabilities: RunnerCapabilities?
     public var prepareLogMessages: [String]
-    /// Always false for this PR — dry-run never starts weight updates.
+    /// Always false for dry-run — never starts weight updates.
     public var didTrain: Bool
     public var workerExecutablePath: String
 
@@ -31,9 +31,45 @@ public struct MLXDryRunResult: Sendable, Equatable {
     }
 }
 
-/// mlx-lm worker client: job materialization + **prepare only** (no `run` / weight updates).
+/// Result of a full materialize → prepare → run train session.
+public struct MLXTrainOutcome: Sendable, Equatable {
+    public var materialize: LLMMaterializeResult
+    public var workerId: String?
+    public var capabilities: RunnerCapabilities?
+    public var events: [RunnerEvent]
+    public var status: String
+    public var didTrain: Bool
+    /// True when the worker reported fake/stub train (BAM_LORA_FAKE or missing mlx-lm).
+    public var fakeTrain: Bool
+    public var workerExecutablePath: String
+    public var message: String?
+
+    public init(
+        materialize: LLMMaterializeResult,
+        workerId: String?,
+        capabilities: RunnerCapabilities?,
+        events: [RunnerEvent],
+        status: String,
+        didTrain: Bool,
+        fakeTrain: Bool,
+        workerExecutablePath: String,
+        message: String?
+    ) {
+        self.materialize = materialize
+        self.workerId = workerId
+        self.capabilities = capabilities
+        self.events = events
+        self.status = status
+        self.didTrain = didTrain
+        self.fakeTrain = fakeTrain
+        self.workerExecutablePath = workerExecutablePath
+        self.message = message
+    }
+}
+
+/// mlx-lm worker client: job materialization + prepare (dry-run) + full train (`run`).
 ///
-/// Wraps `ProcessSupervisor` with a hard guarantee that `run` / `resume` are never sent.
+/// Wraps `ProcessSupervisor`. Dry-run never sends `run`/`resume`; `train` does.
 public actor MLXWorkerClient {
     public let executableURL: URL
     public let arguments: [String]
@@ -87,6 +123,66 @@ public actor MLXWorkerClient {
         )
     }
 
+    /// Materialize → prepare → run (full LoRA train path via ProcessSupervisor).
+    public func train(request: LLMMaterializeRequest) async throws -> MLXTrainOutcome {
+        let materialized = try materializer.materialize(request)
+
+        let supervisor = ProcessSupervisor(
+            executableURL: executableURL,
+            arguments: arguments,
+            config: config
+        )
+
+        let caps = try await supervisor.start(paths: materialized.paths)
+        try await supervisor.prepare(job: materialized.spec, paths: materialized.paths)
+
+        var events: [RunnerEvent] = []
+        var status = "failed"
+        var message: String?
+        var fakeTrain = config.extraEnvironment["BAM_LORA_FAKE"] == "1"
+
+        for try await event in await supervisor.run(
+            job: materialized.spec,
+            paths: materialized.paths
+        ) {
+            events.append(event)
+            switch event {
+            case let .result(s, _, msg):
+                status = s
+                message = msg
+            case let .log(_, logMessage, _):
+                if logMessage.lowercased().contains("fake") {
+                    fakeTrain = true
+                }
+            case let .artifact(_, path):
+                // Echo worker announces path without writing; llm worker writes for real.
+                _ = path
+            default:
+                break
+            }
+        }
+
+        let didTrain = status == "succeeded" || status == "cancelled"
+            || events.contains { if case .progress = $0 { return true }; return false }
+
+        // Drain process.
+        _ = await supervisor.waitUntilExit(
+            timeout: max(config.cancelGraceT1 + config.cancelGraceT2 + 0.5, 1)
+        )
+
+        return MLXTrainOutcome(
+            materialize: materialized,
+            workerId: await supervisor.lastWorkerId,
+            capabilities: caps,
+            events: events,
+            status: status,
+            didTrain: didTrain,
+            fakeTrain: fakeTrain,
+            workerExecutablePath: executableURL.path,
+            message: message
+        )
+    }
+
     /// Stops the worker without `CancelFlag.write`. Clears any flag that might exist.
     private static func shutdownDryRun(
         supervisor: ProcessSupervisor,
@@ -113,7 +209,7 @@ public actor MLXWorkerClient {
 
     // MARK: - Worker resolution
 
-    /// Resolves a worker binary for dry-run: env override → bam-llm-worker → bam-echo-worker.
+    /// Resolves a worker binary for dry-run / train: env override → bam-llm-worker → bam-echo-worker.
     public static func resolveWorkerExecutable(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
@@ -141,7 +237,7 @@ public actor MLXWorkerClient {
             return llm
         }
 
-        // Fall back to echo worker (CI-friendly prepare protocol speaker).
+        // Fall back to echo worker (CI-friendly prepare/run protocol speaker).
         if let echo = resolveBuildProduct(
             named: "bam-echo-worker",
             environment: environment,

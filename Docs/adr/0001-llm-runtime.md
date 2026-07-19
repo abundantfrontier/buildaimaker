@@ -108,7 +108,7 @@ Settings → **Validate helper (L1)** exercises this gate without starting a wor
 | markupsafe | 3.0.2 | BSD-3-Clause | Jinja dependency |
 | regex | 2024.11.6 | Apache-2.0 | Tokenization helper |
 
-Voice pins (F5-TTS primary, XTTS non-default) are recorded in `Docs/adr/0002-voice-engine.md` (PR-VoiceSpike).
+Voice pins (F5-TTS, etc.) land in a separate ADR after PR-VoiceSpike.
 
 ## Consequences
 
@@ -128,9 +128,16 @@ Voice pins (F5-TTS primary, XTTS non-default) are recorded in `Docs/adr/0002-voi
 ## Non-goals (this spike)
 
 - Downloading multi-GB wheels in CI
-- Real mlx-lm training
-- Real F5-TTS training (spike stubs + pin inventory in ADR 0002 / PR-VoiceSpike)
+- F5-TTS / voice runtime
 - App Store sandbox packaging
+
+## LoRA train path (PR-LLM-LoRA)
+
+E2E train uses materialize + `ProcessSupervisor` `prepare`/`run`:
+
+1. **CI-safe fake train** when `BAM_LORA_FAKE=1` or `mlx-lm` is missing — writes stub adapter + `model_card.md` (hold-out loss + sample gens, K25).
+2. **Real path** when managed env has `mlx-lm` — Python entry calls `mlx_lm.lora` API or `python -m mlx_lm lora …` (see `Workers/python/README.md`).
+3. App publishes adapters under `models/adapters/<id>/` and enables `ff.llmTraining` by default for dogfood.
 
 ## Implementation map
 

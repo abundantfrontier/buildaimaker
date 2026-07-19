@@ -57,3 +57,56 @@ pip install -r requirements.lock
 ```
 
 Regenerate pin hashes after changing lock or entry modules (helper / build step will automate later).
+
+## LoRA train (PR-LLM-LoRA)
+
+`llm_worker/main.py` speaks Runner Protocol v1 (`hello` → `prepare` → `run`) and writes:
+
+```
+jobs/<id>/artifacts/adapter/
+  adapter_config.json
+  adapters.safetensors
+  metrics.json
+  model_card.md          # K25: hold-out loss + sample generations
+```
+
+The app then publishes a copy under `models/adapters/<artifactId>/`.
+
+### Fake train (CI / no wheels)
+
+Forced when any of:
+
+| Signal | Meaning |
+|--------|---------|
+| `BAM_LORA_FAKE=1` | Explicit fake |
+| `mlx_lm` import fails | Package not installed |
+| Swift helper `CI` / `BAM_SKIP_INTERPRETER_CHECK` without real override | Dogfood CI path |
+
+Fake train emits synthetic progress and writes a **stub** adapter + model card (same layout as real).
+
+### Real mlx-lm train
+
+When the managed env has `mlx-lm` and fake is not forced:
+
+```bash
+# Documented CLI shape (exact flags depend on the pinned mlx-lm version):
+python -m mlx_lm lora \
+  --model "$BASE_MODEL_PATH" \
+  --train \
+  --data "$DATA_DIR" \
+  --adapter-path "$JOB_DIR/artifacts/adapter" \
+  --batch-size 1 \
+  --iters 100
+```
+
+The Python worker prefers an in-process `mlx_lm.lora` train helper when present, otherwise shells out to the module CLI above. Set `BAM_LORA_REAL=1` and leave `BAM_LORA_FAKE` unset to prefer the real path from the Swift helper when a managed interpreter exists.
+
+### Env vars
+
+| Var | Role |
+|-----|------|
+| `BAM_LORA_FAKE=1` | Force stub train |
+| `BAM_LORA_REAL=1` | Prefer managed Python + mlx-lm (helper) |
+| `BAM_PYTHON_BIN` | Override interpreter path |
+| `BAM_PYTHON_PINS_ROOT` | Pins / entry module root |
+| `BAM_SKIP_INTERPRETER_CHECK=1` | CI: skip managed env interpreter presence check |

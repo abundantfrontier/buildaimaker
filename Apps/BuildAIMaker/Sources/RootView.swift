@@ -42,10 +42,7 @@ struct RootView: View {
                     : "LLM training is not enabled yet (ff.llmTraining is off)."
             )
         case .jobs:
-            PlaceholderDetailView(
-                destination: .jobs,
-                subtitle: "Queue, progress, and job history."
-            )
+            JobsView()
         case .playground:
             PlaceholderDetailView(
                 destination: .playground,

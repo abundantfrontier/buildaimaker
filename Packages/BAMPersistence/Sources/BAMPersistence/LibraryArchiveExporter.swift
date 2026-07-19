@@ -1,5 +1,6 @@
 import BAMCore
 import Foundation
+import GRDB
 
 // MARK: - Options / result
 
@@ -9,6 +10,10 @@ import Foundation
 /// datasets, voices, and jobs — but **skips huge model weights**, Python envs,
 /// and download cache (multi-GB). Flip `includeModelWeights` when a full offline
 /// restore of base models / adapters is required.
+///
+/// Directory mode (`compressToZip: false`) is intended for tests/tools; the product
+/// UI always writes a zip. Destination must not equal or nest under `libraryRoot`
+/// (and must not be an ancestor of it).
 public struct LibraryArchiveExportOptions: Sendable, Equatable {
     /// Copy `models/base` and `models/adapters` payloads (weights). Default `false`.
     public var includeModelWeights: Bool
@@ -20,7 +25,7 @@ public struct LibraryArchiveExportOptions: Sendable, Equatable {
     public var includeDownloadCache: Bool
 
     /// When `true` (default), package the staged tree as a `.zip` via `/usr/bin/ditto`.
-    /// When `false`, leave a directory archive at the destination.
+    /// When `false`, leave a directory archive at the destination (tests/tools).
     public var compressToZip: Bool
 
     public init(
@@ -87,7 +92,7 @@ public struct LibraryArchiveExportResult: Sendable, Equatable {
     public let includedRelativePaths: [String]
     /// Top-level paths intentionally skipped (weights, envs, …).
     public let skippedRelativePaths: [String]
-    /// Approximate total bytes copied into the staging tree (pre-zip).
+    /// Approximate total bytes written into the staging tree (pre-zip).
     public let bytesCopied: Int64
     public let manifest: LibraryArchiveManifest
 }
@@ -106,6 +111,10 @@ public enum LibraryArchiveExporter: Sendable {
     public static let defaultWeightsSkipNote =
         "Model weights under models/base and models/adapters are skipped by default (often multi-GB). Enable “Include model weights” for a full offline restore."
 
+    /// Explains how `library.sqlite` is captured under a live app process.
+    public static let liveSQLiteSnapshotNote =
+        "library.sqlite is captured with SQLite’s online backup API (via GRDB) so WAL contents are included in a consistent single-file snapshot."
+
     // MARK: Public API
 
     /// Export `libraryRoot` to `destinationURL`.
@@ -113,7 +122,8 @@ public enum LibraryArchiveExporter: Sendable {
     /// - Parameters:
     ///   - libraryRoot: Application Support library root (or a temp fixture root in tests).
     ///   - destinationURL: Target `.zip` file URL, or directory URL when `compressToZip` is false.
-    ///   - options: Inclusion / packaging options.
+    ///     Must not equal, contain, or be nested under `libraryRoot`.
+    ///   - options: Inclusion / packaging options. Directory mode is for tests/tools.
     ///   - fileManager: Injectable for tests.
     ///   - now: Clock for `exportedAt` (ISO-8601).
     @discardableResult
@@ -185,6 +195,24 @@ public enum LibraryArchiveExporter: Sendable {
             )
         }
 
+        // Resolve final archive URL early for path-overlap checks.
+        let finalDestination: URL
+        if options.compressToZip {
+            if destinationURL.pathExtension.lowercased() == "zip" {
+                finalDestination = destinationURL
+            } else {
+                finalDestination = destinationURL.appendingPathExtension("zip")
+            }
+        } else {
+            finalDestination = destinationURL
+        }
+
+        try validateDestinationOutsideLibrary(
+            destination: finalDestination,
+            libraryRoot: libraryRoot,
+            fileManager: fileManager
+        )
+
         let workParent = fileManager.temporaryDirectory
             .appendingPathComponent("bam-library-export-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: workParent, withIntermediateDirectories: true)
@@ -197,14 +225,27 @@ public enum LibraryArchiveExporter: Sendable {
         var skipped: [String] = []
         var bytesCopied: Int64 = 0
 
-        // Always-attempted top-level files.
-        for name in ["library.sqlite", "library.sqlite.bak", "config.json"] {
+        // library.sqlite — consistent snapshot via GRDB online backup (WAL-aware).
+        let sqliteSrc = libraryRoot.appendingPathComponent("library.sqlite")
+        if fileManager.fileExists(atPath: sqliteSrc.path) {
+            let sqliteDest = stagingRoot.appendingPathComponent("library.sqlite")
+            let size = try snapshotLibrarySQLite(
+                from: sqliteSrc,
+                to: sqliteDest,
+                fileManager: fileManager
+            )
+            included.append("library.sqlite")
+            bytesCopied += size
+        }
+
+        // Optional sidecar files (not required once backup API is used).
+        for name in ["library.sqlite.bak", "config.json"] {
             let src = libraryRoot.appendingPathComponent(name)
             if fileManager.fileExists(atPath: src.path) {
                 let dest = stagingRoot.appendingPathComponent(name)
                 try copyItem(at: src, to: dest, fileManager: fileManager)
                 included.append(name)
-                bytesCopied += fileSize(of: src, fileManager: fileManager)
+                bytesCopied += fileSize(of: dest, fileManager: fileManager)
             }
         }
 
@@ -222,7 +263,7 @@ public enum LibraryArchiveExporter: Sendable {
                 let dest = stagingRoot.appendingPathComponent(name, isDirectory: true)
                 try copyItem(at: src, to: dest, fileManager: fileManager)
                 included.append(name + "/")
-                bytesCopied += directoryByteSize(at: src, fileManager: fileManager)
+                bytesCopied += directoryByteSize(at: dest, fileManager: fileManager)
             }
         }
 
@@ -233,7 +274,7 @@ public enum LibraryArchiveExporter: Sendable {
                 let dest = stagingRoot.appendingPathComponent("models", isDirectory: true)
                 try copyItem(at: modelsSrc, to: dest, fileManager: fileManager)
                 included.append("models/")
-                bytesCopied += directoryByteSize(at: modelsSrc, fileManager: fileManager)
+                bytesCopied += directoryByteSize(at: dest, fileManager: fileManager)
             } else {
                 skipped.append("models/")
             }
@@ -246,7 +287,7 @@ public enum LibraryArchiveExporter: Sendable {
                 let dest = stagingRoot.appendingPathComponent("envs", isDirectory: true)
                 try copyItem(at: envsSrc, to: dest, fileManager: fileManager)
                 included.append("envs/")
-                bytesCopied += directoryByteSize(at: envsSrc, fileManager: fileManager)
+                bytesCopied += directoryByteSize(at: dest, fileManager: fileManager)
             } else {
                 skipped.append("envs/")
             }
@@ -259,7 +300,7 @@ public enum LibraryArchiveExporter: Sendable {
                 let dest = stagingRoot.appendingPathComponent("cache", isDirectory: true)
                 try copyItem(at: cacheSrc, to: dest, fileManager: fileManager)
                 included.append("cache/")
-                bytesCopied += directoryByteSize(at: cacheSrc, fileManager: fileManager)
+                bytesCopied += directoryByteSize(at: dest, fileManager: fileManager)
             } else {
                 skipped.append("cache/")
             }
@@ -275,6 +316,7 @@ public enum LibraryArchiveExporter: Sendable {
         }
 
         var notes: [String] = []
+        notes.append(liveSQLiteSnapshotNote)
         if !options.includeModelWeights {
             notes.append(defaultWeightsSkipNote)
         }
@@ -288,14 +330,19 @@ public enum LibraryArchiveExporter: Sendable {
             "Archive is a durability snapshot; restore is offline/manual in v1 (re-place files under Application Support)."
         )
 
+        // Include the manifest path in the recorded list before encoding.
+        included.append(manifestFileName)
+        let includedSorted = included.sorted()
+        let skippedSorted = skipped.sorted()
+
         let exportedAt = iso8601UTC.string(from: now)
         let manifest = LibraryArchiveManifest(
             exportedAt: exportedAt,
             includeModelWeights: options.includeModelWeights,
             includePythonEnvs: options.includePythonEnvs,
             includeDownloadCache: options.includeDownloadCache,
-            includedRelativePaths: included.sorted(),
-            skippedRelativePaths: skipped.sorted(),
+            includedRelativePaths: includedSorted,
+            skippedRelativePaths: skippedSorted,
             notes: notes
         )
 
@@ -304,40 +351,121 @@ public enum LibraryArchiveExporter: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let manifestData = try encoder.encode(manifest)
         try manifestData.write(to: manifestURL, options: .atomic)
-        included.append(manifestFileName)
         bytesCopied += Int64(manifestData.count)
 
-        // Finalize destination.
-        let parent = destinationURL.deletingLastPathComponent()
+        // Finalize: never delete the existing destination until the new artifact is fully written.
+        let parent = finalDestination.deletingLastPathComponent()
         try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
 
         if options.compressToZip {
-            let zipURL: URL
-            if destinationURL.pathExtension.lowercased() == "zip" {
-                zipURL = destinationURL
-            } else {
-                zipURL = destinationURL.appendingPathExtension("zip")
+            let tempZip = workParent.appendingPathComponent("archive-out.zip")
+            if fileManager.fileExists(atPath: tempZip.path) {
+                try fileManager.removeItem(at: tempZip)
             }
-            try writeZipReplacing(from: stagingRoot, to: zipURL, workParent: workParent, fileManager: fileManager)
-            return LibraryArchiveExportResult(
-                archiveURL: zipURL,
-                includedRelativePaths: included.sorted(),
-                skippedRelativePaths: skipped.sorted(),
-                bytesCopied: bytesCopied,
-                manifest: manifest
+            try createZip(ofDirectory: stagingRoot, to: tempZip, fileManager: fileManager)
+            try placeArtifactAtomically(
+                newItem: tempZip,
+                at: finalDestination,
+                fileManager: fileManager
             )
         } else {
-            try replaceItem(at: destinationURL, with: stagingRoot, fileManager: fileManager)
-            // stagingRoot was moved; avoid defer removing it (already moved out of workParent
-            // only if destination is outside workParent — replaceItem moves/copies carefully).
-            return LibraryArchiveExportResult(
-                archiveURL: destinationURL,
-                includedRelativePaths: included.sorted(),
-                skippedRelativePaths: skipped.sorted(),
-                bytesCopied: bytesCopied,
-                manifest: manifest
+            try placeArtifactAtomically(
+                newItem: stagingRoot,
+                at: finalDestination,
+                fileManager: fileManager
             )
         }
+
+        return LibraryArchiveExportResult(
+            archiveURL: finalDestination,
+            includedRelativePaths: includedSorted,
+            skippedRelativePaths: skippedSorted,
+            bytesCopied: bytesCopied,
+            manifest: manifest
+        )
+    }
+
+    // MARK: - Path safety
+
+    /// Reject destinations that would overwrite or nest under the live library root
+    /// (and destinations that are ancestors of the library root, which would wipe it
+    /// when replaced in directory mode).
+    public static func validateDestinationOutsideLibrary(
+        destination: URL,
+        libraryRoot: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        let destPath = standardizedPath(destination, fileManager: fileManager)
+        let rootPath = standardizedPath(libraryRoot, fileManager: fileManager)
+
+        if destPath == rootPath {
+            throw BAMError(
+                code: .pathEscape,
+                message: "Export destination must not be the library root itself."
+            )
+        }
+        // Destination nested inside library (e.g. …/BuildAIMaker/backup).
+        if destPath.hasPrefix(rootPath + "/") {
+            throw BAMError(
+                code: .pathEscape,
+                message: "Export destination must not be inside the library root (\(rootPath))."
+            )
+        }
+        // Library nested inside destination (directory replace would delete the library).
+        if rootPath.hasPrefix(destPath + "/") {
+            throw BAMError(
+                code: .pathEscape,
+                message: "Export destination must not be an ancestor of the library root."
+            )
+        }
+    }
+
+    private static func standardizedPath(_ url: URL, fileManager: FileManager) -> String {
+        // Prefer symlink-resolved absolute path when the item exists; else standardize.
+        let standardized = url.standardizedFileURL
+        if fileManager.fileExists(atPath: standardized.path) {
+            return standardized.resolvingSymlinksInPath().path
+        }
+        // Resolve parent when possible so non-existent destinations still compare fairly.
+        let parent = standardized.deletingLastPathComponent()
+        if fileManager.fileExists(atPath: parent.path) {
+            let resolvedParent = parent.resolvingSymlinksInPath()
+            return resolvedParent.appendingPathComponent(standardized.lastPathComponent).path
+        }
+        return standardized.path
+    }
+
+    // MARK: - SQLite snapshot
+
+    /// Point-in-time copy of `library.sqlite` using GRDB/`sqlite3_backup_*`.
+    /// Captures committed + WAL content into a single consistent destination file.
+    private static func snapshotLibrarySQLite(
+        from sourceURL: URL,
+        to destinationURL: URL,
+        fileManager: FileManager
+    ) throws -> Int64 {
+        let parent = destinationURL.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: parent.path) {
+            try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        do {
+            let source = try DatabaseQueue(path: sourceURL.path)
+            let destination = try DatabaseQueue(path: destinationURL.path)
+            try source.backup(to: destination)
+        } catch let error as BAMError {
+            throw error
+        } catch {
+            throw BAMError(
+                code: .exportFailed,
+                message: "Could not snapshot library.sqlite via online backup: \(error.localizedDescription)"
+            )
+        }
+
+        return fileSize(of: destinationURL, fileManager: fileManager)
     }
 
     // MARK: - File helpers
@@ -360,44 +488,70 @@ public enum LibraryArchiveExporter: Sendable {
         try fileManager.copyItem(at: src, to: dest)
     }
 
-    /// Atomically replace `destination` with contents of `source` (directory).
-    private static func replaceItem(at destination: URL, with source: URL, fileManager: FileManager) throws {
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.copyItem(at: source, to: destination)
-    }
-
-    private static func writeZipReplacing(
-        from stagingRoot: URL,
-        to zipURL: URL,
-        workParent: URL,
+    /// Places a fully-written `newItem` at `destination` without deleting the previous
+    /// destination first.
+    ///
+    /// 1. Copy/move the finished artifact to a unique sibling next to `destination`
+    ///    (same volume as the user path when possible).
+    /// 2. If destination exists, `FileManager.replaceItemAt` swaps it in.
+    /// 3. If destination does not exist, move the sibling into place.
+    ///
+    /// On failure after step 1, the previous destination is left intact.
+    private static func placeArtifactAtomically(
+        newItem: URL,
+        at destination: URL,
         fileManager: FileManager
     ) throws {
-        let tempZip = workParent.appendingPathComponent("archive-out.zip")
-        if fileManager.fileExists(atPath: tempZip.path) {
-            try fileManager.removeItem(at: tempZip)
-        }
+        let parent = destination.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
 
-        try createZip(ofDirectory: stagingRoot, to: tempZip)
-
-        if fileManager.fileExists(atPath: zipURL.path) {
-            try fileManager.removeItem(at: zipURL)
-        }
-        try fileManager.createDirectory(
-            at: zipURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+        let sibling = parent.appendingPathComponent(
+            ".bam-export-tmp-\(UUID().uuidString)-\(destination.lastPathComponent)"
         )
-        try fileManager.moveItem(at: tempZip, to: zipURL)
+        if fileManager.fileExists(atPath: sibling.path) {
+            try fileManager.removeItem(at: sibling)
+        }
+
+        // Prefer move (same volume); fall back to copy for cross-volume temp → user disk.
+        do {
+            try fileManager.moveItem(at: newItem, to: sibling)
+        } catch {
+            try fileManager.copyItem(at: newItem, to: sibling)
+            try? fileManager.removeItem(at: newItem)
+        }
+
+        defer {
+            // If replace/move below fails, drop the sibling so we don't leave clutter.
+            // Successful replace/move consumes `sibling`.
+            if fileManager.fileExists(atPath: sibling.path) {
+                try? fileManager.removeItem(at: sibling)
+            }
+        }
+
+        if fileManager.fileExists(atPath: destination.path) {
+            // Swaps without deleting destination first; old content only goes away on success.
+            _ = try fileManager.replaceItemAt(
+                destination,
+                withItemAt: sibling,
+                backupItemName: nil,
+                options: []
+            )
+        } else {
+            try fileManager.moveItem(at: sibling, to: destination)
+        }
     }
 
-    /// Creates a zip of `directory` (contents include the root folder name) using `/usr/bin/ditto`.
+    /// Creates a zip of `directory` (root folder name preserved via `--keepParent`) using ditto.
     ///
     /// macOS-only, no third-party zip dependency. Fails with `BAM_EXPORT_FAILED` if ditto is missing
     /// or returns a non-zero status.
-    private static func createZip(ofDirectory directory: URL, to zipURL: URL) throws {
-        let ditto = URL(fileURLWithPath: "/usr/bin/ditto")
-        guard FileManager.default.isExecutableFile(atPath: ditto.path) else {
+    private static func createZip(
+        ofDirectory directory: URL,
+        to zipURL: URL,
+        fileManager: FileManager
+    ) throws {
+        let dittoPath = "/usr/bin/ditto"
+        guard fileManager.isExecutableFile(atPath: dittoPath) else {
             throw BAMError(
                 code: .exportFailed,
                 message: "/usr/bin/ditto is not available; cannot create zip archive."
@@ -405,8 +559,8 @@ public enum LibraryArchiveExporter: Sendable {
         }
 
         let process = Process()
-        process.executableURL = ditto
-        // -c create archive, -k PKZip, --norsrc/--noextattr keep archive portable
+        process.executableURL = URL(fileURLWithPath: dittoPath)
+        // -c create archive, -k PKZip, --keepParent embeds root folder name
         process.arguments = [
             "-c", "-k",
             "--keepParent",
@@ -430,7 +584,7 @@ public enum LibraryArchiveExporter: Sendable {
                 message: "ditto zip failed (status \(process.terminationStatus)): \(errText)"
             )
         }
-        guard FileManager.default.fileExists(atPath: zipURL.path) else {
+        guard fileManager.fileExists(atPath: zipURL.path) else {
             throw BAMError(code: .exportFailed, message: "ditto reported success but zip is missing.")
         }
     }

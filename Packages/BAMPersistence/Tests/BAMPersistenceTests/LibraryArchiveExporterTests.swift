@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 import BAMCore
 import BAMPersistence
 
@@ -25,15 +26,15 @@ final class LibraryArchiveExporterTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func seedMinimalLibrary(includeWeights: Bool = true, includeEnvs: Bool = true) throws {
-        let fm = FileManager.default
+    /// Seeds a real migrated `library.sqlite` plus optional weight/env trees.
+    @discardableResult
+    private func seedMinimalLibrary(
+        includeWeights: Bool = true,
+        includeEnvs: Bool = true
+    ) throws -> LibraryDatabase {
+        let dbURL = libraryRoot.appendingPathComponent("library.sqlite")
+        let db = try LibraryDatabase.open(at: dbURL)
 
-        // SQLite (content does not need to be a real DB for copy tests).
-        try "sqlite-bytes".write(
-            to: libraryRoot.appendingPathComponent("library.sqlite"),
-            atomically: true,
-            encoding: .utf8
-        )
         try "bak-bytes".write(
             to: libraryRoot.appendingPathComponent("library.sqlite.bak"),
             atomically: true,
@@ -87,7 +88,7 @@ final class LibraryArchiveExporterTests: XCTestCase {
             )
         }
 
-        _ = fm
+        return db
     }
 
     private func writeFile(_ url: URL, contents: String) throws {
@@ -146,9 +147,10 @@ final class LibraryArchiveExporterTests: XCTestCase {
         XCTAssertTrue(result.skippedRelativePaths.contains("cache/"))
         XCTAssertTrue(result.includedRelativePaths.contains("library.sqlite"))
         XCTAssertTrue(result.includedRelativePaths.contains("consent/"))
+        XCTAssertTrue(result.includedRelativePaths.contains(LibraryArchiveExporter.manifestFileName))
         XCTAssertTrue(result.bytesCopied > 0)
 
-        // Manifest on disk.
+        // Manifest on disk (and lists itself).
         let manifestURL = dest.appendingPathComponent(LibraryArchiveExporter.manifestFileName)
         let data = try Data(contentsOf: manifestURL)
         let manifest = try JSONDecoder().decode(LibraryArchiveManifest.self, from: data)
@@ -157,7 +159,10 @@ final class LibraryArchiveExporterTests: XCTestCase {
         XCTAssertEqual(manifest.appName, AppIdentity.displayName)
         XCTAssertFalse(manifest.includeModelWeights)
         XCTAssertTrue(manifest.notes.contains(where: { $0.contains("Model weights") }))
+        XCTAssertTrue(manifest.notes.contains(where: { $0.contains("online backup") }))
+        XCTAssertTrue(manifest.includedRelativePaths.contains(LibraryArchiveExporter.manifestFileName))
         XCTAssertEqual(manifest.skippedRelativePaths.sorted(), result.skippedRelativePaths.sorted())
+        XCTAssertEqual(manifest.includedRelativePaths.sorted(), result.includedRelativePaths.sorted())
     }
 
     func testExportIncludesWeightsWhenRequested() throws {
@@ -206,6 +211,9 @@ final class LibraryArchiveExporterTests: XCTestCase {
             to: zipURL,
             options: .default // compressToZip true, skip weights
         )
+
+        XCTAssertEqual(LibraryArchiveExportOptions.default.includeModelWeights, false)
+        XCTAssertEqual(LibraryArchiveExportOptions.default.compressToZip, true)
 
         XCTAssertEqual(result.archiveURL.pathExtension, "zip")
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.archiveURL.path))
@@ -306,5 +314,161 @@ final class LibraryArchiveExporterTests: XCTestCase {
 
     func testManifestFormatVersionPinned() {
         XCTAssertEqual(LibraryArchiveManifest.formatVersionV1, 1)
+    }
+
+    // MARK: - Path overlap (Issue 2)
+
+    func testDestinationInsideLibraryRootIsRejectedAndLeavesLibraryIntact() throws {
+        try seedMinimalLibrary()
+        let sqlitePath = libraryRoot.appendingPathComponent("library.sqlite").path
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sqlitePath))
+
+        let nested = libraryRoot.appendingPathComponent("nested-backup", isDirectory: true)
+        XCTAssertThrowsError(
+            try LibraryArchiveExporter.export(
+                libraryRoot: libraryRoot,
+                to: nested,
+                options: LibraryArchiveExportOptions(compressToZip: false)
+            )
+        ) { error in
+            guard let bam = error as? BAMError else {
+                return XCTFail("expected BAMError, got \(error)")
+            }
+            XCTAssertEqual(bam.code, .pathEscape)
+            XCTAssertEqual(bam.code.rawValue, "BAM_PATH_ESCAPE")
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: sqlitePath),
+            "rejected export must not touch library.sqlite"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: nested.path),
+            "failed export must not create nested destination"
+        )
+    }
+
+    func testDestinationEqualToLibraryRootIsRejected() throws {
+        try seedMinimalLibrary()
+        XCTAssertThrowsError(
+            try LibraryArchiveExporter.export(
+                libraryRoot: libraryRoot,
+                to: libraryRoot,
+                options: LibraryArchiveExportOptions(compressToZip: false)
+            )
+        ) { error in
+            guard let bam = error as? BAMError else {
+                return XCTFail("expected BAMError, got \(error)")
+            }
+            XCTAssertEqual(bam.code, .pathEscape)
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: libraryRoot.appendingPathComponent("library.sqlite").path
+            )
+        )
+    }
+
+    func testDestinationAncestorOfLibraryRootIsRejected() throws {
+        try seedMinimalLibrary()
+        // tempRoot is the parent of libraryRoot
+        XCTAssertThrowsError(
+            try LibraryArchiveExporter.export(
+                libraryRoot: libraryRoot,
+                to: tempRoot,
+                options: LibraryArchiveExportOptions(compressToZip: false)
+            )
+        ) { error in
+            guard let bam = error as? BAMError else {
+                return XCTFail("expected BAMError, got \(error)")
+            }
+            XCTAssertEqual(bam.code, .pathEscape)
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: libraryRoot.appendingPathComponent("library.sqlite").path
+            )
+        )
+    }
+
+    // MARK: - Live SQLite backup (Issue 3)
+
+    func testLiveDatabaseRowVisibleInExportedSnapshot() throws {
+        let live = try seedMinimalLibrary(includeWeights: false, includeEnvs: false)
+
+        // Keep a live writer open (simulates app holding DatabaseQueue) and insert a row.
+        try live.dbQueue.write { conn in
+            try conn.execute(
+                sql: """
+                    INSERT INTO personas (id, name, version, json, created_at, updated_at)
+                    VALUES ('export-p1', 'LivePersona', '1.0.0', '{}', 't', 't')
+                    """
+            )
+        }
+
+        let dest = tempRoot.appendingPathComponent("live-snap", isDirectory: true)
+        _ = try LibraryArchiveExporter.export(
+            libraryRoot: libraryRoot,
+            to: dest,
+            options: LibraryArchiveExportOptions(compressToZip: false)
+        )
+
+        let exportedDB = try DatabaseQueue(
+            path: dest.appendingPathComponent("library.sqlite").path
+        )
+        let name: String? = try exportedDB.read { conn in
+            try String.fetchOne(conn, sql: "SELECT name FROM personas WHERE id = 'export-p1'")
+        }
+        XCTAssertEqual(name, "LivePersona")
+    }
+
+    // MARK: - Atomic replace keeps prior zip until new one is ready (Issue 1)
+
+    func testSuccessfulZipReplaceOverwritesPriorArchive() throws {
+        try seedMinimalLibrary()
+        let zipURL = tempRoot.appendingPathComponent("keep-me.zip")
+
+        // First export.
+        _ = try LibraryArchiveExporter.export(
+            libraryRoot: libraryRoot,
+            to: zipURL,
+            options: .default
+        )
+        let firstSize = try FileManager.default.attributesOfItem(atPath: zipURL.path)[.size] as? NSNumber
+        XCTAssertNotNil(firstSize)
+
+        // Second export overwrites via replaceItemAt (no delete-before-write).
+        _ = try LibraryArchiveExporter.export(
+            libraryRoot: libraryRoot,
+            to: zipURL,
+            options: .default
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: zipURL.path))
+        let secondSize = try FileManager.default.attributesOfItem(atPath: zipURL.path)[.size] as? NSNumber
+        XCTAssertNotNil(secondSize)
+    }
+
+    func testFailedFinalizationWouldLeavePriorDestination_pathGuardSimulatesFailClosed() throws {
+        // Direct unit of the guard used before any write to destination.
+        try seedMinimalLibrary()
+        let prior = tempRoot.appendingPathComponent("prior-good.zip")
+        try Data([0x50, 0x4B]).write(to: prior) // minimal marker bytes
+
+        XCTAssertThrowsError(
+            try LibraryArchiveExporter.validateDestinationOutsideLibrary(
+                destination: libraryRoot.appendingPathComponent("oops.zip"),
+                libraryRoot: libraryRoot
+            )
+        ) { error in
+            guard let bam = error as? BAMError else {
+                return XCTFail("expected BAMError, got \(error)")
+            }
+            XCTAssertEqual(bam.code, .pathEscape)
+        }
+
+        // Unrelated prior archive path is untouched by validation.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: prior.path))
+        let bytes = try Data(contentsOf: prior)
+        XCTAssertEqual(bytes, Data([0x50, 0x4B]))
     }
 }

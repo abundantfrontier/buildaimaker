@@ -128,7 +128,9 @@ struct SettingsPlaceholderView: View {
             } header: {
                 Text("Library durability")
             } footer: {
-                Text("Creates a zip of library.sqlite, config, consent, personas, datasets, voices, and jobs. Python envs and download cache are always skipped from this panel.")
+                Text(
+                    "Creates a zip of library.sqlite (SQLite online backup), config, consent, personas, datasets, voices, and jobs. Python envs and download cache are always skipped from this panel. Prefer exporting when the app is idle for the calmest snapshot."
+                )
             }
 
             Section("Feature flags") {
@@ -156,8 +158,8 @@ struct SettingsPlaceholderView: View {
         panel.nameFieldStringValue = LibraryArchiveExporter.suggestedArchiveFileName()
         panel.title = "Export library archive"
         panel.message = includeModelWeights
-            ? "Full archive including model weights."
-            : "Archive excludes large model weights (recommended)."
+            ? "Full archive including model weights. library.sqlite is snapshotted via online backup."
+            : "Archive excludes large model weights (recommended). library.sqlite is snapshotted via online backup."
         panel.prompt = "Export"
 
         guard panel.runModal() == .OK, let url = panel.url else {
@@ -174,7 +176,7 @@ struct SettingsPlaceholderView: View {
                 compressToZip: true
             )
             do {
-                // Ensure library root exists so a first-run export has a clear error if empty.
+                // Exporter fails closed with BAM_EXPORT_FAILED if library root / sqlite is missing.
                 let result = try LibraryArchiveExporter.exportDefaultLibrary(
                     to: url,
                     options: options

@@ -10,7 +10,7 @@ let package = Package(
         .library(name: "BAMCore", targets: ["BAMCore"]),
         .library(name: "BAMModels", targets: ["BAMModels"]),
         .library(name: "BAMPersistence", targets: ["BAMPersistence"]),
-        .library(name: "BAMModelCatalog", targets: ["BAMModelCatalog"]),
+        .library(name: "BAMConsent", targets: ["BAMConsent"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
     ],
@@ -37,15 +37,14 @@ let package = Package(
             path: "Packages/BAMPersistence/Sources/BAMPersistence"
         ),
         .target(
-            name: "BAMModelCatalog",
+            name: "BAMConsent",
             dependencies: [
                 "BAMCore",
                 "BAMModels",
+                "BAMPersistence",
+                .product(name: "GRDB", package: "GRDB.swift"),
             ],
-            path: "Packages/BAMModelCatalog/Sources/BAMModelCatalog",
-            resources: [
-                .copy("Resources/models.json"),
-            ]
+            path: "Packages/BAMConsent/Sources/BAMConsent"
         ),
         .target(
             name: "BAMResourcesUI",
@@ -58,7 +57,7 @@ let package = Package(
                 "BAMCore",
                 "BAMModels",
                 "BAMPersistence",
-                "BAMModelCatalog",
+                "BAMConsent",
                 "BAMResourcesUI",
             ],
             path: "Apps/BuildAIMaker/Sources"
@@ -84,13 +83,15 @@ let package = Package(
             path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"
         ),
         .testTarget(
-            name: "BAMModelCatalogTests",
+            name: "BAMConsentTests",
             dependencies: [
-                "BAMModelCatalog",
+                "BAMConsent",
                 "BAMModels",
+                "BAMPersistence",
                 "BAMCore",
+                .product(name: "GRDB", package: "GRDB.swift"),
             ],
-            path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"
+            path: "Packages/BAMConsent/Tests/BAMConsentTests"
         ),
     ]
 )

@@ -23,9 +23,20 @@ buildaimaker/
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
 ├── Workers/                 # Helpers (bam-echo-worker for protocol CI; llm later)
 ├── Catalog/                 # Model catalog (future)
-├── Docs/                    # Design docs + ADRs
+├── Docs/                    # Design docs + ADRs (see Docs/README.md)
 └── Package.swift            # Root SPM package
 ```
+
+## Documentation
+
+| Doc | Topic |
+|-----|--------|
+| [Docs/README.md](Docs/README.md) | Index |
+| [Docs/design-buildaimaker.md](Docs/design-buildaimaker.md) | Full system design & PR plan |
+| [Docs/distribution-and-app-store.md](Docs/distribution-and-app-store.md) | Developer ID vs Mac App Store |
+| [Docs/native-vs-python-backends.md](Docs/native-vs-python-backends.md) | Swift shell vs managed Python train |
+| [Docs/adr/0003-apple-foundation-models.md](Docs/adr/0003-apple-foundation-models.md) | Apple on-device LLM + LoRA adapters |
+| [Docs/pushing-to-github.md](Docs/pushing-to-github.md) | Push this branch with GitHub Desktop |
 
 ## Requirements
 

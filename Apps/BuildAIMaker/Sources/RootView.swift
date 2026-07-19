@@ -37,12 +37,8 @@ struct RootView: View {
                 subtitle: "Browse base models and adapters."
             )
         case .train:
-            PlaceholderDetailView(
-                destination: .train,
-                subtitle: featureFlags.llmTraining
-                    ? "Configure a fine-tuning job."
-                    : "LLM training is not enabled yet (ff.llmTraining is off)."
-            )
+            // Dry-run / materialize wizard (prepare only). Full train remains behind ff.llmTraining.
+            TrainView()
         case .jobs:
             PlaceholderDetailView(
                 destination: .jobs,

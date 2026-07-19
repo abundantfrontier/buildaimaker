@@ -39,31 +39,14 @@ public struct JobStore: Sendable {
 
     public func update(_ job: JobRecord) throws {
         try database.dbQueue.write { db in
-            try db.execute(
-                sql: """
-                    UPDATE jobs SET
-                      status = ?,
-                      modality = ?,
-                      config_json = ?,
-                      error_code = ?,
-                      error_message = ?,
-                      updated_at = ?
-                    WHERE id = ?
-                    """,
-                arguments: [
-                    job.status.rawValue,
-                    job.modality.rawValue,
-                    job.configJSON,
-                    job.errorCode,
-                    job.errorMessage,
-                    job.updatedAt,
-                    job.id,
-                ]
-            )
+            try Self.update(job, db: db)
         }
     }
 
     /// Applies a validated status transition and persists the row.
+    ///
+    /// Read-modify-write runs inside a **single** write transaction so concurrent
+    /// store callers cannot TOCTOU the status edge.
     @discardableResult
     public func transition(
         id: String,
@@ -72,27 +55,31 @@ public struct JobStore: Sendable {
         errorMessage: String? = nil,
         updatedAt: String = JobTimestamps.now()
     ) throws -> JobRecord {
-        guard var job = try fetch(id: id) else {
-            throw BAMError(code: .schemaInvalid, message: "Job not found: \(id)")
-        }
-        try JobStateMachine.transition(from: job.status, to: newStatus)
-        job.status = newStatus
-        job.updatedAt = updatedAt
-        if let errorCode {
-            job.errorCode = errorCode
-        }
-        if let errorMessage {
-            job.errorMessage = errorMessage
-        }
-        if newStatus == .succeeded || newStatus == .cancelled {
-            // Clear transient errors on clean terminal states when not provided.
-            if errorCode == nil && newStatus == .succeeded {
+        try database.dbQueue.write { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM jobs WHERE id = ?",
+                arguments: [id]
+            ) else {
+                throw BAMError(code: .schemaInvalid, message: "Job not found: \(id)")
+            }
+            var job = Self.mapRow(row)
+            try JobStateMachine.transition(from: job.status, to: newStatus)
+            job.status = newStatus
+            job.updatedAt = updatedAt
+            if let errorCode {
+                job.errorCode = errorCode
+            }
+            if let errorMessage {
+                job.errorMessage = errorMessage
+            }
+            if newStatus == .succeeded, errorCode == nil {
                 job.errorCode = nil
                 job.errorMessage = nil
             }
+            try Self.update(job, db: db)
+            return job
         }
-        try update(job)
-        return job
     }
 
     // MARK: - Read
@@ -133,6 +120,11 @@ public struct JobStore: Sendable {
         }
     }
 
+    /// Jobs currently holding the training slot (`preparing` or `running`).
+    public func fetchSlotHolders() throws -> [JobRecord] {
+        try fetchRecoverable()
+    }
+
     /// Oldest queued job (FIFO).
     public func fetchNextQueued() throws -> JobRecord? {
         try database.dbQueue.read { db in
@@ -164,7 +156,31 @@ public struct JobStore: Sendable {
         }
     }
 
-    // MARK: - Mapping
+    // MARK: - Mapping / internal write
+
+    private static func update(_ job: JobRecord, db: Database) throws {
+        try db.execute(
+            sql: """
+                UPDATE jobs SET
+                  status = ?,
+                  modality = ?,
+                  config_json = ?,
+                  error_code = ?,
+                  error_message = ?,
+                  updated_at = ?
+                WHERE id = ?
+                """,
+            arguments: [
+                job.status.rawValue,
+                job.modality.rawValue,
+                job.configJSON,
+                job.errorCode,
+                job.errorMessage,
+                job.updatedAt,
+                job.id,
+            ]
+        )
+    }
 
     private static func mapRow(_ row: Row) -> JobRecord {
         JobRecord(

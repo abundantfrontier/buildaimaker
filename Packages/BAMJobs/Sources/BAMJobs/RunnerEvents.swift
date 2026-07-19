@@ -203,6 +203,8 @@ public struct JobProgressSnapshot: Sendable, Equatable {
     public var gpuUtil: Double?
     public var cpuUtil: Double?
     public var message: String?
+    /// Total planned steps when known (from progress metrics `totalSteps`).
+    public var totalSteps: Int?
 
     public init(
         step: Int = 0,
@@ -214,7 +216,8 @@ public struct JobProgressSnapshot: Sendable, Equatable {
         rssBytes: Int64? = nil,
         gpuUtil: Double? = nil,
         cpuUtil: Double? = nil,
-        message: String? = nil
+        message: String? = nil,
+        totalSteps: Int? = nil
     ) {
         self.step = step
         self.epoch = epoch
@@ -226,17 +229,27 @@ public struct JobProgressSnapshot: Sendable, Equatable {
         self.gpuUtil = gpuUtil
         self.cpuUtil = cpuUtil
         self.message = message
+        self.totalSteps = totalSteps
+    }
+
+    /// Fraction complete in `0...1` when `totalSteps` is known.
+    public var fractionComplete: Double? {
+        guard let totalSteps, totalSteps > 0 else { return nil }
+        return min(1, max(0, Double(step) / Double(totalSteps)))
     }
 
     public mutating func apply(_ event: RunnerEvent) {
         switch event {
-        case let .progress(step, epoch, loss, lr, tokensPerSec, etaSec, _):
+        case let .progress(step, epoch, loss, lr, tokensPerSec, etaSec, metrics):
             self.step = step
             self.epoch = epoch
             self.loss = loss
             self.lr = lr
             self.tokensPerSec = tokensPerSec
             self.etaSec = etaSec
+            if let total = metrics["totalSteps"] {
+                self.totalSteps = Int(total)
+            }
         case let .heartbeat(rssBytes, gpuUtil, cpuUtil, _):
             self.rssBytes = rssBytes
             self.gpuUtil = gpuUtil

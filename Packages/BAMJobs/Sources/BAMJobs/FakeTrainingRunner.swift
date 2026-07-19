@@ -10,7 +10,10 @@ public struct FakeRunnerConfig: Sendable, Equatable {
     /// Delay between progress events.
     public var stepInterval: Duration
     /// Emit a heartbeat every N progress steps (in addition to step events).
+    /// Use a value larger than `stepCount` to suppress mid-run heartbeats.
     public var heartbeatEverySteps: Int
+    /// When false, no heartbeat events are emitted (live hang tests).
+    public var emitHeartbeats: Bool
     /// Simulated prepare duration.
     public var prepareDelay: Duration
     /// Total epochs for epoch field scaling.
@@ -26,6 +29,7 @@ public struct FakeRunnerConfig: Sendable, Equatable {
         stepCount: Int = 10,
         stepInterval: Duration = .milliseconds(50),
         heartbeatEverySteps: Int = 2,
+        emitHeartbeats: Bool = true,
         prepareDelay: Duration = .milliseconds(10),
         epochs: Double = 3,
         startLoss: Double = 2.5,
@@ -35,6 +39,7 @@ public struct FakeRunnerConfig: Sendable, Equatable {
         self.stepCount = max(1, stepCount)
         self.stepInterval = stepInterval
         self.heartbeatEverySteps = max(1, heartbeatEverySteps)
+        self.emitHeartbeats = emitHeartbeats
         self.prepareDelay = prepareDelay
         self.epochs = epochs
         self.startLoss = startLoss
@@ -155,8 +160,10 @@ public final class FakeTrainingRunner: TrainingRunner, @unchecked Sendable {
                         )
                     }
 
-                    // Initial heartbeat.
-                    continuation.yield(Self.makeHeartbeat())
+                    // Initial heartbeat (optional — hang tests disable all heartbeats).
+                    if config.emitHeartbeats {
+                        continuation.yield(Self.makeHeartbeat())
+                    }
 
                     let total = config.stepCount
                     for step in 1 ... total {
@@ -194,11 +201,14 @@ public final class FakeTrainingRunner: TrainingRunner, @unchecked Sendable {
                                 lr: config.learningRate,
                                 tokensPerSec: 100 + Double(step) * 3,
                                 etaSec: max(0, eta),
-                                metrics: ["fake": 1]
+                                metrics: [
+                                    "fake": 1,
+                                    "totalSteps": Double(total),
+                                ]
                             )
                         )
 
-                        if step % config.heartbeatEverySteps == 0 {
+                        if config.emitHeartbeats, step % config.heartbeatEverySteps == 0 {
                             continuation.yield(Self.makeHeartbeat())
                         }
 

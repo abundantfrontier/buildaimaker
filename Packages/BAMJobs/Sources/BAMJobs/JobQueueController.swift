@@ -13,8 +13,14 @@ public actor JobQueueController {
     public let heartbeatTimeout: TimeInterval
     public let libraryRoot: URL
 
+    /// Last orchestration / persistence error (best-effort surface for UI).
+    public private(set) var lastError: String?
+
     private var isProcessing = false
     private var currentJobId: String?
+    /// Cancel signals for the **current** live execution generation only.
+    /// Cleared at start/end of `execute` and after applied cancels so
+    /// `interrupted → queued` requeue is not poisoned.
     private var cancelRequested: Set<String> = []
     private var progressByJob: [String: JobProgressSnapshot] = [:]
     private var heartbeatByJob: [String: HeartbeatMonitor] = [:]
@@ -75,6 +81,9 @@ public actor JobQueueController {
             updatedAt: now
         )
         try store.insert(job)
+        // Fresh enqueue must not inherit a sticky cancel from a prior generation.
+        cancelRequested.remove(spec.id)
+        lastError = nil
         publishJobs()
 
         if startAs == .queued {
@@ -85,7 +94,27 @@ public actor JobQueueController {
 
     /// Transitions draft → queued and processes.
     public func submit(jobId: String) throws {
+        cancelRequested.remove(jobId)
         _ = try store.transition(id: jobId, to: .queued)
+        lastError = nil
+        publishJobs()
+        Task { await self.processQueue() }
+    }
+
+    /// Requeues an interrupted job (`interrupted → queued`) for another run.
+    public func requeue(jobId: String) throws {
+        guard let job = try store.fetch(id: jobId) else {
+            throw BAMError(code: .schemaInvalid, message: "Job not found: \(jobId)")
+        }
+        guard job.status == .interrupted else {
+            throw BAMError(
+                code: .schemaInvalid,
+                message: "Only interrupted jobs can be requeued (got \(job.status.rawValue))"
+            )
+        }
+        cancelRequested.remove(jobId)
+        _ = try store.transition(id: jobId, to: .queued)
+        lastError = nil
         publishJobs()
         Task { await self.processQueue() }
     }
@@ -104,16 +133,31 @@ public actor JobQueueController {
                 errorCode: BAMErrorCode.cancelled.rawValue,
                 errorMessage: "Cancelled by user"
             )
-            cancelRequested.insert(jobId)
+            cancelRequested.remove(jobId)
             publishJobs()
 
         case .preparing, .running:
-            cancelRequested.insert(jobId)
-            if let paths = pathsByJob[jobId] {
-                try writeCancelFlag(paths: paths)
+            // Always resolve paths so cancel.flag is written even after relaunch.
+            let paths = resolvePaths(for: jobId)
+            try? writeCancelFlag(paths: paths)
+
+            // Orphan: no live execute loop owns this job → flip status immediately.
+            if currentJobId != jobId {
+                _ = try store.transition(
+                    id: jobId,
+                    to: .cancelled,
+                    errorCode: BAMErrorCode.cancelled.rawValue,
+                    errorMessage: "Cancelled by user (no active run)"
+                )
+                cancelRequested.remove(jobId)
+                await runner.cancel(jobId: jobId)
+                publishJobs()
+                return
             }
+
+            cancelRequested.insert(jobId)
             await runner.cancel(jobId: jobId)
-            // Status update happens when the run stream observes cancel / result.
+            // Terminal status applied when the run stream observes cancel / result.
 
         case .succeeded, .failed, .cancelled, .interrupted:
             throw BAMError(
@@ -123,34 +167,41 @@ public actor JobQueueController {
         }
     }
 
-    /// On launch: mark preparing/running jobs with stale or missing heartbeats as interrupted.
+    /// On launch (or explicit recovery): mark **all** preparing/running jobs not
+    /// owned by this process as `interrupted`.
+    ///
+    /// Force-quit leaves the previous supervisor dead even when `heartbeat.json`
+    /// still has a fresh mtime — design M2 requires recoverable interrupted jobs.
     public func recoverStaleJobs(now: Date = Date()) async throws {
         let recoverable = try store.fetchRecoverable()
         for job in recoverable {
-            let paths = pathsByJob[job.id]
-                ?? JobPathsFactory.make(jobId: job.id, libraryRoot: libraryRoot)
+            // Never interrupt a job this process is actively executing.
+            if currentJobId == job.id { continue }
+
+            let paths = resolvePaths(for: job.id)
             let hbURL = JobPathsFactory.heartbeatURL(paths: paths)
-            let stale: Bool
-            if FileManager.default.fileExists(atPath: hbURL.path) {
-                stale = try HeartbeatMonitor.isFileStale(
-                    at: hbURL,
-                    timeout: heartbeatTimeout,
-                    now: now
-                )
-            } else if let monitor = heartbeatByJob[job.id] {
-                stale = monitor.isStale(timeout: heartbeatTimeout, now: now)
+            let message: String
+            if !FileManager.default.fileExists(atPath: hbURL.path) {
+                message = "Missing heartbeat on recovery"
+            } else if (try? HeartbeatMonitor.isFileStale(
+                at: hbURL,
+                timeout: heartbeatTimeout,
+                now: now
+            )) == true {
+                message = "Stale heartbeat on recovery"
             } else {
-                // No heartbeat ever recorded → treat as interrupted on relaunch.
-                stale = true
+                // Fresh heartbeat file but no live supervisor ownership → orphan.
+                message = "Orphan preparing/running after relaunch"
             }
-            if stale {
-                _ = try store.transition(
-                    id: job.id,
-                    to: .interrupted,
-                    errorCode: BAMErrorCode.workerHung.rawValue,
-                    errorMessage: "Stale or missing heartbeat on recovery"
-                )
-            }
+
+            _ = try store.transition(
+                id: job.id,
+                to: .interrupted,
+                errorCode: BAMErrorCode.workerHung.rawValue,
+                errorMessage: message
+            )
+            // Do not leave sticky cancel that would poison interrupted → queued.
+            cancelRequested.remove(job.id)
         }
         publishJobs()
     }
@@ -199,50 +250,115 @@ public actor JobQueueController {
         isProcessing = true
         defer { isProcessing = false }
 
-        while let next = try? store.fetchNextQueued() {
+        while true {
+            // Concurrency = 1 at the DB layer: drain orphans before starting work.
+            if !(await ensureNoForeignSlotHolders()) {
+                break
+            }
+
+            let next: JobRecord?
+            do {
+                next = try store.fetchNextQueued()
+            } catch {
+                lastError = "fetchNextQueued failed: \(error.localizedDescription)"
+                publishJobs()
+                break
+            }
+            guard let next else { break }
+
             if cancelRequested.contains(next.id) {
-                if let job = try? store.fetch(id: next.id), job.status == .queued {
-                    _ = try? store.transition(
-                        id: next.id,
-                        to: .cancelled,
-                        errorCode: BAMErrorCode.cancelled.rawValue,
-                        errorMessage: "Cancelled by user"
-                    )
-                    publishJobs()
+                do {
+                    if let job = try store.fetch(id: next.id), job.status == .queued {
+                        _ = try store.transition(
+                            id: next.id,
+                            to: .cancelled,
+                            errorCode: BAMErrorCode.cancelled.rawValue,
+                            errorMessage: "Cancelled by user"
+                        )
+                    }
+                } catch {
+                    lastError = "cancel queued failed: \(error.localizedDescription)"
                 }
+                cancelRequested.remove(next.id)
+                publishJobs()
                 continue
             }
+
+            // Refuse to start if another preparing/running row still holds the slot.
+            do {
+                let holders = try store.fetchRecoverable()
+                if holders.contains(where: { $0.id != next.id }) {
+                    lastError = "Queue blocked: another job is preparing/running"
+                    publishJobs()
+                    break
+                }
+            } catch {
+                lastError = "fetchRecoverable failed: \(error.localizedDescription)"
+                publishJobs()
+                break
+            }
+
             await execute(job: next)
         }
     }
 
+    /// Interrupts any preparing/running job not owned by `currentJobId`.
+    /// Returns false if a foreign holder could not be cleared.
+    @discardableResult
+    private func ensureNoForeignSlotHolders() async -> Bool {
+        let holders: [JobRecord]
+        do {
+            holders = try store.fetchRecoverable()
+        } catch {
+            lastError = "fetchRecoverable failed: \(error.localizedDescription)"
+            publishJobs()
+            return false
+        }
+        let foreign = holders.filter { $0.id != currentJobId }
+        for orphan in foreign {
+            do {
+                _ = try store.transition(
+                    id: orphan.id,
+                    to: .interrupted,
+                    errorCode: BAMErrorCode.workerHung.rawValue,
+                    errorMessage: "Orphan active job blocked queue"
+                )
+                cancelRequested.remove(orphan.id)
+            } catch {
+                lastError = "Failed to interrupt orphan \(orphan.id): \(error.localizedDescription)"
+                publishJobs()
+                return false
+            }
+        }
+        if !foreign.isEmpty {
+            publishJobs()
+        }
+        return true
+    }
+
     private func execute(job: JobRecord) async {
         currentJobId = job.id
+        // New execution generation — prior interrupt/cancel must not auto-cancel.
+        cancelRequested.remove(job.id)
         defer {
             currentJobId = nil
             heartbeatWatchTask?.cancel()
             heartbeatWatchTask = nil
+            cancelRequested.remove(job.id)
         }
 
-        let paths: JobPaths
-        if let existing = pathsByJob[job.id] {
-            paths = existing
-        } else {
-            paths = JobPathsFactory.make(jobId: job.id, libraryRoot: libraryRoot)
-            pathsByJob[job.id] = paths
-        }
+        let paths = resolvePaths(for: job.id)
 
         let spec: JobSpec
         do {
             spec = try decodeSpec(job.configJSON, fallbackId: job.id, modality: job.modality)
         } catch {
-            _ = try? store.transition(
-                id: job.id,
-                to: .failed,
+            recordTerminal(
+                jobId: job.id,
+                status: .failed,
                 errorCode: BAMErrorCode.schemaInvalid.rawValue,
                 errorMessage: error.localizedDescription
             )
-            publishJobs()
             return
         }
 
@@ -252,42 +368,39 @@ public actor JobQueueController {
             publishJobs()
             try await runner.prepare(job: spec, paths: paths)
         } catch let error as BAMError where error.code == .cancelled {
-            _ = try? store.transition(
-                id: job.id,
-                to: .cancelled,
+            recordTerminal(
+                jobId: job.id,
+                status: .cancelled,
                 errorCode: BAMErrorCode.cancelled.rawValue,
                 errorMessage: error.message ?? "Cancelled"
             )
-            publishJobs()
             return
         } catch {
             if cancelRequested.contains(job.id) {
-                _ = try? store.transition(
-                    id: job.id,
-                    to: .cancelled,
+                recordTerminal(
+                    jobId: job.id,
+                    status: .cancelled,
                     errorCode: BAMErrorCode.cancelled.rawValue,
                     errorMessage: "Cancelled by user"
                 )
             } else {
-                _ = try? store.transition(
-                    id: job.id,
-                    to: .failed,
+                recordTerminal(
+                    jobId: job.id,
+                    status: .failed,
                     errorCode: (error as? BAMError)?.code.rawValue ?? BAMErrorCode.workerCrash.rawValue,
                     errorMessage: error.localizedDescription
                 )
             }
-            publishJobs()
             return
         }
 
         if cancelRequested.contains(job.id) {
-            _ = try? store.transition(
-                id: job.id,
-                to: .cancelled,
+            recordTerminal(
+                jobId: job.id,
+                status: .cancelled,
                 errorCode: BAMErrorCode.cancelled.rawValue,
                 errorMessage: "Cancelled by user"
             )
-            publishJobs()
             return
         }
 
@@ -296,13 +409,14 @@ public actor JobQueueController {
             _ = try store.transition(id: job.id, to: .running)
             publishJobs()
         } catch {
+            lastError = "transition running failed: \(error.localizedDescription)"
             publishJobs()
             return
         }
 
         let monitor = HeartbeatMonitor(fileURL: JobPathsFactory.heartbeatURL(paths: paths))
         // Seed so the watch grace period starts at run begin (not "never touched").
-        try? monitor.touch()
+        monitor.touch()
         heartbeatByJob[job.id] = monitor
         progressByJob[job.id] = JobProgressSnapshot()
         startHeartbeatWatch(jobId: job.id, monitor: monitor)
@@ -319,12 +433,7 @@ public actor JobQueueController {
                     await runner.cancel(jobId: job.id)
                 }
 
-                // Hung detection mid-stream is handled by heartbeat watch task.
-                if case .heartbeat = event {
-                    // refresh below via applyEvent
-                }
-
-                try applyEvent(event, jobId: job.id, monitor: monitor)
+                applyEvent(event, jobId: job.id, monitor: monitor)
 
                 if case let .result(status, _, message) = event {
                     sawResult = true
@@ -391,13 +500,41 @@ public actor JobQueueController {
         if let current = try? store.fetch(id: job.id),
            current.status == .running || current.status == .preparing
         {
-            _ = try? store.transition(
-                id: job.id,
-                to: terminalStatus,
+            recordTerminal(
+                jobId: job.id,
+                status: terminalStatus,
                 errorCode: errorCode,
                 errorMessage: errorMessage
             )
+        } else {
+            publishJobs()
         }
+    }
+
+    private func recordTerminal(
+        jobId: String,
+        status: JobStatus,
+        errorCode: String?,
+        errorMessage: String?
+    ) {
+        do {
+            if let current = try store.fetch(id: jobId),
+               current.status == .running || current.status == .preparing || current.status == .queued
+            {
+                // queued→cancelled is valid; preparing/running → terminal as given
+                if JobStateMachine.canTransition(from: current.status, to: status) {
+                    _ = try store.transition(
+                        id: jobId,
+                        to: status,
+                        errorCode: errorCode,
+                        errorMessage: errorMessage
+                    )
+                }
+            }
+        } catch {
+            lastError = "terminal transition failed: \(error.localizedDescription)"
+        }
+        cancelRequested.remove(jobId)
         publishJobs()
     }
 
@@ -405,9 +542,10 @@ public actor JobQueueController {
         _ event: RunnerEvent,
         jobId: String,
         monitor: HeartbeatMonitor
-    ) throws {
+    ) {
         if case let .heartbeat(rssBytes, gpuUtil, cpuUtil, ts) = event {
-            try monitor.touch(
+            // Non-throwing; file mirror is best-effort inside touch.
+            monitor.touch(
                 rssBytes: rssBytes,
                 gpuUtil: gpuUtil,
                 cpuUtil: cpuUtil,
@@ -452,18 +590,31 @@ public actor JobQueueController {
         guard let job = try? store.fetch(id: jobId),
               job.status == .running || job.status == .preparing
         else { return }
-        _ = try? store.transition(
-            id: jobId,
-            to: .interrupted,
-            errorCode: BAMErrorCode.workerHung.rawValue,
-            errorMessage: "Heartbeat timed out"
-        )
-        cancelRequested.insert(jobId)
+        do {
+            _ = try store.transition(
+                id: jobId,
+                to: .interrupted,
+                errorCode: BAMErrorCode.workerHung.rawValue,
+                errorMessage: "Heartbeat timed out"
+            )
+        } catch {
+            lastError = "heartbeat interrupt failed: \(error.localizedDescription)"
+        }
+        // Stop the runner without sticky cancelRequested (would poison requeue).
         await runner.cancel(jobId: jobId)
         publishJobs()
     }
 
     // MARK: - Helpers
+
+    private func resolvePaths(for jobId: String) -> JobPaths {
+        if let existing = pathsByJob[jobId] {
+            return existing
+        }
+        let paths = JobPathsFactory.make(jobId: jobId, libraryRoot: libraryRoot)
+        pathsByJob[jobId] = paths
+        return paths
+    }
 
     private func materializeJobDir(paths: JobPaths, spec: JobSpec) throws {
         let fm = FileManager.default

@@ -8,7 +8,7 @@ final class HeartbeatTests: XCTestCase {
         XCTAssertFalse(monitor.isStale(timeout: 1))
         XCTAssertTrue(monitor.isStale(timeout: 1, requireTouch: true))
 
-        try monitor.touch(at: Date())
+        monitor.touch(at: Date())
         XCTAssertFalse(monitor.isStale(timeout: 10, now: Date()))
         XCTAssertTrue(monitor.isStale(timeout: 0.01, now: Date().addingTimeInterval(1)))
     }
@@ -19,7 +19,7 @@ final class HeartbeatTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let monitor = HeartbeatMonitor(fileURL: tmp)
-        try monitor.touch(rssBytes: 99, gpuUtil: 0.5, cpuUtil: 0.2)
+        monitor.touch(rssBytes: 99, gpuUtil: 0.5, cpuUtil: 0.2)
 
         let loaded = try HeartbeatMonitor.readFile(at: tmp)
         XCTAssertEqual(loaded?.rssBytes, 99)
@@ -33,7 +33,7 @@ final class HeartbeatTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let monitor = HeartbeatMonitor(fileURL: tmp)
-        try monitor.touch()
+        monitor.touch()
         try FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(-100)],
             ofItemAtPath: tmp.path

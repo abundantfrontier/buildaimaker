@@ -53,6 +53,9 @@ public final class HeartbeatMonitor: @unchecked Sendable {
     }
 
     /// Records a heartbeat and optionally mirrors it to `heartbeat.json`.
+    ///
+    /// In-memory state is always updated. File I/O is **best-effort**: failures
+    /// are ignored so a disk error cannot fail a healthy training run.
     public func touch(
         pid: Int32 = ProcessInfo.processInfo.processIdentifier,
         rssBytes: Int64? = nil,
@@ -60,7 +63,7 @@ public final class HeartbeatMonitor: @unchecked Sendable {
         cpuUtil: Double? = nil,
         ts: String = JobTimestamps.now(),
         at date: Date = Date()
-    ) throws {
+    ) {
         let state = HeartbeatState(
             pid: pid,
             ts: ts,
@@ -74,10 +77,14 @@ public final class HeartbeatMonitor: @unchecked Sendable {
         lock.unlock()
 
         if let fileURL {
-            let parent = fileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            let data = try encoder.encode(state)
-            try data.write(to: fileURL, options: .atomic)
+            do {
+                let parent = fileURL.deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                let data = try encoder.encode(state)
+                try data.write(to: fileURL, options: .atomic)
+            } catch {
+                // Best-effort mirror only; hang detection uses in-memory clock.
+            }
         }
     }
 
@@ -146,6 +153,13 @@ public final class HeartbeatMonitor: @unchecked Sendable {
 public enum JobTimestamps: Sendable {
     private static let formatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
+        // Fractional seconds keep FIFO stable when jobs are enqueued in the same wall second.
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let fallbackFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return f
     }()
@@ -155,6 +169,6 @@ public enum JobTimestamps: Sendable {
     }
 
     public static func parse(_ raw: String) -> Date? {
-        formatter.date(from: raw)
+        formatter.date(from: raw) ?? fallbackFormatter.date(from: raw)
     }
 }

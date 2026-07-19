@@ -201,9 +201,13 @@ private struct JobRowView: View {
     @ViewBuilder
     private func progressBlock(_ progress: JobProgressSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            // App fake runner uses 20 steps; fraction is display-only.
-            let fraction = min(1, Double(progress.step) / 20.0)
-            ProgressView(value: job.status == .preparing ? 0.05 : fraction)
+            if job.status == .preparing {
+                ProgressView(value: 0.05)
+            } else if let fraction = progress.fractionComplete {
+                ProgressView(value: fraction)
+            } else {
+                ProgressView()
+            }
             HStack(spacing: 12) {
                 Text("step \(progress.step)")
                 if let loss = progress.loss {

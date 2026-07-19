@@ -14,17 +14,44 @@ final class TrainViewModel: ObservableObject {
     @Published private(set) var datasets: [DatasetRecord] = []
     @Published private(set) var localModels: [ScannedLocalModel] = []
     @Published var selectedDatasetId: String?
-    @Published var selectedModelPath: String?
+    @Published var selectedModelPath: String? {
+        didSet { recomputeHardwareFit() }
+    }
     @Published var statusMessage: String?
     @Published var resultSummary: String?
     @Published var isRunning = false
     @Published var loadError: String?
-    @Published var hardwareMessage: String?
+
+    // Hardware Fit panel
     @Published var hardwareOK = true
+    @Published var hardwareWarning = false
+    @Published var hardwareMessage: String?
+    @Published var fitPeakGB: Double?
+    @Published var fitRequiredGB: Double?
+    @Published var fitAvailableGB: Double?
+    @Published var fitStatus: HardwareFitGate.FitStatus = .ok
+    @Published var fitSuggestions: [String] = []
+    @Published var fitParamCountB: Double = 1.5
+    @Published var fitQuantBits: Int = 4
+
+    // Hyperparameters affecting the estimator
+    @Published var loraRank: Int = 16 {
+        didSet { recomputeHardwareFit() }
+    }
+    @Published var maxSeqLen: Int = 2048 {
+        didSet { recomputeHardwareFit() }
+    }
+    @Published var batchSize: Int = 1 {
+        didSet { recomputeHardwareFit() }
+    }
+    @Published var gradAccum: Int = 4 {
+        didSet { recomputeHardwareFit() }
+    }
 
     private var datasetService: DatasetLibraryService?
     private let libraryRoot: URL
     private let scanner: LocalModelScanner
+    private var catalog: ModelCatalog?
 
     init(libraryRoot: URL = LibraryPaths.libraryRoot) {
         self.libraryRoot = libraryRoot
@@ -34,7 +61,8 @@ final class TrainViewModel: ObservableObject {
     }
 
     func bootstrap() {
-        refreshHardware()
+        catalog = try? ModelCatalog.loadBundled()
+        recomputeHardwareFit()
         do {
             datasetService = try DatasetLibraryService.openDefault()
             reload()
@@ -58,6 +86,8 @@ final class TrainViewModel: ObservableObject {
             if selectedModelPath == nil {
                 selectedModelPath = localModels.first?.localPath
             }
+            resolveModelSizeClass()
+            recomputeHardwareFit()
             if datasets.isEmpty {
                 statusMessage = "Import a text dataset first (Datasets sidebar)."
             } else if localModels.isEmpty {
@@ -70,12 +100,71 @@ final class TrainViewModel: ObservableObject {
         }
     }
 
-    func refreshHardware() {
-        let gate = HardwareFitGate.check()
-        hardwareOK = gate.allowed
-        hardwareMessage = gate.allowed
-            ? "Hardware: ~\(gate.availableUnifiedGB) GB unified memory (minimum \(gate.minimumRequiredGB) GB)."
-            : gate.message
+    /// Maps selected local model → catalog size class (paramCountB / quantBits).
+    func resolveModelSizeClass() {
+        guard let path = selectedModelPath else {
+            fitParamCountB = 1.5
+            fitQuantBits = 4
+            return
+        }
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        let leaf = url.lastPathComponent
+
+        if leaf == FixtureModel.installDirectoryName
+            || path.contains(FixtureModel.installDirectoryName)
+        {
+            if let entry = catalog?.fixtureEntry ?? catalog?.entry(sourceKey: FixtureModel.sourceKey) {
+                fitParamCountB = entry.paramCountB
+                fitQuantBits = entry.quantBits
+            } else {
+                fitParamCountB = 0.001
+                fitQuantBits = 16
+            }
+            return
+        }
+
+        // Match catalog by path component / sourceKey tail / display name.
+        if let catalog {
+            let scanned = localModels.first(where: { $0.localPath == path })
+            if let hit = catalog.entries.first(where: { entry in
+                leaf == entry.sourceKey
+                    || leaf.contains(entry.sourceKey.split(separator: "/").last.map(String.init) ?? "\u{0}")
+                    || path.localizedCaseInsensitiveContains(entry.sourceKey)
+                    || scanned?.displayName == entry.name
+                    || scanned?.displayName == entry.archFamily
+            }) {
+                fitParamCountB = hit.paramCountB
+                fitQuantBits = hit.quantBits
+                return
+            }
+        }
+
+        // Conservative default for unknown local folders.
+        fitParamCountB = 1.5
+        fitQuantBits = 4
+    }
+
+    func recomputeHardwareFit() {
+        resolveModelSizeClass()
+        let available = Double(HardwareFitGate.probeAvailableUnifiedGB())
+        let input = HardwareFitGate.EstimateInput(
+            paramCountB: fitParamCountB,
+            quantBits: fitQuantBits,
+            loraRank: loraRank,
+            maxSeqLen: maxSeqLen,
+            batchSize: batchSize,
+            gradAccum: gradAccum,
+            availableUnifiedGB: available
+        )
+        let est = HardwareFitGate.estimate(input)
+        fitStatus = est.status
+        fitPeakGB = est.peakGB
+        fitRequiredGB = est.requiredGB
+        fitAvailableGB = est.availableUnifiedGB
+        fitSuggestions = est.suggestions
+        hardwareMessage = est.message
+        hardwareOK = est.allowed
+        hardwareWarning = est.status == .warning
     }
 
     var canDryRun: Bool {
@@ -86,8 +175,19 @@ final class TrainViewModel: ObservableObject {
             && datasetService != nil
     }
 
+    var currentHyperparameters: LLMHyperparameters {
+        LLMHyperparameters(
+            loraRank: loraRank,
+            epochs: 1, // Dry-run uses a single epoch; real train PR will expose epochs.
+            batchSize: batchSize,
+            gradAccum: gradAccum,
+            maxSeqLen: maxSeqLen
+        )
+    }
+
     func validateAndDryRun() {
         guard !isRunning else { return }
+        recomputeHardwareFit()
         guard hardwareOK else {
             resultSummary = hardwareMessage
             return
@@ -103,6 +203,10 @@ final class TrainViewModel: ObservableObject {
         isRunning = true
         resultSummary = nil
         statusMessage = "Materializing job + prepare (no weight updates)…"
+
+        let hp = currentHyperparameters
+        let paramB = fitParamCountB
+        let quant = fitQuantBits
 
         Task {
             defer { isRunning = false }
@@ -155,7 +259,9 @@ final class TrainViewModel: ObservableObject {
                     libraryRoot: libraryRoot,
                     supervisorConfig: config,
                     invokeWorker: invokeWorker,
-                    availableUnifiedGBOverride: nil
+                    availableUnifiedGBOverride: nil,
+                    fitParamCountB: paramB,
+                    fitQuantBits: quant
                 )
 
                 let result = try await dryRun.validateAndDryRun(
@@ -165,7 +271,10 @@ final class TrainViewModel: ObservableObject {
                     baseModelSourceKey: sourceKey,
                     datasetVersionId: versionId,
                     chatTemplateId: chatTemplate,
-                    workerURL: workerURL
+                    hyperparameters: hp,
+                    workerURL: workerURL,
+                    paramCountB: paramB,
+                    quantBits: quant
                 )
 
                 let jobDir = result.materialize.paths.jobDir
@@ -177,6 +286,12 @@ final class TrainViewModel: ObservableObject {
                     "Job dir: \(jobDir)",
                     "Worker: \(result.workerExecutablePath)",
                     result.workerId.map { "Worker id: \($0)" } ?? "Worker: materialize-only",
+                    String(
+                        format: "Hardware fit: peak ~%.2f GB / required ~%.2f GB (status=%@)",
+                        fitPeakGB ?? 0,
+                        fitRequiredGB ?? 0,
+                        fitStatus.rawValue
+                    ),
                 ]
                 resultSummary = lines.joined(separator: "\n")
                 statusMessage = "Validate & dry-run succeeded."

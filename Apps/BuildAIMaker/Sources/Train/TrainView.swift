@@ -24,6 +24,10 @@ struct TrainView: View {
         .background(BAMColors.detailBackground)
         .navigationTitle(SidebarDestination.train.title)
         .onAppear { model.bootstrap() }
+        .onChange(of: model.selectedModelPath) {
+            model.resolveModelSizeClass()
+            model.recomputeHardwareFit()
+        }
     }
 
     private var header: some View {
@@ -57,17 +61,7 @@ struct TrainView: View {
 
     private var content: some View {
         Form {
-            Section("Hardware") {
-                if let hw = model.hardwareMessage {
-                    Text(hw)
-                        .font(.callout)
-                        .foregroundStyle(model.hardwareOK ? BAMColors.secondaryLabel : .red)
-                        .textSelection(.enabled)
-                }
-                Text("Approximate gate only — full Hardware Fit estimator ships in PR-HW-Fit.")
-                    .font(.caption2)
-                    .foregroundStyle(BAMColors.tertiaryLabel)
-            }
+            hardwareFitSection
 
             Section("Dataset") {
                 if model.datasets.isEmpty {
@@ -99,6 +93,30 @@ struct TrainView: View {
                             .textSelection(.enabled)
                             .lineLimit(2)
                     }
+                    Text(
+                        String(
+                            format: "Size class: %gB · %d-bit (catalog / default)",
+                            model.fitParamCountB,
+                            model.fitQuantBits
+                        )
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(BAMColors.tertiaryLabel)
+                }
+            }
+
+            Section("LoRA knobs (estimator)") {
+                Stepper(value: $model.loraRank, in: 4...64, step: 4) {
+                    Text("LoRA rank: \(model.loraRank)")
+                }
+                Stepper(value: $model.maxSeqLen, in: 512...8192, step: 512) {
+                    Text("Max seq len: \(model.maxSeqLen)")
+                }
+                Stepper(value: $model.batchSize, in: 1...8, step: 1) {
+                    Text("Batch size: \(model.batchSize)")
+                }
+                Stepper(value: $model.gradAccum, in: 1...16, step: 1) {
+                    Text("Grad accum: \(model.gradAccum)")
                 }
             }
 
@@ -128,5 +146,107 @@ struct TrainView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: - Hardware Fit panel
+
+    private var hardwareFitSection: some View {
+        Section {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                fitStatusBadge
+                VStack(alignment: .leading, spacing: 4) {
+                    if let peak = model.fitPeakGB, let required = model.fitRequiredGB,
+                       let available = model.fitAvailableGB
+                    {
+                        Text(
+                            String(
+                                format: "Peak ~%@ GB · need ~%@ GB (incl. OS reserve) of ~%@ GB",
+                                HardwareFitGate.formatGB(peak),
+                                HardwareFitGate.formatGB(required),
+                                HardwareFitGate.formatGB(available)
+                            )
+                        )
+                        .font(.callout)
+                        .foregroundStyle(fitForeground)
+                        .textSelection(.enabled)
+                    }
+                    if let message = model.hardwareMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(fitForeground)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            if !model.fitSuggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Suggestions")
+                        .font(.caption)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                    ForEach(model.fitSuggestions, id: \.self) { tip in
+                        Text("• \(tip)")
+                            .font(.caption2)
+                            .foregroundStyle(BAMColors.secondaryLabel)
+                    }
+                }
+            }
+
+            Text(HardwareFitGate.approximateLabel)
+                .font(.caption2)
+                .foregroundStyle(BAMColors.tertiaryLabel)
+        } header: {
+            Text("Hardware Fit")
+        } footer: {
+            if !model.hardwareOK {
+                Text("Training is blocked until hardware requirements are met (minimum 16 GB unified memory, and estimated peak must fit).")
+                    .font(.caption2)
+            } else if model.hardwareWarning {
+                Text("Soft warning only — you may continue, but consider lowering knobs or closing other apps.")
+                    .font(.caption2)
+            }
+        }
+    }
+
+    private var fitStatusBadge: some View {
+        Text(fitStatusTitle)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(fitBadgeBackground)
+            .foregroundStyle(fitBadgeForeground)
+            .clipShape(Capsule())
+    }
+
+    private var fitStatusTitle: String {
+        switch model.fitStatus {
+        case .ok: return "OK"
+        case .warning: return "Warning"
+        case .refuse: return "Refuse"
+        }
+    }
+
+    private var fitForeground: Color {
+        switch model.fitStatus {
+        case .ok: return BAMColors.secondaryLabel
+        case .warning: return .orange
+        case .refuse: return .red
+        }
+    }
+
+    private var fitBadgeBackground: Color {
+        switch model.fitStatus {
+        case .ok: return Color.green.opacity(0.2)
+        case .warning: return Color.orange.opacity(0.2)
+        case .refuse: return Color.red.opacity(0.2)
+        }
+    }
+
+    private var fitBadgeForeground: Color {
+        switch model.fitStatus {
+        case .ok: return .green
+        case .warning: return .orange
+        case .refuse: return .red
+        }
     }
 }

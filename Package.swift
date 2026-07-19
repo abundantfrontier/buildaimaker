@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "BAMCore", targets: ["BAMCore"]),
         .library(name: "BAMModels", targets: ["BAMModels"]),
         .library(name: "BAMPersistence", targets: ["BAMPersistence"]),
+        .library(name: "BAMModelCatalog", targets: ["BAMModelCatalog"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
     ],
@@ -36,6 +37,18 @@ let package = Package(
             path: "Packages/BAMPersistence/Sources/BAMPersistence"
         ),
         .target(
+            name: "BAMModelCatalog",
+            dependencies: [
+                "BAMCore",
+                "BAMModels",
+                "BAMPersistence",
+            ],
+            path: "Packages/BAMModelCatalog/Sources/BAMModelCatalog",
+            resources: [
+                .copy("Resources/models.json"),
+            ]
+        ),
+        .target(
             name: "BAMResourcesUI",
             dependencies: ["BAMCore"],
             path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"
@@ -46,6 +59,7 @@ let package = Package(
                 "BAMCore",
                 "BAMModels",
                 "BAMPersistence",
+                "BAMModelCatalog",
                 "BAMResourcesUI",
             ],
             path: "Apps/BuildAIMaker/Sources"
@@ -69,6 +83,15 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"
+        ),
+        .testTarget(
+            name: "BAMModelCatalogTests",
+            dependencies: [
+                "BAMModelCatalog",
+                "BAMModels",
+                "BAMCore",
+            ],
+            path: "Packages/BAMModelCatalog/Tests/BAMModelCatalogTests"
         ),
     ]
 )

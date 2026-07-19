@@ -17,9 +17,10 @@ buildaimaker/
 │   ├── BAMCore/             # Feature flags, paths, errors, protocol versions
 │   ├── BAMModels/           # Domain models (JobSpec, Consent, Persona, modalities)
 │   ├── BAMPersistence/      # GRDB library.sqlite + migrations
+│   ├── BAMModelCatalog/     # Living catalog + local models/base scan
 │   └── BAMResourcesUI/      # Shared UI chrome (sidebar, colors)
 ├── Workers/                 # Training workers (future)
-├── Catalog/                 # Model catalog (future)
+├── Catalog/models.json      # Living supported model list (Qwen2.5 Instruct MLX)
 ├── Docs/                    # Design docs
 └── Package.swift            # Root SPM package
 ```

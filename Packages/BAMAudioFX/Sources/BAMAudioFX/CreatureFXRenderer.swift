@@ -2,19 +2,96 @@ import Foundation
 
 /// Renders a short creature voice preview WAV using synthesis + FX (CS-3).
 ///
-/// No external samples required: generates speech-like buzz + optional texture beds,
-/// applies pitch/grit/atmosphere, writes PCM WAV.
+/// Preferred path: **system TTS → creature FX** so the preview speaks a line.
+/// Fallback: speech-like buzz + textures when TTS is unavailable.
 public enum CreatureFXRenderer {
     public struct RenderResult: Sendable {
         public var audioURL: URL
         public var profileURL: URL
         public var durationSeconds: Double
+        /// True when system TTS provided the speech carrier.
+        public var usedSystemTTS: Bool
+        /// Line that was spoken (if any).
+        public var spokenText: String?
+
+        public init(
+            audioURL: URL,
+            profileURL: URL,
+            durationSeconds: Double,
+            usedSystemTTS: Bool = false,
+            spokenText: String? = nil
+        ) {
+            self.audioURL = audioURL
+            self.profileURL = profileURL
+            self.durationSeconds = durationSeconds
+            self.usedSystemTTS = usedSystemTTS
+            self.spokenText = spokenText
+        }
     }
 
-    /// Engine id stored on voice profiles for this pipeline.
+    /// Engine id stored on voice profiles for buzz-only pipeline.
     public static let engineId = "creature-fx-v1"
+    /// Engine id when system TTS is the speech source.
+    public static let spokenEngineId = "creature-fx-tts-v1"
 
-    /// Render preview into `outputDirectory` (created if needed).
+    /// Render **spoken** preview: system TTS of `speechText`, then creature FX.
+    ///
+    /// Falls back to buzz synthesis if TTS fails.
+    public static func renderSpokenPreview(
+        speechText: String,
+        params: CreatureFXParams,
+        characterName: String,
+        outputDirectory: URL,
+        fileManager: FileManager = .default
+    ) async throws -> RenderResult {
+        try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+
+        let targetRate: Double = 24_000
+        let trimmed = speechText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !trimmed.isEmpty,
+           let speech = try? await SystemSpeechSynthesizer.synthesize(text: trimmed)
+        {
+            var samples = resample(speech.samples, from: speech.sampleRate, to: targetRate)
+            // Size slider → pitch via resampling (higher size → higher pitch → shorter).
+            samples = resample(samples, from: 1.0, to: 1.0 / params.pitchRate)
+            applyGrit(&samples, grit: params.grit)
+            applyAtmosphere(&samples, amount: params.atmosphere, sampleRate: targetRate)
+
+            var mix = samples
+            for texture in params.textures {
+                let bed = synthesizeTexture(
+                    texture,
+                    sampleCount: mix.count,
+                    sampleRate: targetRate
+                )
+                mix = mixLayers(speech: mix, texture: bed, textureGain: 0.18)
+            }
+            normalize(&mix, peak: 0.89)
+
+            return try writeResult(
+                samples: mix,
+                sampleRate: targetRate,
+                params: params,
+                characterName: characterName,
+                outputDirectory: outputDirectory,
+                engineId: spokenEngineId,
+                usedSystemTTS: true,
+                spokenText: trimmed,
+                fileManager: fileManager
+            )
+        }
+
+        // Fallback buzz path.
+        return try renderPreview(
+            params: params,
+            characterName: characterName,
+            outputDirectory: outputDirectory,
+            fileManager: fileManager
+        )
+    }
+
+    /// Render buzz-only preview into `outputDirectory` (created if needed).
     public static func renderPreview(
         params: CreatureFXParams,
         characterName: String,
@@ -48,10 +125,34 @@ public enum CreatureFXRenderer {
 
         normalize(&mix, peak: 0.89)
 
-        let audioURL = outputDirectory.appendingPathComponent("preview.wav")
-        try writeWAV(samples: mix, sampleRate: sampleRate, url: audioURL)
+        return try writeResult(
+            samples: mix,
+            sampleRate: sampleRate,
+            params: params,
+            characterName: characterName,
+            outputDirectory: outputDirectory,
+            engineId: engineId,
+            usedSystemTTS: false,
+            spokenText: nil,
+            fileManager: fileManager
+        )
+    }
 
-        let profile: [String: Any] = [
+    private static func writeResult(
+        samples: [Float],
+        sampleRate: Double,
+        params: CreatureFXParams,
+        characterName: String,
+        outputDirectory: URL,
+        engineId: String,
+        usedSystemTTS: Bool,
+        spokenText: String?,
+        fileManager: FileManager
+    ) throws -> RenderResult {
+        let audioURL = outputDirectory.appendingPathComponent("preview.wav")
+        try writeWAV(samples: samples, sampleRate: sampleRate, url: audioURL)
+
+        var profile: [String: Any] = [
             "engineId": engineId,
             "schemaVersion": 1,
             "characterName": characterName,
@@ -60,19 +161,67 @@ public enum CreatureFXRenderer {
             "grit": params.grit,
             "atmosphere": params.atmosphere,
             "textures": params.textures.map(\.rawValue).sorted(),
+            "usedSystemTTS": usedSystemTTS,
             "teachTips": [
                 params.preset.teachTip,
                 "Size: \(params.sizeLabel)",
                 "Grit: \(params.gritLabel)",
                 "Atmosphere: \(params.atmosphereLabel)",
+                usedSystemTTS
+                    ? "Speech from system TTS, then creature FX."
+                    : "Buzz carrier (TTS unavailable).",
             ],
             "previewFile": "preview.wav",
         ]
+        if let spokenText {
+            profile["spokenText"] = spokenText
+        }
         let profileURL = outputDirectory.appendingPathComponent("voice_profile.json")
         let data = try JSONSerialization.data(withJSONObject: profile, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: profileURL, options: .atomic)
 
-        return RenderResult(audioURL: audioURL, profileURL: profileURL, durationSeconds: duration)
+        let duration = sampleRate > 0 ? Double(samples.count) / sampleRate : 0
+        return RenderResult(
+            audioURL: audioURL,
+            profileURL: profileURL,
+            durationSeconds: duration,
+            usedSystemTTS: usedSystemTTS,
+            spokenText: spokenText
+        )
+    }
+
+    // MARK: - Sample processing
+
+    /// Linear resample. `to/from` as rates, or pass relative factors (from: 1, to: factor).
+    public static func resample(_ input: [Float], from: Double, to: Double) -> [Float] {
+        guard !input.isEmpty, from > 0, to > 0 else { return input }
+        if abs(from - to) < 1e-6 { return input }
+        let ratio = from / to
+        let outCount = max(1, Int(Double(input.count) / ratio))
+        var out = [Float](repeating: 0, count: outCount)
+        for i in 0..<outCount {
+            let src = Double(i) * ratio
+            let i0 = Int(src)
+            let i1 = min(i0 + 1, input.count - 1)
+            let frac = Float(src - Double(i0))
+            let a = input[min(i0, input.count - 1)]
+            let b = input[i1]
+            out[i] = a * (1 - frac) + b * frac
+        }
+        return out
+    }
+
+    public static func applyGrit(_ samples: inout [Float], grit: Double) {
+        guard grit > 0.02 else { return }
+        let drive = 1 + grit * 6
+        for i in 0..<samples.count {
+            var sample = Float(tanh(Double(samples[i]) * drive))
+            if grit > 0.4 {
+                let steps = max(4, Int(32 - grit * 28))
+                sample = Float(Int(sample * Float(steps))) / Float(steps)
+            }
+            samples[i] = sample
+        }
     }
 
     // MARK: - Synthesis

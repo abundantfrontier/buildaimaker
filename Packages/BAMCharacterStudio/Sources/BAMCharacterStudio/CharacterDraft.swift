@@ -90,7 +90,15 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     public var datasetId: String?
     public var voiceProfilePath: String?
     public var previewAudioPath: String?
-    /// Wizard step raw value (0=meet, 1=mind, 2=voice, 3=done). Used to resume.
+    /// Selected base model library id (directory name under models/base when known).
+    public var baseModelId: String?
+    /// Absolute path to the chosen base model directory.
+    public var baseModelPath: String?
+    /// Display name of the chosen base model.
+    public var baseModelName: String?
+    /// Catalog / hub `sourceKey` for the chosen base model.
+    public var baseModelSourceKey: String?
+    /// Wizard step raw value (0=meet, 1=model, 2=mind, 3=voice, 4=done). Used to resume.
     public var wizardStepRaw: Int
     /// True after user hits Finish & save.
     public var isComplete: Bool
@@ -119,6 +127,10 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         datasetId: String? = nil,
         voiceProfilePath: String? = nil,
         previewAudioPath: String? = nil,
+        baseModelId: String? = nil,
+        baseModelPath: String? = nil,
+        baseModelName: String? = nil,
+        baseModelSourceKey: String? = nil,
         wizardStepRaw: Int = 0,
         isComplete: Bool = false,
         createdAt: String = ISO8601DateFormatter().string(from: Date()),
@@ -145,10 +157,35 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         self.datasetId = datasetId
         self.voiceProfilePath = voiceProfilePath
         self.previewAudioPath = previewAudioPath
+        self.baseModelId = baseModelId
+        self.baseModelPath = baseModelPath
+        self.baseModelName = baseModelName
+        self.baseModelSourceKey = baseModelSourceKey
         self.wizardStepRaw = wizardStepRaw
         self.isComplete = isComplete
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// True when the draft has a base model path selected for later train/chat.
+    public var hasSelectedBaseModel: Bool {
+        guard let path = baseModelPath?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+        return !path.isEmpty
+    }
+
+    /// Sentinel values for Apple’s on-device Foundation Model (not under models/base).
+    public static let appleFoundationSourceKey = "apple/system-language-model"
+    public static let appleFoundationPath = "system://apple-foundation"
+    public static let appleFoundationDisplayName = "Apple on-device model"
+
+    /// True when this character is bound to the system Foundation Model (not open MLX).
+    public var usesAppleFoundationModel: Bool {
+        if baseModelSourceKey == Self.appleFoundationSourceKey { return true }
+        if baseModelPath == Self.appleFoundationPath { return true }
+        if baseModelId == "apple-foundation" { return true }
+        return false
     }
 
     public var resolvedSpecies: String {
@@ -169,6 +206,7 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         case voicePreset, size, grit, atmosphere
         case textureBuzzSaw, textureSongbird, textureDrip, textureServo
         case bible, examples, datasetId, voiceProfilePath, previewAudioPath
+        case baseModelId, baseModelPath, baseModelName, baseModelSourceKey
         case wizardStepRaw, isComplete, createdAt, updatedAt
     }
 
@@ -195,6 +233,10 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         datasetId = try c.decodeIfPresent(String.self, forKey: .datasetId)
         voiceProfilePath = try c.decodeIfPresent(String.self, forKey: .voiceProfilePath)
         previewAudioPath = try c.decodeIfPresent(String.self, forKey: .previewAudioPath)
+        baseModelId = try c.decodeIfPresent(String.self, forKey: .baseModelId)
+        baseModelPath = try c.decodeIfPresent(String.self, forKey: .baseModelPath)
+        baseModelName = try c.decodeIfPresent(String.self, forKey: .baseModelName)
+        baseModelSourceKey = try c.decodeIfPresent(String.self, forKey: .baseModelSourceKey)
         wizardStepRaw = try c.decodeIfPresent(Int.self, forKey: .wizardStepRaw) ?? 0
         // Older saves without isComplete: treat as complete if they had voice preview.
         if let complete = try c.decodeIfPresent(Bool.self, forKey: .isComplete) {
@@ -215,21 +257,44 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
 
     public var progressLabel: String {
         if isComplete { return "Complete" }
+        // Prefer content over raw step so older drafts (pre-model step) still read well.
+        if previewAudioPath != nil { return "In progress — almost done" }
+        if !examples.isEmpty || datasetId != nil { return "In progress — Story done" }
+        if hasSelectedBaseModel { return "In progress — Model picked" }
+        if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "In progress — Model"
+        }
         switch wizardStepRaw {
         case 0: return "In progress — Name"
-        case 1: return examples.isEmpty ? "In progress — Story" : "In progress — Story done"
-        case 2: return previewAudioPath == nil ? "In progress — Voice" : "In progress — almost done"
-        case 3: return "Complete"
+        case 1: return "In progress — Model"
+        case 2: return "In progress — Story"
+        case 3: return "In progress — Voice"
+        case 4: return "Complete"
         default: return "In progress"
         }
     }
 
     /// Sensible step to reopen on (never past what's done).
+    /// Steps: 0=meet, 1=model, 2=mind, 3=voice, 4=done.
+    ///
+    /// Finished characters still return content steps via ``editStepRaw`` so Edit
+    /// can walk the wizard again instead of trapping on Done.
     public var resumeStepRaw: Int {
-        if isComplete { return 3 }
-        if previewAudioPath != nil { return 2 }
-        if !examples.isEmpty || datasetId != nil { return 1 }
+        if isComplete { return 4 }
+        if previewAudioPath != nil { return 3 }
+        if !examples.isEmpty || datasetId != nil { return 2 }
+        if hasSelectedBaseModel { return 2 }
         if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return 1 }
-        return max(0, min(wizardStepRaw, 2))
+        return max(0, min(wizardStepRaw, 3))
+    }
+
+    /// Step to open when the user chooses **Edit** on a finished character.
+    /// Prefers Voice (last creative step) so they can re-hear quickly, but any
+    /// step is reachable via Back.
+    public var editStepRaw: Int {
+        if previewAudioPath != nil { return 3 }
+        if !examples.isEmpty || datasetId != nil { return 2 }
+        if hasSelectedBaseModel { return 1 }
+        return 0
     }
 }

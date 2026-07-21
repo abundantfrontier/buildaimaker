@@ -1,20 +1,31 @@
+import AppKit
 import SwiftUI
 import BAMCore
 import BAMDatasets
+import BAMInference
 import BAMModelCatalog
 import BAMModels
 import BAMPersistence
 import BAMResourcesUI
 
-/// Home first-run checklist + lightweight MVP metrics (M1–M5) harness.
+/// Home first-run checklist + environment setup gate + MVP metrics.
 struct HomeOnboardingView: View {
     @Binding var selection: SidebarDestination?
     @StateObject private var model = HomeOnboardingViewModel()
+    @State private var showModelBrowser = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header
+
+                // Always-visible when runtime or model missing (not permanently dismissible).
+                if model.setup.needsAttention {
+                    environmentSetupSection
+                } else {
+                    environmentReadyBanner
+                }
+
                 if model.checklist.shouldShow {
                     checklistSection
                 } else if model.checklist.isFullyComplete {
@@ -30,6 +41,11 @@ struct HomeOnboardingView: View {
         .background(BAMColors.detailBackground)
         .navigationTitle(SidebarDestination.home.title)
         .onAppear { model.refresh() }
+        .sheet(isPresented: $showModelBrowser) {
+            ModelBrowserView {
+                model.refresh()
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -37,7 +53,7 @@ struct HomeOnboardingView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .help("Re-probe library and metrics")
+                .help("Re-probe library, runtime, and metrics")
             }
         }
     }
@@ -47,32 +63,219 @@ struct HomeOnboardingView: View {
             Text(AppIdentity.displayName)
                 .font(.largeTitle.weight(.semibold))
             Text(
-                "Make a fictional creature in four guided steps: name → story → voice → save. Then chat in Playground."
+                "Make a fictional creature: name → model → story → voice → save. Then chat in Playground or fine-tune in Train."
             )
             .font(.body)
             .foregroundStyle(BAMColors.secondaryLabel)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Label("1. Characters → Create", systemImage: "1.circle.fill")
-                Label("2. Follow the green button at the bottom of each step", systemImage: "2.circle.fill")
-                Label("3. When finished, open Playground to chat", systemImage: "3.circle.fill")
+            if model.setup.isReady {
+                Button {
+                    selection = .characters
+                } label: {
+                    Label("Start: Create a character", systemImage: "theatermasks")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            } else {
+                Text("Finish setup below first — then Create a character unlocks the full path.")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
             }
-            .font(.callout)
-            .foregroundStyle(BAMColors.secondaryLabel)
+        }
+    }
 
+    // MARK: - Environment setup gate
+
+    private var environmentSetupSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Setup required")
+                        .font(.title2.weight(.semibold))
+                    Text(
+                        "The app needs a local training runtime and at least one base model before real chat or LoRA. "
+                            + "You can install the offline fixture in seconds, or browse Hugging Face for real MLX weights."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            VStack(spacing: 10) {
+                setupRow(
+                    title: "Apple on-device model (default chat)",
+                    detail: model.setup.appleDetail,
+                    done: model.setup.appleFoundation.isUsable,
+                    systemImage: "apple.logo"
+                ) {
+                    Button("Open Apple Intelligence settings") {
+                        // Opens System Settings deep link when possible.
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.Siri-Settings.extension") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("Playground") {
+                        selection = .playground
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                setupRow(
+                    title: "Open MLX runtime (optional train)",
+                    detail: model.setup.runtimeDetail,
+                    done: model.setup.runtimeInstalled,
+                    systemImage: "terminal"
+                ) {
+                    if model.isInstallingRuntime {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button(model.setup.runtimeInstalled ? "Repair…" : "Install runtime") {
+                            Task { await model.installRuntime() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.isInstallingRuntime)
+                    }
+                    Button("Settings") {
+                        selection = .settings
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                setupRow(
+                    title: "Open base model (optional train)",
+                    detail: model.setup.modelDetail,
+                    done: model.setup.hasBaseModel,
+                    systemImage: "cpu"
+                ) {
+                    Button("Install fixture") {
+                        model.installFixture()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isInstallingFixture)
+
+                    Button("Browse sources") {
+                        showModelBrowser = true
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Models") {
+                        selection = .models
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            if let msg = model.setupActionMessage {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .textSelection(.enabled)
+            }
+            if let err = model.setupActionError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                Text("\(model.setup.completedCount)/3 ready · Apple preferred for chat")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                ProgressView(value: model.setup.progress)
+                    .progressViewStyle(.linear)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.orange.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private var environmentReadyBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Environment ready")
+                    .font(.callout.weight(.semibold))
+                Text(model.setup.readySummary)
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+            }
+            Spacer()
             Button {
                 selection = .characters
             } label: {
-                Label("Start: Create a character", systemImage: "theatermasks")
+                Label("Create character", systemImage: "theatermasks")
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-
-            Text("Advanced (Datasets, Train, Jobs…) is optional — only for deeper fine-tuning later.")
-                .font(.caption)
-                .foregroundStyle(BAMColors.tertiaryLabel)
+            .controlSize(.small)
         }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.green.opacity(0.12))
+        )
     }
+
+    private func setupRow(
+        title: String,
+        detail: String,
+        done: Bool,
+        systemImage: String,
+        @ViewBuilder actions: () -> some View
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: done ? "checkmark.circle.fill" : systemImage)
+                    .foregroundStyle(done ? .green : .orange)
+                    .font(.title3)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+            }
+            if !done {
+                HStack(spacing: 8) {
+                    actions()
+                }
+                .padding(.leading, 38)
+            } else {
+                HStack(spacing: 8) {
+                    actions()
+                }
+                .padding(.leading, 38)
+                .opacity(0.85)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+
+    // MARK: - Checklist
 
     private var checklistSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -218,9 +421,10 @@ struct HomeOnboardingView: View {
                 .font(.headline)
             HStack(spacing: 12) {
                 linkButton("Characters", .characters, "theatermasks")
+                linkButton("Models", .models, "cpu")
                 linkButton("Playground", .playground, "bubble.left.and.bubble.right")
-                linkButton("Datasets", .datasets, "doc.text")
                 linkButton("Train", .train, "hammer")
+                linkButton("Settings", .settings, "gearshape")
             }
         }
     }
@@ -244,6 +448,76 @@ struct HomeOnboardingView: View {
     }
 }
 
+// MARK: - Setup status
+
+struct EnvironmentSetupStatus: Equatable, Sendable {
+    var runtimeInstalled: Bool
+    var runtimePath: String
+    var hasBaseModel: Bool
+    var localModelCount: Int
+    var fixtureInstalled: Bool
+    /// Apple on-device Foundation Model (preferred Playground default when ready).
+    var appleFoundation: AppleFoundationModelStatus
+    var appleUnavailableReason: String?
+
+    /// Open-stack train path still wants runtime + local model; chat can use Apple alone.
+    var needsAttention: Bool {
+        // Prefer Apple: if Apple FM is ready, only surface open-stack gaps as soft optional.
+        if appleFoundation.isUsable {
+            return false
+        }
+        return !runtimeInstalled || !hasBaseModel
+    }
+
+    var isReady: Bool {
+        appleFoundation.isUsable || (runtimeInstalled && hasBaseModel)
+    }
+
+    var completedCount: Int {
+        var n = 0
+        if appleFoundation.isUsable { n += 1 }
+        if runtimeInstalled { n += 1 }
+        if hasBaseModel { n += 1 }
+        return n
+    }
+
+    var progress: Double {
+        Double(completedCount) / 3.0
+    }
+
+    var runtimeDetail: String {
+        if runtimeInstalled {
+            return "Managed Python present at \(runtimePath)"
+        }
+        return "Optional for open MLX train. Creates a local venv under Application Support."
+    }
+
+    var modelDetail: String {
+        if hasBaseModel {
+            var parts = ["\(localModelCount) local open model(s) under models/base"]
+            if fixtureInstalled { parts.append("fixture present") }
+            return parts.joined(separator: " · ")
+        }
+        return "Optional when Apple on-device model is ready. Install fixture or browse HF for open MLX train."
+    }
+
+    var appleDetail: String {
+        var d = appleFoundation.detail
+        if let r = appleUnavailableReason, !r.isEmpty {
+            d += " (\(r))"
+        }
+        return d
+    }
+
+    var readySummary: String {
+        if appleFoundation.isUsable {
+            return "Apple on-device model ready · Playground defaults to Apple · open MLX optional"
+        }
+        return "Runtime \(runtimeInstalled ? "OK" : "missing") · \(localModelCount) open model(s)"
+            + (fixtureInstalled ? " (fixture)" : "")
+    }
+}
+
 // MARK: - View model
 
 @MainActor
@@ -251,6 +525,19 @@ final class HomeOnboardingViewModel: ObservableObject {
     @Published private(set) var checklist = OnboardingChecklistState()
     @Published private(set) var metrics = MVPMetricsSnapshot()
     @Published private(set) var probe = OnboardingLibraryProbe()
+    @Published private(set) var setup = EnvironmentSetupStatus(
+        runtimeInstalled: false,
+        runtimePath: "",
+        hasBaseModel: false,
+        localModelCount: 0,
+        fixtureInstalled: false,
+        appleFoundation: .unknown,
+        appleUnavailableReason: nil
+    )
+    @Published private(set) var isInstallingRuntime = false
+    @Published private(set) var isInstallingFixture = false
+    @Published var setupActionMessage: String?
+    @Published var setupActionError: String?
 
     private let onboardingStore: OnboardingStore
     private let metricsStore: MVPMetricsStore
@@ -275,6 +562,7 @@ final class HomeOnboardingViewModel: ObservableObject {
             persisted: persisted
         )
         checklist = OnboardingChecklistEvaluator.evaluate(probe: probe, persisted: persisted)
+        setup = Self.buildSetupStatus(libraryRoot: libraryRoot)
     }
 
     func dismissChecklist() {
@@ -285,6 +573,68 @@ final class HomeOnboardingViewModel: ObservableObject {
     func resetChecklist() {
         onboardingStore.reset()
         refresh()
+    }
+
+    func installFixture() {
+        isInstallingFixture = true
+        setupActionError = nil
+        setupActionMessage = nil
+        defer { isInstallingFixture = false }
+        do {
+            let modelsBase = libraryRoot.appendingPathComponent("models/base", isDirectory: true)
+            let result = try ModelInstallService(modelsBaseURL: modelsBase).installFixture(overwrite: true)
+            OnboardingStore().markCompleted(.installFixture)
+            setupActionMessage = "Fixture installed at \(result.modelRecord.localPath)"
+            refresh()
+        } catch {
+            setupActionError = (error as? BAMError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func installRuntime() async {
+        isInstallingRuntime = true
+        setupActionError = nil
+        setupActionMessage = "Installing managed Python…"
+        defer { isInstallingRuntime = false }
+
+        let installer = RuntimeInstaller(appVersion: RuntimePaths.spikeAppVersion)
+        let result = await installer.installManagedRuntime { progress in
+            Task { @MainActor in
+                self.setupActionMessage = progress.message
+            }
+        }
+        switch result {
+        case .success:
+            setupActionMessage = "Training runtime installed."
+            refresh()
+        case .failure(let error):
+            setupActionError = error.errorDescription ?? error.message ?? error.code.rawValue
+            setupActionMessage = nil
+            refresh()
+        }
+    }
+
+    static func buildSetupStatus(
+        libraryRoot: URL,
+        fileManager: FileManager = .default
+    ) -> EnvironmentSetupStatus {
+        let runtime = RuntimeInstaller(appVersion: RuntimePaths.spikeAppVersion).status(fileManager: fileManager)
+        let modelsBase = libraryRoot.appendingPathComponent("models/base", isDirectory: true)
+        let installer = ModelInstallService(modelsBaseURL: modelsBase)
+        let fixture = installer.isFixtureInstalled()
+        let scanned = (try? LocalModelScanner(modelsBaseURL: modelsBase).scan()) ?? []
+        let count = scanned.count
+        let hasBase = count > 0 || fixture
+        let apple = AppleFoundationModelSupport.probeStatus()
+        return EnvironmentSetupStatus(
+            runtimeInstalled: runtime.isInstalled,
+            runtimePath: runtime.envRoot.path,
+            hasBaseModel: hasBase,
+            localModelCount: max(count, fixture ? 1 : 0),
+            fixtureInstalled: fixture,
+            appleFoundation: apple,
+            appleUnavailableReason: AppleFoundationModelSupport.unavailableReasonDescription()
+        )
     }
 
     static func buildProbe(
@@ -299,7 +649,6 @@ final class HomeOnboardingViewModel: ObservableObject {
                 hasDataset = listed.contains { $0.status == .ready && $0.modality == .text }
             }
         }
-        // M4 import success also counts even if the dataset was later deleted.
         if metrics.count(for: .datasetImportOK) > 0 {
             hasDataset = true
         }

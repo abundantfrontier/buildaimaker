@@ -17,8 +17,13 @@ struct ModelsView: View {
     @State private var installError: String?
     @State private var isInstallingFixture = false
     @State private var fixtureInstalled = false
+    /// sourceKey of the catalog row currently installing (nil when idle).
+    @State private var installingSourceKey: String?
+    /// sourceKeys known installed under models/base.
+    @State private var installedSourceKeys: Set<String> = []
     @State private var isLoading = true
     @State private var selectedAdapterPath: String?
+    @State private var showModelBrowser = false
 
     private let featureFlags = FeatureFlags.default
 
@@ -51,6 +56,14 @@ struct ModelsView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    showModelBrowser = true
+                } label: {
+                    Label("Browse sources", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                .help("Search Hugging Face / mlx-community or paste a custom URL")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
                     reload()
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
@@ -58,11 +71,37 @@ struct ModelsView: View {
                 .help("Reload catalog and rescan local models")
             }
         }
+        .sheet(isPresented: $showModelBrowser) {
+            ModelBrowserView {
+                reload()
+            }
+        }
         .onAppear { reload() }
     }
 
     private var modelsList: some View {
         List {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Search popular download locations (Hugging Face MLX, mlx-community, Qwen picks) or paste a custom HF repo URL.")
+                        .font(.callout)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                    Button {
+                        showModelBrowser = true
+                    } label: {
+                        Label("Open Model Source Connector", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .help("Live search + download into models/base")
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Model Source Connector")
+            } footer: {
+                Text("User-initiated network download. Optional HF token for gated models (Keychain).")
+                    .font(.caption2)
+            }
+
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Offline fixture for CI and protocol plumbing. Not real MLX train weights.")
@@ -127,13 +166,24 @@ struct ModelsView: View {
                         .foregroundStyle(BAMColors.secondaryLabel)
                 } else {
                     ForEach(catalogEntries) { entry in
-                        CatalogEntryRow(entry: entry)
+                        CatalogEntryRow(
+                            entry: entry,
+                            isInstalled: installedSourceKeys.contains(entry.sourceKey)
+                                || (entry.isFixture && fixtureInstalled),
+                            isInstalling: installingSourceKey == entry.sourceKey,
+                            installDisabled: installingSourceKey != nil || isInstallingFixture,
+                            onInstall: { installCatalogEntry(entry) }
+                        )
                     }
                 }
             } header: {
                 Text("Catalog")
             } footer: {
-                Text("Supported base models from Catalog/models.json. Fixture installs offline; real MLX weights via HF when enabled.")
+                Text(
+                    "Install multiple base models — each lands in its own folder under models/base. "
+                        + "Fixture and offline stubs work without network; real multi-GB weights need HF Hub when enabled. "
+                        + "Create Character wizard lets you pick one model per character."
+                )
             }
 
             Section {
@@ -212,6 +262,7 @@ struct ModelsView: View {
 
         let installer = ModelInstallService()
         fixtureInstalled = installer.isFixtureInstalled()
+        refreshInstalledSourceKeys(installer: installer, catalog: catalogEntries)
 
         do {
             let scanner = LocalModelScanner()
@@ -223,6 +274,28 @@ struct ModelsView: View {
         }
 
         adapters = Self.scanAdapterCards()
+    }
+
+    private func refreshInstalledSourceKeys(
+        installer: ModelInstallService = ModelInstallService(),
+        catalog: [CatalogEntry]
+    ) {
+        var keys = Set<String>()
+        for entry in catalog where installer.isInstalled(entry) {
+            keys.insert(entry.sourceKey)
+        }
+        // Also discover bam_install.json on any scanned dirs (manual placements).
+        if let scanned = try? LocalModelScanner().scan() {
+            for model in scanned {
+                if let meta = ModelInstallService.installMetadata(
+                    at: URL(fileURLWithPath: model.localPath)
+                ), let key = meta.sourceKey {
+                    keys.insert(key)
+                }
+            }
+        }
+        installedSourceKeys = keys
+        fixtureInstalled = installer.isFixtureInstalled()
     }
 
     private static func scanAdapterCards(
@@ -275,17 +348,66 @@ struct ModelsView: View {
                 ? "Reinstalled fixture at \(result.modelRecord.localPath)"
                 : "Installed fixture at \(result.modelRecord.localPath)"
             OnboardingStore().markCompleted(.installFixture)
-            // Rescan local models only (keep catalog).
-            do {
-                localModels = try LocalModelScanner().scan()
-                scanError = nil
-            } catch {
-                scanError = error.localizedDescription
-            }
+            refreshAfterInstall()
         } catch {
             installError = error.localizedDescription
             fixtureInstalled = ModelInstallService().isFixtureInstalled()
         }
+    }
+
+    private func installCatalogEntry(_ entry: CatalogEntry) {
+        installingSourceKey = entry.sourceKey
+        installError = nil
+        installMessage = nil
+        defer { installingSourceKey = nil }
+
+        let service = ModelInstallService(hfHubDownloadEnabled: featureFlags.hfHubDownload)
+        // Prefer async path when HF is on for non-fixture entries.
+        if featureFlags.hfHubDownload, !entry.isFixture {
+            Task { @MainActor in
+                installingSourceKey = entry.sourceKey
+                defer { installingSourceKey = nil }
+                do {
+                    let result = try await service.installCatalogEntryAsync(entry, overwrite: true)
+                    installMessage = result.alreadyPresent
+                        ? "Reinstalled \(entry.name) at \(result.modelRecord.localPath)"
+                        : "Installed \(entry.name) at \(result.modelRecord.localPath)"
+                    if entry.isFixture {
+                        OnboardingStore().markCompleted(.installFixture)
+                    }
+                    refreshAfterInstall()
+                } catch {
+                    installError = (error as? BAMError)?.errorDescription ?? error.localizedDescription
+                    refreshInstalledSourceKeys(catalog: catalogEntries)
+                }
+            }
+            return
+        }
+
+        do {
+            let result = try service.installCatalogEntry(entry, overwrite: true)
+            installMessage = result.alreadyPresent
+                ? "Reinstalled \(entry.name) at \(result.modelRecord.localPath)"
+                : "Installed \(entry.name) at \(result.modelRecord.localPath)"
+            if entry.isFixture || entry.sourceKey == FixtureModel.sourceKey {
+                OnboardingStore().markCompleted(.installFixture)
+                fixtureInstalled = true
+            }
+            refreshAfterInstall()
+        } catch {
+            installError = (error as? BAMError)?.errorDescription ?? error.localizedDescription
+            refreshInstalledSourceKeys(catalog: catalogEntries)
+        }
+    }
+
+    private func refreshAfterInstall() {
+        do {
+            localModels = try LocalModelScanner().scan()
+            scanError = nil
+        } catch {
+            scanError = error.localizedDescription
+        }
+        refreshInstalledSourceKeys(catalog: catalogEntries)
     }
 }
 
@@ -293,9 +415,13 @@ struct ModelsView: View {
 
 private struct CatalogEntryRow: View {
     let entry: CatalogEntry
+    var isInstalled: Bool = false
+    var isInstalling: Bool = false
+    var installDisabled: Bool = false
+    var onInstall: (() -> Void)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(entry.name)
                     .font(.body.weight(.medium))
@@ -306,6 +432,11 @@ private struct CatalogEntryRow: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.orange.opacity(0.25), in: Capsule())
+                }
+                if isInstalled {
+                    Label("Installed", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
                 }
                 Text(entry.license)
                     .font(.caption.weight(.semibold))
@@ -325,6 +456,31 @@ private struct CatalogEntryRow: View {
             }
             .font(.caption2)
             .foregroundStyle(BAMColors.tertiaryLabel)
+
+            if let onInstall {
+                HStack {
+                    Button {
+                        onInstall()
+                    } label: {
+                        if isInstalling {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label(
+                                isInstalled ? "Reinstall" : "Install",
+                                systemImage: isInstalled ? "arrow.clockwise.circle" : "square.and.arrow.down"
+                            )
+                        }
+                    }
+                    .disabled(installDisabled)
+                    .help(
+                        entry.isFixture
+                            ? "Copy offline fixture into models/base"
+                            : "Install offline dogfood stub (or HF download when enabled)"
+                    )
+                    Spacer()
+                }
+            }
         }
         .padding(.vertical, 2)
     }

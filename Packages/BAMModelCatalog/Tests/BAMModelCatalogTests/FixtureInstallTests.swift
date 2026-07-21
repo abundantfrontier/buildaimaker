@@ -289,4 +289,66 @@ final class FixtureInstallTests: XCTestCase {
     func testFixtureStableIDIsUUIDV4() {
         XCTAssertTrue(BAMID.isUUIDV4(FixtureModel.stableModelID))
     }
+
+    // MARK: - Multi-model catalog install
+
+    func testInstallDirectoryNameSlugifiesSourceKey() {
+        XCTAssertEqual(
+            ModelInstallService.installDirectoryName(forSourceKey: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"),
+            "mlx-community--Qwen2.5-0.5B-Instruct-4bit"
+        )
+        XCTAssertEqual(
+            ModelInstallService.installDirectoryName(forSourceKey: FixtureModel.sourceKey),
+            "buildaimaker--tiny-qwen-mlx-fixture"
+        )
+    }
+
+    func testInstallMultipleCatalogEntriesCoexist() throws {
+        let catalog = try ModelCatalog.loadBundled()
+        let service = ModelInstallService(
+            modelsBaseURL: modelsBase,
+            fixtureSourceURL: ModelInstallService.bundledFixtureURL()
+        )
+
+        var installedPaths: [String] = []
+        for entry in catalog.entries {
+            let result = try service.installCatalogEntry(entry, overwrite: true)
+            XCTAssertTrue(service.isInstalled(entry), "Expected \(entry.sourceKey) installed")
+            XCTAssertEqual(result.modelRecord.sourceKey, entry.sourceKey)
+            XCTAssertEqual(result.modelRecord.name, entry.name)
+            installedPaths.append(result.modelRecord.localPath)
+        }
+
+        // Distinct destinations for each catalog row.
+        XCTAssertEqual(Set(installedPaths).count, catalog.entries.count)
+
+        let hits = try LocalModelScanner(modelsBaseURL: modelsBase).scan()
+        XCTAssertEqual(hits.count, catalog.entries.count)
+
+        // Metadata round-trip for a non-fixture dogfood stub.
+        let nonFixture = try XCTUnwrap(catalog.nonFixtureEntries.first)
+        let dest = service.installDirectory(for: nonFixture)
+        let meta = try XCTUnwrap(ModelInstallService.installMetadata(at: dest))
+        XCTAssertEqual(meta.sourceKey, nonFixture.sourceKey)
+        XCTAssertEqual(meta.name, nonFixture.name)
+        XCTAssertTrue(meta.dogfoodStub)
+
+        // Fixture still valid under its stable directory.
+        XCTAssertTrue(service.isFixtureInstalled())
+        let fixtureMeta = ModelInstallService.installMetadata(at: service.fixtureInstallDirectory)
+        XCTAssertEqual(fixtureMeta?.sourceKey, FixtureModel.sourceKey)
+    }
+
+    func testInstallCatalogEntryIdempotent() throws {
+        let catalog = try ModelCatalog.loadBundled()
+        let entry = try XCTUnwrap(catalog.nonFixtureEntries.first)
+        let service = ModelInstallService(
+            modelsBaseURL: modelsBase,
+            fixtureSourceURL: ModelInstallService.bundledFixtureURL()
+        )
+        _ = try service.installCatalogEntry(entry)
+        let second = try service.installCatalogEntry(entry, overwrite: false)
+        XCTAssertTrue(second.alreadyPresent)
+        XCTAssertTrue(service.isInstalled(entry))
+    }
 }

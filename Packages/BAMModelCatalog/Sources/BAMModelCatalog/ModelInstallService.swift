@@ -120,7 +120,236 @@ public struct ModelInstallService: Sendable {
         return ModelInstallResult(modelRecord: record, alreadyPresent: destValid)
     }
 
+    // MARK: - Multi-model catalog install
+
+    /// Stable directory name under `models/base` for a catalog `sourceKey`.
+    ///
+    /// Replaces path separators so hub ids like `mlx-community/Qwen2.5-…` become
+    /// a single safe path component (`mlx-community--Qwen2.5-…`).
+    public static func installDirectoryName(forSourceKey sourceKey: String) -> String {
+        let trimmed = sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slug = trimmed
+            .replacingOccurrences(of: "/", with: "--")
+            .replacingOccurrences(of: "\\", with: "--")
+        return LibraryPaths.sanitizedPathComponent(slug)
+    }
+
+    /// Destination directory for a catalog entry under `models/base`.
+    public func installDirectory(for entry: CatalogEntry) -> URL {
+        if entry.isFixture || entry.sourceKey == FixtureModel.sourceKey {
+            return fixtureInstallDirectory
+        }
+        let name = Self.installDirectoryName(forSourceKey: entry.sourceKey)
+        return modelsBaseURL.appendingPathComponent(name, isDirectory: true)
+    }
+
+    /// Whether a catalog entry already has a valid layout under its install path.
+    public func isInstalled(_ entry: CatalogEntry) -> Bool {
+        Self.layoutLooksValid(at: installDirectory(for: entry))
+    }
+
+    /// Installs a catalog entry for offline multi-model workflows.
+    ///
+    /// - **Fixture** entries use the bundled tiny layout (`installFixture`).
+    /// - **Other** entries install a dogfood stub (same toy layout + `bam_install.json`
+    ///   metadata) so users can install multiple catalog rows without HF download.
+    /// - Real multi-GB weights use `installCatalogEntryAsync` when `hfHubDownloadEnabled`.
+    ///
+    /// Each entry lands in its own directory under `models/base`, so multiple models
+    /// can coexist.
+    public func installCatalogEntry(
+        _ entry: CatalogEntry,
+        overwrite: Bool = true
+    ) throws -> ModelInstallResult {
+        if entry.isFixture || entry.sourceKey == FixtureModel.sourceKey {
+            return try installFixture(overwrite: overwrite)
+        }
+        return try installDogfoodStub(for: entry, overwrite: overwrite)
+    }
+
+    /// Installs a catalog entry, preferring HF Hub when the feature flag is on.
+    ///
+    /// Fixture and offline dogfood stubs stay synchronous-equivalent; non-fixture
+    /// entries with `hfHubDownloadEnabled` call `downloadFromHub`.
+    public func installCatalogEntryAsync(
+        _ entry: CatalogEntry,
+        overwrite: Bool = true
+    ) async throws -> ModelInstallResult {
+        if entry.isFixture || entry.sourceKey == FixtureModel.sourceKey {
+            return try installFixture(overwrite: overwrite)
+        }
+        if hfHubDownloadEnabled {
+            let dirName = Self.installDirectoryName(forSourceKey: entry.sourceKey)
+            let result = try await downloadFromHub(
+                sourceKey: entry.sourceKey,
+                modelID: dirName
+            )
+            // Enrich record with catalog display metadata when hub only stored sourceKey.
+            let metaObj: [String: Any] = [
+                "source": "huggingface_hub",
+                "sourceKey": entry.sourceKey,
+            ]
+            let metaJSON: String
+            if let data = try? JSONSerialization.data(withJSONObject: metaObj, options: [.sortedKeys]),
+               let s = String(data: data, encoding: .utf8)
+            {
+                metaJSON = s
+            } else {
+                metaJSON = "{}"
+            }
+            let enriched = ModelRecord(
+                id: result.modelRecord.id,
+                sourceKey: entry.sourceKey,
+                name: entry.name,
+                kind: .base,
+                archFamily: entry.archFamily,
+                paramCountB: entry.paramCountB,
+                quantBits: entry.quantBits,
+                license: entry.license,
+                localPath: result.modelRecord.localPath,
+                metaJSON: metaJSON
+            )
+            return ModelInstallResult(modelRecord: enriched, alreadyPresent: result.alreadyPresent)
+        }
+        return try installDogfoodStub(for: entry, overwrite: overwrite)
+    }
+
+    /// Offline multi-model placeholder: copies the fixture layout under the entry’s
+    /// install directory and writes `bam_install.json` with catalog identity.
+    ///
+    /// Not real MLX train weights — dogfood / multi-select UI only. Real weights
+    /// require HF Hub or manual placement.
+    public func installDogfoodStub(
+        for entry: CatalogEntry,
+        overwrite: Bool = true
+    ) throws -> ModelInstallResult {
+        let fm = FileManager.default
+        let source = fixtureSourceURL
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: source.path, isDirectory: &isDir), isDir.boolValue else {
+            throw BAMError(
+                code: .modelNotFound,
+                message: "Fixture source missing at \(source.path) (needed for dogfood stub)"
+            )
+        }
+        guard Self.layoutLooksValid(at: source) else {
+            throw BAMError(
+                code: .modelNotFound,
+                message: "Fixture source incomplete at \(source.path)"
+            )
+        }
+
+        let dest = installDirectory(for: entry)
+        try ensureDestinationUnderModelsBase(dest)
+
+        let destExists = fm.fileExists(atPath: dest.path)
+        let destValid = destExists && Self.layoutLooksValid(at: dest)
+
+        if destValid, !overwrite {
+            let record = makeCatalogRecord(entry: entry, localPath: dest.path, dogfoodStub: true)
+            return ModelInstallResult(modelRecord: record, alreadyPresent: true)
+        }
+
+        if destExists {
+            try fm.removeItem(at: dest)
+        }
+
+        try fm.createDirectory(at: modelsBaseURL, withIntermediateDirectories: true)
+        try fm.copyItem(at: source, to: dest)
+
+        // Write install metadata so scanners / UI can map dir → catalog entry.
+        let meta: [String: Any] = [
+            "sourceKey": entry.sourceKey,
+            "name": entry.name,
+            "dogfoodStub": true,
+            "weightsIncluded": false,
+            "archFamily": entry.archFamily,
+            "paramCountB": entry.paramCountB,
+            "quantBits": entry.quantBits,
+            "license": entry.license,
+            "chatTemplateId": entry.chatTemplateId,
+            "format": entry.format,
+        ]
+        let metaData = try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys])
+        try metaData.write(to: dest.appendingPathComponent("bam_install.json", isDirectory: false))
+
+        let resolvedDest = dest.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedBase = modelsBaseURL.resolvingSymlinksInPath().standardizedFileURL
+        guard LocalModelScanner.isPath(resolvedDest, under: resolvedBase) else {
+            try? fm.removeItem(at: dest)
+            throw BAMError(
+                code: .pathEscape,
+                message: "Installed dogfood stub resolved outside models/base"
+            )
+        }
+
+        guard Self.layoutLooksValid(at: dest) else {
+            throw BAMError(
+                code: .modelNotFound,
+                message: "Dogfood stub install incomplete at \(dest.path)"
+            )
+        }
+
+        let record = makeCatalogRecord(entry: entry, localPath: dest.path, dogfoodStub: true)
+        return ModelInstallResult(modelRecord: record, alreadyPresent: destValid)
+    }
+
+    /// Best-effort read of `bam_install.json` / fixture identity for a local path.
+    public static func installMetadata(at directory: URL) -> (sourceKey: String?, name: String?, dogfoodStub: Bool)? {
+        let metaURL = directory.appendingPathComponent("bam_install.json", isDirectory: false)
+        if let data = try? Data(contentsOf: metaURL),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            let key = obj["sourceKey"] as? String
+            let name = obj["name"] as? String
+            let stub = (obj["dogfoodStub"] as? Bool) ?? false
+            return (key, name, stub)
+        }
+        // Fixture install has no bam_install.json; match known directory name.
+        if directory.lastPathComponent == FixtureModel.installDirectoryName {
+            return (FixtureModel.sourceKey, FixtureModel.displayName, false)
+        }
+        return nil
+    }
+
     // MARK: - Optional HF Hub
+
+    /// Install a model discovered via the Model Source Connector (user-initiated).
+    ///
+    /// Always uses the configured `hubClient` (pass `URLSessionHFHubClient` for real
+    /// downloads). Does **not** require `hfHubDownloadEnabled` — the connector is
+    /// an explicit network action. Stages under `models/base` then promotes.
+    public func installFromRemoteListing(
+        _ listing: ModelRemoteListing,
+        overwrite: Bool = true
+    ) async throws -> ModelInstallResult {
+        try await downloadFromHub(
+            sourceKey: listing.sourceKey,
+            modelID: Self.installDirectoryName(forSourceKey: listing.sourceKey),
+            requireFlag: false,
+            displayName: listing.name
+        )
+    }
+
+    /// Install from a custom paste (repo id or URL) via `ModelSourceURLNormalizer`.
+    public func installFromCustomLocation(
+        _ raw: String,
+        overwrite: Bool = true
+    ) async throws -> ModelInstallResult {
+        let resolved = try ModelSourceURLNormalizer.resolve(raw)
+        guard resolved.isHuggingFace else {
+            throw BAMError(
+                code: .capabilityUnsupported,
+                message: "Custom non-HF URLs are not downloaded yet. Use a Hugging Face org/name or huggingface.co URL."
+            )
+        }
+        return try await downloadFromHub(
+            sourceKey: resolved.sourceKey,
+            modelID: Self.installDirectoryName(forSourceKey: resolved.sourceKey),
+            requireFlag: false,
+            displayName: resolved.sourceKey
+        )
+    }
 
     /// Downloads a catalog model from Hugging Face Hub when `hfHubDownloadEnabled`.
     ///
@@ -128,15 +357,18 @@ public struct ModelInstallService: Sendable {
     /// replaces the final destination. On failure the previous install (if any)
     /// is left untouched.
     ///
-    /// **Not used in CI.** Throws `BAM_CAPABILITY_UNSUPPORTED` when the flag is off.
+    /// **Not used in CI.** Throws `BAM_CAPABILITY_UNSUPPORTED` when the flag is off
+    /// and `requireFlag` is true (default).
     public func downloadFromHub(
         sourceKey: String,
-        modelID: String = BAMID.generate()
+        modelID: String = BAMID.generate(),
+        requireFlag: Bool = true,
+        displayName: String? = nil
     ) async throws -> ModelInstallResult {
-        guard hfHubDownloadEnabled else {
+        if requireFlag, !hfHubDownloadEnabled {
             throw BAMError(
                 code: .capabilityUnsupported,
-                message: "HF Hub download is disabled (ff.hfHubDownload is off). Use installFixture() for offline CI."
+                message: "HF Hub download is disabled (ff.hfHubDownload is off). Use the Model Browser connector or installFixture() for offline CI."
             )
         }
 
@@ -218,13 +450,27 @@ public struct ModelInstallService: Sendable {
         // Best-effort cleanup if replace left a sibling backup (implementation-dependent).
         try? fm.removeItem(at: staging)
 
+        let metaObj: [String: Any] = [
+            "source": "huggingface_hub",
+            "sourceKey": trimmed,
+            "dogfoodStub": false,
+            "weightsIncluded": true,
+        ]
+        let metaJSON: String
+        if let data = try? JSONSerialization.data(withJSONObject: metaObj, options: [.sortedKeys]),
+           let s = String(data: data, encoding: .utf8)
+        {
+            metaJSON = s
+        } else {
+            metaJSON = #"{"source":"huggingface_hub"}"#
+        }
         let record = ModelRecord(
             id: modelID,
             sourceKey: trimmed,
-            name: trimmed,
+            name: displayName ?? trimmed,
             kind: .base,
             localPath: dest.path,
-            metaJSON: #"{"source":"huggingface_hub"}"#
+            metaJSON: metaJSON
         )
         return ModelInstallResult(modelRecord: record, alreadyPresent: alreadyPresent)
     }
@@ -281,6 +527,40 @@ public struct ModelInstallService: Sendable {
             license: FixtureModel.license,
             localPath: localPath,
             metaJSON: #"{"fixture":true,"weightsIncluded":false}"#
+        )
+    }
+
+    private func makeCatalogRecord(
+        entry: CatalogEntry,
+        localPath: String,
+        dogfoodStub: Bool
+    ) -> ModelRecord {
+        let dirName = URL(fileURLWithPath: localPath).lastPathComponent
+        let meta: [String: Any] = [
+            "sourceKey": entry.sourceKey,
+            "dogfoodStub": dogfoodStub,
+            "weightsIncluded": false,
+            "fixture": entry.isFixture,
+        ]
+        let metaJSON: String
+        if let data = try? JSONSerialization.data(withJSONObject: meta, options: [.sortedKeys]),
+           let s = String(data: data, encoding: .utf8)
+        {
+            metaJSON = s
+        } else {
+            metaJSON = "{}"
+        }
+        return ModelRecord(
+            id: dirName,
+            sourceKey: entry.sourceKey,
+            name: entry.name,
+            kind: .base,
+            archFamily: entry.archFamily,
+            paramCountB: entry.paramCountB,
+            quantBits: entry.quantBits,
+            license: entry.license,
+            localPath: localPath,
+            metaJSON: metaJSON
         )
     }
 

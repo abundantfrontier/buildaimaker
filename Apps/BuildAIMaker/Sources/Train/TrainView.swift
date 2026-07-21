@@ -4,8 +4,9 @@ import BAMModelCatalog
 import BAMResourcesUI
 import BAMRunnersMLX
 
-/// Train wizard: select dataset + model → Validate & dry-run (materialize + prepare only).
+/// Train wizard: select dataset + model → dry-run prepare or full LoRA train.
 struct TrainView: View {
+    @EnvironmentObject private var characterLaunch: CharacterStudioLaunchContext
     @StateObject private var model = TrainViewModel()
 
     var body: some View {
@@ -23,10 +24,22 @@ struct TrainView: View {
         }
         .background(BAMColors.detailBackground)
         .navigationTitle(SidebarDestination.train.title)
-        .onAppear { model.bootstrap() }
+        .onAppear {
+            model.bootstrap()
+            applyPendingCharacter()
+        }
+        .onChange(of: characterLaunch.pendingTrain?.token) { _, _ in
+            applyPendingCharacter()
+        }
         .onChange(of: model.selectedModelPath) {
             model.resolveModelSizeClass()
             model.recomputeHardwareFit()
+        }
+    }
+
+    private func applyPendingCharacter() {
+        if let target = characterLaunch.consumeTrain() {
+            model.applyCharacterLaunch(target)
         }
     }
 
@@ -52,20 +65,51 @@ struct TrainView: View {
                     Label("Validate & dry-run", systemImage: "checkmark.shield")
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .disabled(!model.canDryRun)
             .help("Materialize job dir and invoke worker prepare only (no LoRA weight updates).")
+
+            Button {
+                model.startFullLoRATrain()
+            } label: {
+                if model.isRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label(
+                        model.willUseFakeTrain ? "Start LoRA (fake)" : "Start LoRA train",
+                        systemImage: "bolt.fill"
+                    )
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.canFullTrain)
+            .help(
+                model.willUseFakeTrain
+                    ? "Fixture/stub model: runs fake LoRA and publishes an adapter stub."
+                    : "Full LoRA via worker (real weights when mlx-lm is available)."
+            )
         }
         .padding(12)
     }
 
     private var content: some View {
         Form {
+            if let name = model.boundCharacterName {
+                Section {
+                    Label("Training for character: \(name)", systemImage: "theatermasks")
+                        .font(.callout.weight(.semibold))
+                    Text("Dataset and base model preselected from the character’s mind + model steps.")
+                        .font(.caption)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                }
+            }
+
             hardwareFitSection
 
             Section("Dataset") {
                 if model.datasets.isEmpty {
-                    Text("No ready text datasets. Import JSONL from the Datasets sidebar.")
+                    Text("No ready text datasets. Finish a character Story step or import JSONL under Datasets.")
                         .foregroundStyle(BAMColors.tertiaryLabel)
                 } else {
                     Picker("Dataset", selection: $model.selectedDatasetId) {
@@ -77,8 +121,8 @@ struct TrainView: View {
             }
 
             Section("Base model") {
-                if model.localModels.isEmpty {
-                    Text("No local base models under models/base. Install the offline fixture from Models.")
+                if model.localModels.isEmpty && model.selectedModelPath == nil {
+                    Text("No local base models under models/base. Install from Models or Create → Model.")
                         .foregroundStyle(BAMColors.tertiaryLabel)
                 } else {
                     Picker("Model", selection: $model.selectedModelPath) {
@@ -93,19 +137,41 @@ struct TrainView: View {
                             .textSelection(.enabled)
                             .lineLimit(2)
                     }
-                    Text(
-                        String(
-                            format: "Size class: %gB · %d-bit (catalog / default)",
-                            model.fitParamCountB,
-                            model.fitQuantBits
+                    HStack(spacing: 8) {
+                        Text(model.modelCapability.shortLabel)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                (model.modelCapability.isStub ? Color.orange : Color.green).opacity(0.2),
+                                in: Capsule()
+                            )
+                        Text(
+                            String(
+                                format: "%gB · %d-bit",
+                                model.fitParamCountB,
+                                model.fitQuantBits
+                            )
                         )
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(BAMColors.tertiaryLabel)
+                        .font(.caption2)
+                        .foregroundStyle(BAMColors.tertiaryLabel)
+                    }
+                    if model.modelCapability.isStub {
+                        Text("Stub/fixture: Start LoRA will use fake train and publish an adapter stub for Playground plumbing.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Real weights detected: Start LoRA train runs the worker without BAM_LORA_FAKE (mlx-lm required).")
+                            .font(.caption)
+                            .foregroundStyle(BAMColors.secondaryLabel)
+                    }
                 }
             }
 
-            Section("LoRA knobs (estimator)") {
+            Section("LoRA hyperparameters") {
+                Stepper(value: $model.epochs, in: 1...10, step: 1) {
+                    Text("Epochs: \(model.epochs)")
+                }
                 Stepper(value: $model.loraRank, in: 4...64, step: 4) {
                     Text("LoRA rank: \(model.loraRank)")
                 }
@@ -120,10 +186,9 @@ struct TrainView: View {
                 }
             }
 
-            Section("Dry-run") {
+            Section("Run") {
                 Text(
-                    "Writes normalized JSONL + JobPaths under jobs/<id>/, then sends worker prepare only. "
-                        + "Does not run LoRA or update weights (ff.llmTraining stays off)."
+                    "Dry-run only prepares the job. Start LoRA train materializes, runs the worker, and publishes an adapter under models/adapters for Playground."
                 )
                 .font(.callout)
                 .foregroundStyle(BAMColors.secondaryLabel)
@@ -132,6 +197,13 @@ struct TrainView: View {
                     Text(status)
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)
+                }
+
+                if let adapter = model.lastPublishedAdapterPath {
+                    Text("Last adapter: \(adapter)")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                        .textSelection(.enabled)
                 }
 
                 if let summary = model.resultSummary {
@@ -198,53 +270,36 @@ struct TrainView: View {
         } header: {
             Text("Hardware Fit")
         } footer: {
-            if !model.hardwareOK {
-                Text("Training is blocked until hardware requirements are met (minimum 16 GB unified memory, and estimated peak must fit).")
-                    .font(.caption2)
-            } else if model.hardwareWarning {
-                Text("Soft warning only — you may continue, but consider lowering knobs or closing other apps.")
-                    .font(.caption2)
-            }
+            Text("Approximate peak unified-memory estimate for LoRA. Blocks train when clearly under-provisioned.")
+                .font(.caption2)
         }
     }
 
     private var fitStatusBadge: some View {
-        Text(fitStatusTitle)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(fitBadgeBackground)
-            .foregroundStyle(fitBadgeForeground)
-            .clipShape(Capsule())
-    }
-
-    private var fitStatusTitle: String {
+        let label: String
+        let color: Color
         switch model.fitStatus {
-        case .ok: return "OK"
-        case .warning: return "Warning"
-        case .refuse: return "Refuse"
+        case .ok:
+            label = "OK"
+            color = .green
+        case .warning:
+            label = "Warn"
+            color = .orange
+        case .refuse:
+            label = "Blocked"
+            color = .red
         }
+        return Text(label)
+            .font(.caption.weight(.bold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.2), in: Capsule())
+            .foregroundStyle(color)
     }
 
     private var fitForeground: Color {
         switch model.fitStatus {
         case .ok: return BAMColors.secondaryLabel
-        case .warning: return .orange
-        case .refuse: return .red
-        }
-    }
-
-    private var fitBadgeBackground: Color {
-        switch model.fitStatus {
-        case .ok: return Color.green.opacity(0.2)
-        case .warning: return Color.orange.opacity(0.2)
-        case .refuse: return Color.red.opacity(0.2)
-        }
-    }
-
-    private var fitBadgeForeground: Color {
-        switch model.fitStatus {
-        case .ok: return .green
         case .warning: return .orange
         case .refuse: return .red
         }

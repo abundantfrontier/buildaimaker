@@ -8,7 +8,7 @@ import BAMPersistence
 import BAMRunners
 import BAMRunnersMLX
 
-/// Train wizard: pick dataset + local/fixture model → Validate & dry-run (prepare only).
+/// Train wizard: pick dataset + local model → dry-run prepare **or** full LoRA train.
 @MainActor
 final class TrainViewModel: ObservableObject {
     @Published private(set) var datasets: [DatasetRecord] = []
@@ -21,6 +21,9 @@ final class TrainViewModel: ObservableObject {
     @Published var resultSummary: String?
     @Published var isRunning = false
     @Published var loadError: String?
+    @Published private(set) var boundCharacterName: String?
+    @Published private(set) var modelCapability: LocalModelCapability = .stub(reason: "No model selected")
+    @Published private(set) var lastPublishedAdapterPath: String?
 
     // Hardware Fit panel
     @Published var hardwareOK = true
@@ -34,7 +37,7 @@ final class TrainViewModel: ObservableObject {
     @Published var fitParamCountB: Double = 1.5
     @Published var fitQuantBits: Int = 4
 
-    // Hyperparameters affecting the estimator
+    // Hyperparameters
     @Published var loraRank: Int = 16 {
         didSet { recomputeHardwareFit() }
     }
@@ -47,14 +50,21 @@ final class TrainViewModel: ObservableObject {
     @Published var gradAccum: Int = 4 {
         didSet { recomputeHardwareFit() }
     }
+    @Published var epochs: Int = 1
 
     private var datasetService: DatasetLibraryService?
     private let libraryRoot: URL
     private let scanner: LocalModelScanner
     private var catalog: ModelCatalog?
+    private let featureFlags: FeatureFlags
+    private var lastAppliedTrainToken: UUID?
 
-    init(libraryRoot: URL = LibraryPaths.libraryRoot) {
+    init(
+        libraryRoot: URL = LibraryPaths.libraryRoot,
+        featureFlags: FeatureFlags = .default
+    ) {
         self.libraryRoot = libraryRoot
+        self.featureFlags = featureFlags
         self.scanner = LocalModelScanner(
             modelsBaseURL: libraryRoot.appendingPathComponent("models/base", isDirectory: true)
         )
@@ -71,6 +81,23 @@ final class TrainViewModel: ObservableObject {
         }
     }
 
+    /// Apply character handoff (model + mind dataset).
+    func applyCharacterLaunch(_ target: CharacterStudioLaunchContext.TrainTarget) {
+        guard lastAppliedTrainToken != target.token else { return }
+        lastAppliedTrainToken = target.token
+        boundCharacterName = target.characterName
+        if let path = target.baseModelPath, !path.isEmpty {
+            selectedModelPath = path
+        }
+        if let ds = target.datasetId, !ds.isEmpty {
+            selectedDatasetId = ds
+        }
+        reload()
+        statusMessage = "Bound to character “\(target.characterName)”"
+            + (target.baseModelName.map { " · \($0)" } ?? "")
+            + (target.datasetId != nil ? " · mind dataset selected" : "")
+    }
+
     func reload() {
         loadError = nil
         do {
@@ -80,19 +107,30 @@ final class TrainViewModel: ObservableObject {
                 }
                 if selectedDatasetId == nil {
                     selectedDatasetId = datasets.first?.id
+                } else if let id = selectedDatasetId, !datasets.contains(where: { $0.id == id }) {
+                    // Keep character dataset id if list briefly empty; otherwise fall back.
+                    if !datasets.isEmpty {
+                        selectedDatasetId = datasets.first?.id
+                    }
                 }
             }
             localModels = try scanner.scan()
             if selectedModelPath == nil {
                 selectedModelPath = localModels.first?.localPath
+            } else if let path = selectedModelPath,
+                      !localModels.contains(where: { $0.localPath == path }),
+                      !FileManager.default.fileExists(atPath: path)
+            {
+                selectedModelPath = localModels.first?.localPath
             }
+            modelCapability = LocalModelCapabilityProbe.probe(path: selectedModelPath)
             resolveModelSizeClass()
             recomputeHardwareFit()
             if datasets.isEmpty {
-                statusMessage = "Import a text dataset first (Datasets sidebar)."
-            } else if localModels.isEmpty {
-                statusMessage = "Install the fixture model or add a base model (Models sidebar)."
-            } else {
+                statusMessage = "Import a text dataset first (or finish a character mind step)."
+            } else if localModels.isEmpty && selectedModelPath == nil {
+                statusMessage = "Install a base model (Models or Create → Model)."
+            } else if boundCharacterName == nil {
                 statusMessage = nil
             }
         } catch {
@@ -123,11 +161,20 @@ final class TrainViewModel: ObservableObject {
             return
         }
 
-        // Match catalog by path component / sourceKey tail / display name.
+        // Prefer bam_install.json sourceKey → catalog.
+        if let key = LocalModelCapabilityProbe.sourceKey(path: path),
+           let entry = catalog?.entry(sourceKey: key)
+        {
+            fitParamCountB = entry.paramCountB
+            fitQuantBits = entry.quantBits
+            return
+        }
+
         if let catalog {
             let scanned = localModels.first(where: { $0.localPath == path })
             if let hit = catalog.entries.first(where: { entry in
-                leaf == entry.sourceKey
+                leaf == ModelInstallService.installDirectoryName(forSourceKey: entry.sourceKey)
+                    || leaf == entry.sourceKey
                     || leaf.contains(entry.sourceKey.split(separator: "/").last.map(String.init) ?? "\u{0}")
                     || path.localizedCaseInsensitiveContains(entry.sourceKey)
                     || scanned?.displayName == entry.name
@@ -139,12 +186,12 @@ final class TrainViewModel: ObservableObject {
             }
         }
 
-        // Conservative default for unknown local folders.
         fitParamCountB = 1.5
         fitQuantBits = 4
     }
 
     func recomputeHardwareFit() {
+        modelCapability = LocalModelCapabilityProbe.probe(path: selectedModelPath)
         resolveModelSizeClass()
         let available = Double(HardwareFitGate.probeAvailableUnifiedGB())
         let input = HardwareFitGate.EstimateInput(
@@ -175,14 +222,23 @@ final class TrainViewModel: ObservableObject {
             && datasetService != nil
     }
 
+    var canFullTrain: Bool {
+        canDryRun && featureFlags.llmTraining
+    }
+
     var currentHyperparameters: LLMHyperparameters {
         LLMHyperparameters(
             loraRank: loraRank,
-            epochs: 1, // Dry-run uses a single epoch; real train PR will expose epochs.
+            epochs: epochs,
             batchSize: batchSize,
             gradAccum: gradAccum,
             maxSeqLen: maxSeqLen
         )
+    }
+
+    /// True when train will force BAM_LORA_FAKE (stubs) or worker may still fake if no mlx-lm.
+    var willUseFakeTrain: Bool {
+        modelCapability.isStub
     }
 
     func validateAndDryRun() {
@@ -211,39 +267,12 @@ final class TrainViewModel: ObservableObject {
         Task {
             defer { isRunning = false }
             do {
-                guard let dataset = try service.dataset(id: datasetId) else {
-                    throw BAMError(code: .datasetInvalid, message: "Dataset not found")
-                }
-                let access = try service.resolveSourceAccess(for: dataset)
-                defer { access.stop() }
-
-                let version = try service.latestVersion(datasetId: datasetId)
-                let versionId = version?.id ?? BAMID.generate()
-
-                let modelURL = URL(fileURLWithPath: modelPath, isDirectory: true)
-                let modelId: String
-                let sourceKey: String
-                if modelURL.lastPathComponent == FixtureModel.installDirectoryName
-                    || modelURL.path.contains(FixtureModel.installDirectoryName)
-                {
-                    modelId = FixtureModel.stableModelID
-                    sourceKey = FixtureModel.sourceKey
-                } else {
-                    modelId = BAMID.generate()
-                    sourceKey = localModels.first(where: { $0.localPath == modelPath })?.displayName
-                        ?? modelURL.lastPathComponent
-                }
-
-                let chatTemplate = ChatTemplateRegistry.qwen25Instruct
-
-                // Prefer materialize + prepare via worker; fall back to materialize-only.
-                var invokeWorker = true
-                var workerURL: URL?
-                do {
-                    workerURL = try MLXWorkerClient.resolveWorkerExecutable()
-                } catch {
-                    invokeWorker = false
-                }
+                let prepared = try prepareJobInputs(
+                    datasetId: datasetId,
+                    modelPath: modelPath,
+                    service: service
+                )
+                defer { prepared.access.stop() }
 
                 var config = ProcessSupervisorConfig.testing
                 config.helloDeadline = 10
@@ -253,6 +282,14 @@ final class TrainViewModel: ObservableObject {
                 ]
                 if let pins = RuntimePaths.resolvePinsRoot() {
                     config.extraEnvironment[RuntimePaths.EnvironmentKey.pythonPinsRoot] = pins.path
+                }
+
+                var invokeWorker = true
+                var workerURL: URL?
+                do {
+                    workerURL = try MLXWorkerClient.resolveWorkerExecutable()
+                } catch {
+                    invokeWorker = false
                 }
 
                 let dryRun = DryRunService(
@@ -265,12 +302,12 @@ final class TrainViewModel: ObservableObject {
                 )
 
                 let result = try await dryRun.validateAndDryRun(
-                    sourceJSONLURL: access.url,
-                    baseModelPath: modelURL,
-                    baseModelId: modelId,
-                    baseModelSourceKey: sourceKey,
-                    datasetVersionId: versionId,
-                    chatTemplateId: chatTemplate,
+                    sourceJSONLURL: prepared.access.url,
+                    baseModelPath: prepared.modelURL,
+                    baseModelId: prepared.modelId,
+                    baseModelSourceKey: prepared.sourceKey,
+                    datasetVersionId: prepared.versionId,
+                    chatTemplateId: ChatTemplateRegistry.qwen25Instruct,
                     hyperparameters: hp,
                     workerURL: workerURL,
                     paramCountB: paramB,
@@ -286,6 +323,7 @@ final class TrainViewModel: ObservableObject {
                     "Job dir: \(jobDir)",
                     "Worker: \(result.workerExecutablePath)",
                     result.workerId.map { "Worker id: \($0)" } ?? "Worker: materialize-only",
+                    "Model: \(prepared.sourceKey) (\(modelCapability.shortLabel))",
                     String(
                         format: "Hardware fit: peak ~%.2f GB / required ~%.2f GB (status=%@)",
                         fitPeakGB ?? 0,
@@ -300,5 +338,168 @@ final class TrainViewModel: ObservableObject {
                 resultSummary = error.localizedDescription
             }
         }
+    }
+
+    /// Full LoRA pipeline: materialize → prepare → run → publish adapter under models/adapters.
+    ///
+    /// Fixture/dogfood stubs force fake train (`BAM_LORA_FAKE`). Real weight dirs run the worker
+    /// without that flag so mlx-lm LoRA can execute when the runtime is installed.
+    func startFullLoRATrain() {
+        guard !isRunning else { return }
+        guard featureFlags.llmTraining else {
+            resultSummary = "Full LoRA train is disabled (ff.llmTraining is off)."
+            return
+        }
+        recomputeHardwareFit()
+        guard hardwareOK else {
+            resultSummary = hardwareMessage
+            return
+        }
+        guard let datasetId = selectedDatasetId,
+              let modelPath = selectedModelPath,
+              let service = datasetService
+        else {
+            resultSummary = "Select a dataset and a local base model."
+            return
+        }
+
+        isRunning = true
+        resultSummary = nil
+        lastPublishedAdapterPath = nil
+        let fake = willUseFakeTrain
+        statusMessage = fake
+            ? "Starting LoRA train (fake — stub/fixture model)…"
+            : "Starting full LoRA train (real weights path)…"
+
+        let hp = currentHyperparameters
+
+        Task {
+            defer { isRunning = false }
+            do {
+                let prepared = try prepareJobInputs(
+                    datasetId: datasetId,
+                    modelPath: modelPath,
+                    service: service
+                )
+                defer { prepared.access.stop() }
+
+                var config = ProcessSupervisorConfig.testing
+                config.helloDeadline = 30
+                config.heartbeatTimeout = 120
+                config.extraEnvironment = [
+                    RuntimePaths.EnvironmentKey.skipInterpreterCheck: "1",
+                ]
+                if let pins = RuntimePaths.resolvePinsRoot() {
+                    config.extraEnvironment[RuntimePaths.EnvironmentKey.pythonPinsRoot] = pins.path
+                }
+
+                let workerURL = try? MLXWorkerClient.resolveWorkerExecutable()
+
+                let service = LoRATrainService(
+                    libraryRoot: libraryRoot,
+                    supervisorConfig: config,
+                    forceFakeTrain: fake
+                )
+
+                let result = try await service.train(
+                    sourceJSONLURL: prepared.access.url,
+                    baseModelPath: prepared.modelURL,
+                    baseModelId: prepared.modelId,
+                    baseModelSourceKey: prepared.sourceKey,
+                    datasetVersionId: prepared.versionId,
+                    chatTemplateId: ChatTemplateRegistry.qwen25Instruct,
+                    hyperparameters: hp,
+                    workerURL: workerURL
+                )
+
+                lastPublishedAdapterPath = result.publish?.adapterDirectory.path
+
+                var lines = [
+                    "LoRA train finished · status=\(result.status) · didTrain=\(result.didTrain) · fake=\(result.fakeTrain)",
+                    "Job: \(result.materialize.spec.id)",
+                    "Examples: \(result.materialize.exampleCount)",
+                    "Base: \(prepared.sourceKey)",
+                    "Model capability: \(modelCapability.shortLabel)",
+                    "Worker: \(result.workerExecutablePath)",
+                ]
+                if let loss = result.finalTrainLoss {
+                    lines.append(String(format: "Train loss: %.4f", loss))
+                }
+                if let hold = result.holdOutLoss {
+                    lines.append(String(format: "Hold-out loss: %.4f", hold))
+                }
+                if let pub = result.publish {
+                    lines.append("Adapter published: \(pub.adapterDirectory.path)")
+                }
+                if let msg = result.message, !msg.isEmpty {
+                    lines.append("Message: \(msg)")
+                }
+                if result.fakeTrain {
+                    lines.append(
+                        "Note: fake train used (stub model and/or mlx-lm unavailable). "
+                            + "Install real MLX weights + runtime for weight updates."
+                    )
+                }
+                resultSummary = lines.joined(separator: "\n")
+                statusMessage = result.status == "succeeded"
+                    ? (result.fakeTrain ? "Fake LoRA train succeeded (adapter stub published)." : "LoRA train succeeded.")
+                    : "LoRA train ended with status \(result.status)"
+
+                if result.status == "succeeded" {
+                    OnboardingStore().markCompleted(.dryRunOrTrain)
+                }
+            } catch {
+                statusMessage = "LoRA train failed"
+                resultSummary = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: - Shared materialize inputs
+
+    private struct PreparedJobInputs {
+        var access: ResolvedSourceAccess
+        var modelURL: URL
+        var modelId: String
+        var sourceKey: String
+        var versionId: String
+    }
+
+    private func prepareJobInputs(
+        datasetId: String,
+        modelPath: String,
+        service: DatasetLibraryService
+    ) throws -> PreparedJobInputs {
+        guard let dataset = try service.dataset(id: datasetId) else {
+            throw BAMError(code: .datasetInvalid, message: "Dataset not found")
+        }
+        let access = try service.resolveSourceAccess(for: dataset)
+        let version = try service.latestVersion(datasetId: datasetId)
+        let versionId = version?.id ?? BAMID.generate()
+
+        let modelURL = URL(fileURLWithPath: modelPath, isDirectory: true)
+        let modelId: String
+        let sourceKey: String
+        if modelURL.lastPathComponent == FixtureModel.installDirectoryName
+            || modelURL.path.contains(FixtureModel.installDirectoryName)
+        {
+            modelId = FixtureModel.stableModelID
+            sourceKey = FixtureModel.sourceKey
+        } else if let key = LocalModelCapabilityProbe.sourceKey(path: modelPath) {
+            modelId = modelURL.lastPathComponent
+            sourceKey = key
+        } else {
+            modelId = modelURL.lastPathComponent
+            sourceKey = localModels.first(where: { $0.localPath == modelPath })?.displayName
+                ?? modelURL.lastPathComponent
+        }
+
+        return PreparedJobInputs(
+            access: access,
+            modelURL: modelURL,
+            modelId: modelId,
+            sourceKey: sourceKey,
+            versionId: versionId
+        )
     }
 }

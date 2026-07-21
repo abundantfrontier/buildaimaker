@@ -1,17 +1,20 @@
 import AppKit
 import BAMAudioFX
 import BAMCharacterStudio
+import BAMModelCatalog
 import BAMResourcesUI
 import SwiftUI
 
-/// Linear Create Character flow: Name → Story → Voice → Done (no dead ends).
+/// Linear Create Character flow: Name → Model → Story → Voice → Done.
 struct CreateCharacterWizardView: View {
-    @StateObject private var model = CreateCharacterViewModel()
+    @StateObject private var model: CreateCharacterViewModel
     @Binding var isPresented: Bool
     /// When set, resume this draft instead of starting blank.
     var resumeDraft: CharacterDraft? = nil
-    /// Optional: jump to Playground after finish.
-    var onGoPlayground: (() -> Void)?
+    /// Jump to Playground after finish, carrying character model + system prompt.
+    var onGoPlayground: ((CharacterDraft) -> Void)?
+    /// Jump to Train after finish, carrying character model + mind dataset.
+    var onGoTrain: ((CharacterDraft) -> Void)?
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable {
@@ -21,50 +24,57 @@ struct CreateCharacterWizardView: View {
         case story
     }
 
+    init(
+        isPresented: Binding<Bool>,
+        resumeDraft: CharacterDraft? = nil,
+        onGoPlayground: ((CharacterDraft) -> Void)? = nil,
+        onGoTrain: ((CharacterDraft) -> Void)? = nil
+    ) {
+        self._isPresented = isPresented
+        self.resumeDraft = resumeDraft
+        self.onGoPlayground = onGoPlayground
+        self.onGoTrain = onGoTrain
+        // Seed ViewModel with the draft so the first frame already has name/species/etc.
+        self._model = StateObject(wrappedValue: CreateCharacterViewModel(initialDraft: resumeDraft))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             progressBar
             Divider()
             whatToDoNowBanner
-            modelStatusBanner
-            Divider()
+            if model.step != .model {
+                modelStatusBanner
+                Divider()
+            }
+
+            // Scrollable middle — must shrink so the footer never leaves the sheet.
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             if let err = model.lastError {
                 Text(err)
                     .foregroundStyle(.red)
-                    .font(.callout)
+                    .font(.caption)
+                    .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 8)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .background(Color.red.opacity(0.08))
             }
-            if let status = model.statusMessage {
-                Text(status)
-                    .foregroundStyle(BAMColors.secondaryLabel)
-                    .font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 24)
-                    .padding(.top, 4)
-            }
+
             Divider()
             footer
         }
+        .frame(minWidth: 720, minHeight: 560)
         .background(BAMColors.detailBackground)
-        .navigationTitle(resumeDraft == nil ? "Create a character" : "Continue character")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button(model.step == .done ? "Close" : "Save & close") {
-                    if model.step != .done {
-                        model.saveAndExit()
-                    }
-                    isPresented = false
-                }
-            }
-        }
+        .navigationTitle(wizardNavigationTitle)
+        // Actions live only in the bottom footer on every step (no duplicate toolbar buttons).
         .onAppear {
             activateKeyWindow()
+            // Re-apply resume in case the sheet identity reused a ViewModel.
             model.load(draft: resumeDraft)
-            model.refreshModelStatus()
-            focusedField = model.step == .mind ? .story : .name
+            focusedField = model.step == .mind ? .story : (model.step == .meet ? .name : nil)
         }
         .onDisappear {
             if model.step != .done {
@@ -73,10 +83,11 @@ struct CreateCharacterWizardView: View {
         }
         .onChange(of: model.step) { _, newStep in
             activateKeyWindow()
-            model.refreshModelStatus()
+            model.refreshModels()
             model.persistDraft()
             switch newStep {
             case .meet: focusedField = .name
+            case .model: focusedField = nil
             case .mind: focusedField = .story
             case .voice, .done: focusedField = nil
             }
@@ -88,6 +99,14 @@ struct CreateCharacterWizardView: View {
         }
     }
 
+    private var wizardNavigationTitle: String {
+        if resumeDraft == nil { return "Create a character" }
+        if model.isEditingComplete || (resumeDraft?.isComplete == true && model.step != .done) {
+            return "Edit character"
+        }
+        return "Continue character"
+    }
+
     // MARK: - Progress
 
     private var progressBar: some View {
@@ -96,24 +115,25 @@ struct CreateCharacterWizardView: View {
                 let n = index + 1
                 let active = model.step == s
                 let done = model.step.rawValue > s.rawValue || (model.step == .done && s != .done)
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     ZStack {
                         Circle()
                             .fill(done || active ? Color.accentColor : Color.secondary.opacity(0.25))
-                            .frame(width: 28, height: 28)
+                            .frame(width: 26, height: 26)
                         if done && !active {
                             Image(systemName: "checkmark")
-                                .font(.caption.weight(.bold))
+                                .font(.caption2.weight(.bold))
                                 .foregroundStyle(.white)
                         } else {
                             Text("\(n)")
-                                .font(.caption.weight(.bold))
+                                .font(.caption2.weight(.bold))
                                 .foregroundStyle(active || done ? .white : .secondary)
                         }
                     }
                     Text(s.shortTitle)
-                        .font(.caption.weight(active ? .semibold : .regular))
+                        .font(.caption2.weight(active ? .semibold : .regular))
                         .foregroundStyle(active ? .primary : BAMColors.secondaryLabel)
+                        .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity)
                 if s != .voice {
@@ -123,8 +143,8 @@ struct CreateCharacterWizardView: View {
                 }
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private var whatToDoNowBanner: some View {
@@ -146,17 +166,26 @@ struct CreateCharacterWizardView: View {
         .background(Color.accentColor.opacity(0.08))
     }
 
-    /// Always-visible: wizard does not enable/load a chat or train model by default.
+    /// Compact strip: selected model / install status (hidden on dedicated Model step).
     private var modelStatusBanner: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: model.modelStatus.symbol)
-                    .font(.title3)
-                    .foregroundStyle(model.modelStatus.isReadyForRealTrain ? Color.green : Color.orange)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("AI model for chat / fine-tune")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(BAMColors.secondaryLabel)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: model.draft.hasSelectedBaseModel ? "checkmark.circle.fill" : model.modelStatus.symbol)
+                .font(.title3)
+                .foregroundStyle(model.draft.hasSelectedBaseModel ? Color.green : Color.orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Base model for this character")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                if model.draft.hasSelectedBaseModel {
+                    Text(model.draft.baseModelName ?? "Selected model")
+                        .font(.callout.weight(.semibold))
+                    if let key = model.draft.baseModelSourceKey {
+                        Text(key)
+                            .font(.caption)
+                            .foregroundStyle(BAMColors.secondaryLabel)
+                            .textSelection(.enabled)
+                    }
+                } else {
                     Text(model.modelStatus.title)
                         .font(.callout.weight(.semibold))
                     Text(model.modelStatus.detail)
@@ -164,68 +193,41 @@ struct CreateCharacterWizardView: View {
                         .foregroundStyle(BAMColors.secondaryLabel)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 0)
             }
-
-            HStack(spacing: 12) {
-                if case .noneInstalled = model.modelStatus {
-                    Button {
-                        model.installFixtureForLater()
-                    } label: {
-                        if model.isInstallingFixture {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("Install test fixture (optional)")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(model.isInstallingFixture)
-                    .help("Copies a tiny offline model for Advanced → Train tests. Does not start chatting.")
+            Spacer(minLength: 0)
+            if model.step != .meet, !model.draft.hasSelectedBaseModel {
+                Button("Choose model") {
+                    model.step = .model
+                    model.persistDraft()
                 }
-                Text("This wizard: story data + voice FX only")
-                    .font(.caption2.weight(.medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(Capsule())
+                .buttonStyle(.bordered)
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.08))
+        .background((model.draft.hasSelectedBaseModel ? Color.green : Color.orange).opacity(0.08))
     }
 
     @ViewBuilder
     private var content: some View {
-        Group {
-            switch model.step {
-            case .meet:
-                ScrollView {
+        ScrollView {
+            Group {
+                switch model.step {
+                case .meet:
                     meetStep
-                        .padding(24)
-                        .frame(maxWidth: 720, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-            case .mind:
-                mindStep
-                    .padding(24)
-                    .frame(maxWidth: 720, alignment: .leading)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            case .voice:
-                ScrollView {
+                case .model:
+                    modelStep
+                case .mind:
+                    mindStep
+                case .voice:
                     voiceStep
-                        .padding(24)
-                        .frame(maxWidth: 720, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-            case .done:
-                ScrollView {
+                case .done:
                     doneStep
-                        .padding(24)
-                        .frame(maxWidth: 720, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
+            .padding(24)
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -282,12 +284,162 @@ struct CreateCharacterWizardView: View {
         }
     }
 
-    private var mindStep: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Step 2 — How they talk")
+    private var modelStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Step 2 — Base model")
                 .font(.title2.weight(.semibold))
 
-            Text("Paste a short story, lore, or sample lines. We turn that into practice dialogues (a dataset). No language model is selected or loaded here.")
+            Text("Pick how this character will chat. Apple’s on-device model is preferred when ready (no download). Open MLX models are for optional fine-tune later.")
+                .foregroundStyle(BAMColors.secondaryLabel)
+
+            Text("Available models")
+                .font(.headline)
+
+            if model.installedModels.isEmpty {
+                tip("Apple on-device model is not ready and nothing is installed under models/base. Enable Apple Intelligence, or Install a catalog row below.")
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(model.installedModels) { m in
+                        Button {
+                            model.selectModel(m)
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: model.isSelected(m) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(model.isSelected(m) ? Color.accentColor : BAMColors.secondaryLabel)
+                                    .font(.title3)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 8) {
+                                        if m.isAppleFoundation {
+                                            Image(systemName: "apple.logo")
+                                                .foregroundStyle(.primary)
+                                        }
+                                        Text(m.name)
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                        if let badge = m.badge {
+                                            Text(badge)
+                                                .font(.caption2.weight(.semibold))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(
+                                                    (m.isAppleFoundation ? Color.green : Color.orange).opacity(0.25),
+                                                    in: Capsule()
+                                                )
+                                        }
+                                    }
+                                    Text(m.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(BAMColors.secondaryLabel)
+                                        .textSelection(.enabled)
+                                        .multilineTextAlignment(.leading)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(model.isSelected(m)
+                                          ? Color.accentColor.opacity(0.12)
+                                          : Color.secondary.opacity(0.06))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(model.isSelected(m) ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            // Catalog installs (open multi-model)
+            Text("Open models — install more (optional)")
+                .font(.headline)
+                .padding(.top, 8)
+
+            Text("For fine-tuning with open weights. Fixture/stubs install offline; real multi-GB weights via Models → Browse sources.")
+                .font(.caption)
+                .foregroundStyle(BAMColors.secondaryLabel)
+
+            VStack(spacing: 8) {
+                ForEach(model.catalogEntries) { entry in
+                    catalogInstallRow(entry)
+                }
+            }
+
+            if model.canGoNextFromModel {
+                Label(
+                    "Selected: \(model.draft.baseModelName ?? "model")",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .foregroundStyle(.green)
+                .font(.callout)
+            } else {
+                tip("Select Apple on-device (when listed) or install/select an open model, then Continue.")
+            }
+        }
+    }
+
+    private func catalogInstallRow(_ entry: CatalogEntry) -> some View {
+        let installed = model.isCatalogEntryInstalled(entry)
+        let installing = model.installingSourceKey == entry.sourceKey
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(entry.name)
+                        .font(.body.weight(.medium))
+                    if entry.isFixture {
+                        Text("Fixture")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.25), in: Capsule())
+                    }
+                    if installed {
+                        Label("Installed", systemImage: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    }
+                }
+                Text(entry.sourceKey)
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .textSelection(.enabled)
+                Text(String(format: "%gB · %d-bit · min %d GB RAM", entry.paramCountB, entry.quantBits, entry.minRamGB))
+                    .font(.caption2)
+                    .foregroundStyle(BAMColors.tertiaryLabel)
+            }
+            Spacer(minLength: 8)
+            Button {
+                model.installCatalogEntry(entry)
+            } label: {
+                if installing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 72)
+                } else {
+                    Text(installed ? "Reinstall" : "Install")
+                        .frame(minWidth: 72)
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.installingSourceKey != nil)
+            .help(entry.isFixture
+                  ? "Copy offline fixture into models/base"
+                  : "Install offline dogfood stub (or real weights when HF Hub is on)")
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var mindStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Step 3 — How they talk")
+                .font(.title2.weight(.semibold))
+
+            Text("Paste a short story, lore, or sample lines. We turn that into practice dialogues (a dataset) for the base model you selected.")
                 .foregroundStyle(BAMColors.secondaryLabel)
 
             MacTextEditor(text: $model.draft.storyPaste, minHeight: 120)
@@ -306,24 +458,22 @@ struct CreateCharacterWizardView: View {
                 .foregroundStyle(.green)
                 .font(.callout)
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.draft.examples.prefix(4)) { ex in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("You: \(ex.user)")
-                                    .font(.caption.weight(.semibold))
-                                Text(ex.assistant)
-                                    .font(.caption)
-                                    .foregroundStyle(BAMColors.secondaryLabel)
-                            }
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.secondary.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                // Outer wizard ScrollView handles overflow; avoid nested scroll traps.
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.draft.examples.prefix(4)) { ex in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("You: \(ex.user)")
+                                .font(.caption.weight(.semibold))
+                            Text(ex.assistant)
+                                .font(.caption)
+                                .foregroundStyle(BAMColors.secondaryLabel)
                         }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
-                .frame(maxHeight: 160)
 
                 HStack {
                     Button("Rebuild from paste") {
@@ -344,11 +494,19 @@ struct CreateCharacterWizardView: View {
 
     private var voiceStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Step 3 — How they sound")
+            Text("Step 4 — How they sound")
                 .font(.title2.weight(.semibold))
 
-            Text("Pick a preset (or tweak sliders), then hear a short creature sound. This is audio FX only — not a neural speech model and not tied to a chat model.")
+            Text("Pick a preset (or tweak sliders), then Hear their voice. We use system speech for a short line, then creature FX (not a trained voice model yet).")
                 .foregroundStyle(BAMColors.secondaryLabel)
+
+            GroupBox("Line that will be spoken") {
+                Text(model.voicePreviewSpeechText())
+                    .font(.callout)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
                 ForEach(CreatureVoicePreset.allCases) { preset in
@@ -408,6 +566,7 @@ struct CreateCharacterWizardView: View {
                 .foregroundStyle(BAMColors.secondaryLabel)
 
             VStack(alignment: .leading, spacing: 8) {
+                checkRow(model.draft.hasSelectedBaseModel, "Model: \(model.draft.baseModelName ?? "selected")")
                 checkRow(model.draft.datasetId != nil, "Mind: practice lines saved (Datasets)")
                 checkRow(model.draft.previewAudioPath != nil, "Voice: creature FX preview saved")
                 checkRow(true, "Character card saved under Characters")
@@ -417,15 +576,21 @@ struct CreateCharacterWizardView: View {
             .background(Color.secondary.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            GroupBox("About models") {
+            GroupBox("Base model") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(model.modelStatus.title)
+                    Text(model.draft.baseModelName ?? "None selected")
                         .font(.callout.weight(.semibold))
+                    if let key = model.draft.baseModelSourceKey {
+                        Text(key)
+                            .font(.caption)
+                            .foregroundStyle(BAMColors.secondaryLabel)
+                            .textSelection(.enabled)
+                    }
                     Text(
                         """
-                        The wizard never enables a chat model by default. \
-                        You built training text (mind) and a FX voice preview. \
-                        To actually fine-tune: Advanced → Models (install weights) → Train (pick dataset + model).
+                        This character is bound to the model above for later Train / Playground. \
+                        Offline stubs are for multi-model UX only — real fine-tuning needs full MLX weights \
+                        (Advanced → Models when HF Hub is enabled, or manual placement under models/base).
                         """
                     )
                     .font(.caption)
@@ -436,73 +601,91 @@ struct CreateCharacterWizardView: View {
 
             Text("What you can do next")
                 .font(.headline)
+                .padding(.top, 4)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Button {
-                    isPresented = false
-                    onGoPlayground?()
-                } label: {
-                    Label("Open Playground (stub chat unless you set a model later)", systemImage: "bubble.left.and.bubble.right")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-
-                Button {
-                    isPresented = false
-                } label: {
-                    Label("Back to Characters list", systemImage: "theatermasks")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-
-                Button {
-                    model.resetForAnother()
-                    focusedField = .name
-                } label: {
-                    Label("Create another character", systemImage: "plus")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-            }
+            Text("Use the footer below: Playground, Train, Create another, or Close.")
+                .font(.caption)
+                .foregroundStyle(BAMColors.secondaryLabel)
         }
     }
 
-    // MARK: - Footer (single primary action)
+    // MARK: - Footer (pinned: always visible under scroll content)
 
     private var footer: some View {
-        HStack(alignment: .center, spacing: 16) {
-            if model.step != .meet && model.step != .done {
-                Button("Back") {
-                    model.goBack()
-                }
-            }
-            if model.step != .done {
-                Button("Save & close") {
-                    model.saveAndExit()
-                    isPresented = false
-                }
-                .help("Keeps progress. Open Characters and Continue anytime.")
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(model.primaryActionHint)
+        VStack(alignment: .leading, spacing: 8) {
+            if let status = model.statusMessage {
+                Text(status)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
-                    .multilineTextAlignment(.trailing)
-                if model.step != .done {
+                    .lineLimit(2)
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                // Secondary / navigation — always in the bottom bar
+                if model.step == .done {
+                    Button("Edit character") {
+                        model.beginEditing(from: .meet)
+                        focusedField = .name
+                    }
+                    .help("Re-open Name → Model → Story → Voice to change this character")
+
+                    Button("Create another") {
+                        model.resetForAnother()
+                        focusedField = .name
+                    }
+                    .help("Start a new character wizard")
+
+                    Button("Train") {
+                        let draft = model.draft
+                        isPresented = false
+                        onGoTrain?(draft)
+                    }
+                    .help("Open Train with this character’s mind + model")
+                } else {
+                    if model.step != .meet {
+                        Button("Back") {
+                            model.goBack()
+                        }
+                    }
+                    Button("Save & close") {
+                        model.saveAndExit()
+                        isPresented = false
+                    }
+                    .help("Keeps progress. Open Characters and Continue anytime.")
+                }
+
+                Spacer(minLength: 8)
+
+                // Primary action — always the rightmost control
+                if model.step == .done {
+                    Button("Close") {
+                        isPresented = false
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        let draft = model.draft
+                        isPresented = false
+                        onGoPlayground?(draft)
+                    } label: {
+                        Text("Open Playground")
+                            .frame(minWidth: 140)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
+                    .help("Chat with this character (Apple / selected model)")
+                } else {
                     Button {
                         model.performPrimaryAction()
                     } label: {
                         if model.isWorking {
                             ProgressView()
                                 .controlSize(.small)
-                                .padding(.horizontal, 12)
+                                .frame(minWidth: 140)
                         } else {
                             Text(model.primaryActionTitle)
-                                .frame(minWidth: 160)
+                                .frame(minWidth: 140)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -512,7 +695,10 @@ struct CreateCharacterWizardView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(BAMColors.detailBackground)
     }
 
     // MARK: - Helpers

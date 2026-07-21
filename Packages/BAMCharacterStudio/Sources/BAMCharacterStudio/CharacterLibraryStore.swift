@@ -56,16 +56,31 @@ public struct CharacterLibraryStore: @unchecked Sendable {
         return try decoder.decode(CharacterDraft.self, from: data)
     }
 
+    /// Removes the character draft JSON and any on-disk assets directory
+    /// (`characters/<id>/` voice previews, profiles, etc.). Missing files are ignored.
     public func delete(id: String) throws {
-        let url = root.appendingPathComponent("\(id).json")
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
+        guard let safeId = LibraryPaths.validatedPathComponent(id) else {
+            throw BAMError(code: .pathEscape, message: "Invalid character id for delete")
+        }
+
+        let jsonURL = root.appendingPathComponent("\(safeId).json")
+        if fileManager.fileExists(atPath: jsonURL.path) {
+            try fileManager.removeItem(at: jsonURL)
+        }
+
+        let dir = root.appendingPathComponent(safeId, isDirectory: true)
+        var isDir: ObjCBool = false
+        if fileManager.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue {
+            try fileManager.removeItem(at: dir)
         }
     }
 
     public func characterDirectory(id: String) throws -> URL {
         try ensureRoot()
-        let dir = root.appendingPathComponent(id, isDirectory: true)
+        guard let safeId = LibraryPaths.validatedPathComponent(id) else {
+            throw BAMError(code: .pathEscape, message: "Invalid character id")
+        }
+        let dir = root.appendingPathComponent(safeId, isDirectory: true)
         try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

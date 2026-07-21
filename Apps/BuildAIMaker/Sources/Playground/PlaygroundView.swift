@@ -5,6 +5,7 @@ import BAMResourcesUI
 
 /// Playground shell: Text chat + Talk mode (STT→LLM→TTS) panes.
 struct PlaygroundView: View {
+    @EnvironmentObject private var characterLaunch: CharacterStudioLaunchContext
     @StateObject private var textModel = PlaygroundViewModel()
     @StateObject private var talkModel = TalkViewModel()
     @State private var pane: TalkViewModel.PaneMode = .text
@@ -34,9 +35,22 @@ struct PlaygroundView: View {
         .navigationTitle(SidebarDestination.playground.title)
         .onAppear {
             textModel.bootstrap()
+            applyPendingCharacter()
             if featureFlags.talkMode {
                 talkModel.bootstrap()
             }
+        }
+        .onChange(of: characterLaunch.pendingPlayground?.token) { _, _ in
+            applyPendingCharacter()
+        }
+        .onChange(of: textModel.selectedBasePath) { _, _ in
+            textModel.onSelectedBaseModelChanged()
+        }
+    }
+
+    private func applyPendingCharacter() {
+        if let target = characterLaunch.consumePlayground() {
+            textModel.applyCharacterLaunch(target)
         }
     }
 
@@ -155,9 +169,60 @@ struct PlaygroundView: View {
 
     private var textConfigBar: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Backend preference: Apple on-device first when available.
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Chat backend")
+                        .font(.caption)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                    Picker("Backend", selection: $textModel.backendPreference) {
+                        ForEach(LLMBackendPreference.allCases) { pref in
+                            Text(pref.title).tag(pref)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 320)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(textModel.appleModelStatus.isUsable ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text("Apple FM: \(textModel.appleModelStatus.rawValue)")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    Text(textModel.appleModelStatus.detail)
+                        .font(.caption2)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                        .lineLimit(2)
+                }
+                Spacer()
+            }
+
+            if let name = textModel.boundCharacterName {
+                HStack(spacing: 8) {
+                    Label("Character: \(name)", systemImage: "theatermasks")
+                        .font(.caption.weight(.semibold))
+                    Text(textModel.backendId)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            (textModel.usingRealGenerate ? Color.green : Color.orange).opacity(0.2),
+                            in: Capsule()
+                        )
+                }
+            } else if textModel.statusMessage != nil {
+                Text(textModel.statusMessage ?? "")
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+            }
+
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Base model")
+                    Text(textModel.backendId == AppleFoundationLLMBackend.id
+                          ? "Open base (optional for Apple)"
+                          : "Base model (MLX)")
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)
                     if textModel.baseModels.isEmpty {

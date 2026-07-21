@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
+import BAMCharacterStudio
 import BAMCore
 import BAMInference
 import BAMModelCatalog
@@ -17,6 +18,10 @@ struct ScannedAdapter: Identifiable, Equatable, Sendable {
 }
 
 /// Text playground: base vs adapter chat with A/B toggle and JSONL export.
+///
+/// Uses real `mlx-lm generate` when the managed/system Python has mlx_lm **and**
+/// the selected base model is not a fixture/stub. Otherwise falls back to echo
+/// (character system prompt still applies).
 @MainActor
 final class PlaygroundViewModel: ObservableObject {
     @Published private(set) var baseModels: [ScannedLocalModel] = []
@@ -37,24 +42,39 @@ final class PlaygroundViewModel: ObservableObject {
     @Published private(set) var playgroundEnabled: Bool = FeatureFlags.default.playground
     @Published var exportMessage: String?
     @Published private(set) var lastTracePath: String?
+    /// Character handoff banner.
+    @Published private(set) var boundCharacterName: String?
+    @Published private(set) var modelCapability: LocalModelCapability = .stub(reason: "No model selected")
+    @Published private(set) var mlxAvailable: Bool = false
+    @Published private(set) var usingRealGenerate: Bool = false
+    /// Backend preference: Apple on-device first when available.
+    @Published var backendPreference: LLMBackendPreference = .automatic {
+        didSet { resolveBackend() }
+    }
+    @Published private(set) var appleModelStatus: AppleFoundationModelStatus = .unknown
+    @Published private(set) var mlxPythonAvailable: Bool = false
 
     private let libraryRoot: URL
     private let featureFlags: FeatureFlags
-    private let backend: any LLMBackend
+    private var backend: any LLMBackend
+    private let forceEcho: Bool
     private let baseScanner: LocalModelScanner
     private let metricsStore: MVPMetricsStore
     private var traceRecorder: PlaygroundTraceRecorder
+    private var lastAppliedPlaygroundToken: UUID?
 
     init(
         libraryRoot: URL = LibraryPaths.libraryRoot,
         featureFlags: FeatureFlags = .default,
         backend: (any LLMBackend)? = nil,
+        forceEcho: Bool = false,
         metricsStore: MVPMetricsStore = .shared
     ) {
         self.libraryRoot = libraryRoot
         self.featureFlags = featureFlags
         self.playgroundEnabled = featureFlags.playground
-        self.backend = backend ?? LLMBackendFactory.makeDefault(forceEcho: false)
+        self.forceEcho = forceEcho
+        self.backend = backend ?? LLMBackendFactory.makeDefault(preference: .automatic, forceEcho: forceEcho)
         self.backendId = self.backend.backendId
         self.baseScanner = LocalModelScanner(
             modelsBaseURL: libraryRoot.appendingPathComponent("models/base", isDirectory: true)
@@ -64,10 +84,53 @@ final class PlaygroundViewModel: ObservableObject {
             libraryRoot,
             enabled: PlaygroundTraceRecorder.isEnabled()
         )
+        self.appleModelStatus = AppleFoundationModelSupport.probeStatus()
+        self.mlxPythonAvailable = MLXGenerateBackend.isAvailable()
+        self.usingRealGenerate = !self.backend.backendId.contains("echo")
     }
 
     func bootstrap() {
         reload()
+    }
+
+    /// Apply character wizard / list handoff (model path + system prompt).
+    func applyCharacterLaunch(_ target: CharacterStudioLaunchContext.PlaygroundTarget) {
+        guard lastAppliedPlaygroundToken != target.token else { return }
+        lastAppliedPlaygroundToken = target.token
+        boundCharacterName = target.characterName
+
+        let usesApple = target.baseModelSourceKey == CharacterDraft.appleFoundationSourceKey
+            || target.baseModelPath == CharacterDraft.appleFoundationPath
+        if usesApple {
+            backendPreference = .appleFoundation
+            // Don't force a non-existent disk path into the MLX picker.
+            if let path = target.baseModelPath,
+               path != CharacterDraft.appleFoundationPath,
+               !path.isEmpty
+            {
+                selectedBasePath = path
+            }
+        } else if let path = target.baseModelPath, !path.isEmpty,
+                  path != CharacterDraft.appleFoundationPath
+        {
+            selectedBasePath = path
+            if backendPreference == .automatic || backendPreference == .appleFoundation {
+                backendPreference = .mlx
+            }
+        }
+
+        if let prompt = target.systemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !prompt.isEmpty
+        {
+            systemPrompt = prompt
+        } else if !target.characterName.isEmpty {
+            systemPrompt = "You are \(target.characterName). Stay in character."
+        }
+        messages = []
+        reload()
+        statusMessage = "Bound to character “\(target.characterName)”"
+            + (target.baseModelName.map { " · \($0)" } ?? "")
+            + (usesApple ? " · Apple on-device" : "")
     }
 
     func reload() {
@@ -82,30 +145,102 @@ final class PlaygroundViewModel: ObservableObject {
             } else if let path = selectedBasePath,
                       !baseModels.contains(where: { $0.localPath == path })
             {
-                selectedBasePath = baseModels.first?.localPath
+                // Keep explicit character path even if scan missed it briefly.
+                if !FileManager.default.fileExists(atPath: path) {
+                    selectedBasePath = baseModels.first?.localPath
+                }
             }
             if let path = selectedAdapterPath,
                !adapters.contains(where: { $0.localPath == path })
             {
                 selectedAdapterPath = nil
             }
-            if baseModels.isEmpty {
-                statusMessage = "Install a base model (Models → Install fixture model) to chat."
-            } else if backend.backendId == EchoLLMBackend.id {
-                statusMessage = "Using echo backend (CI-safe). Install mlx-lm for real generate."
-            } else {
-                statusMessage = "Backend: \(backend.backendId)"
-            }
+
+            onSelectedBaseModelChanged()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
+    /// Re-probe model capability + backend when the user changes the base model picker.
+    func onSelectedBaseModelChanged() {
+        modelCapability = LocalModelCapabilityProbe.probe(path: selectedBasePath)
+        resolveBackend()
+        updateStatusBanner()
+    }
+
+    /// Re-pick backend: Apple FM (default) → MLX → echo.
+    private func resolveBackend() {
+        appleModelStatus = AppleFoundationModelSupport.probeStatus()
+        mlxPythonAvailable = MLXGenerateBackend.isAvailable()
+        mlxAvailable = mlxPythonAvailable
+
+        if forceEcho {
+            backend = EchoLLMBackend()
+            backendId = backend.backendId
+            usingRealGenerate = false
+            return
+        }
+
+        switch backendPreference {
+        case .echo:
+            backend = EchoLLMBackend()
+        case .appleFoundation:
+            backend = AppleFoundationLLMBackend.makeIfAvailable() ?? EchoLLMBackend()
+        case .mlx:
+            // Only use MLX when weights look real; otherwise echo with message.
+            if !modelCapability.isStub, let mlx = MLXGenerateBackend.makeIfAvailable() {
+                backend = mlx
+            } else {
+                backend = EchoLLMBackend()
+            }
+        case .automatic:
+            if let apple = AppleFoundationLLMBackend.makeIfAvailable() {
+                backend = apple
+            } else if !modelCapability.isStub, let mlx = MLXGenerateBackend.makeIfAvailable() {
+                backend = mlx
+            } else {
+                backend = EchoLLMBackend()
+            }
+        }
+        backendId = backend.backendId
+        usingRealGenerate = backendId != EchoLLMBackend.id
+    }
+
+    private func updateStatusBanner() {
+        var parts: [String] = []
+        if let name = boundCharacterName {
+            parts.append("Character: \(name)")
+        }
+        switch backendId {
+        case AppleFoundationLLMBackend.id:
+            parts.append("Apple on-device model (default)")
+        case MLXGenerateBackend.id:
+            parts.append("MLX generate")
+        case EchoLLMBackend.id:
+            if appleModelStatus == .available {
+                parts.append("Echo — pick Automatic/Apple in backend menu")
+            } else if modelCapability.isStub {
+                parts.append("Echo — stub weights; Apple FM unavailable or MLX needs real weights")
+            } else {
+                parts.append("Echo stub")
+            }
+        default:
+            parts.append("Backend: \(backendId)")
+        }
+        parts.append("Apple FM: \(appleModelStatus.rawValue)")
+        statusMessage = parts.joined(separator: " · ")
+    }
+
+    /// Apple FM needs no local base path; MLX does.
     var canSend: Bool {
-        playgroundEnabled
-            && !isGenerating
-            && selectedBasePath != nil
-            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasDraft = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard playgroundEnabled, !isGenerating, hasDraft else { return false }
+        if backendId == AppleFoundationLLMBackend.id { return true }
+        if backendPreference == .automatic, appleModelStatus == .available { return true }
+        if backendId == MLXGenerateBackend.id { return selectedBasePath != nil }
+        // Echo / other: allow without base so Apple-default path still works mid-resolve.
+        return true
     }
 
     var canExport: Bool {
@@ -113,14 +248,19 @@ final class PlaygroundViewModel: ObservableObject {
     }
 
     func send() {
-        guard canSend, let base = selectedBasePath else { return }
+        guard canSend else { return }
+        modelCapability = LocalModelCapabilityProbe.probe(path: selectedBasePath)
+        resolveBackend()
+        let base = selectedBasePath
+
         let text = draft
         draft = ""
         isGenerating = true
         errorMessage = nil
         exportMessage = nil
-        // Re-read enablement each send (Settings toggle / env).
         traceRecorder.enabled = PlaygroundTraceRecorder.isEnabled()
+
+        let activeBackend = backend
 
         Task {
             defer { isGenerating = false }
@@ -134,17 +274,16 @@ final class PlaygroundViewModel: ObservableObject {
                     adapterEnabled: adapterEnabled
                 )
                 let completeStarted = Date()
-                let result = try await session.send(userText: text, backend: backend)
+                let result = try await session.send(userText: text, backend: activeBackend)
                 let completeEnded = Date()
                 messages = session.messages
                 lastLatencyMs = result.latencyMs
                 lastWasStub = result.isStub
                 backendId = result.backendId
                 statusMessage = result.isStub
-                    ? "Echo reply (\(Int(result.latencyMs)) ms) — adapter \(adapterEnabled && selectedAdapterPath != nil ? "on" : "off")"
-                    : "Reply via \(result.backendId) (\(Int(result.latencyMs)) ms)"
+                    ? "Echo reply (\(Int(result.latencyMs)) ms) — not a real model completion"
+                    : "Real generate via \(result.backendId) (\(Int(result.latencyMs)) ms)"
 
-                // M3: playground produced a coherent reply (subjective quality not scored).
                 metricsStore.increment(.playgroundReply)
                 OnboardingStore().markCompleted(.playgroundChat)
 
@@ -168,6 +307,11 @@ final class PlaygroundViewModel: ObservableObject {
             } catch {
                 draft = text
                 errorMessage = error.localizedDescription
+                if backendId == AppleFoundationLLMBackend.id {
+                    statusMessage = "Apple model failed — check Apple Intelligence status."
+                } else if usingRealGenerate {
+                    statusMessage = "Generate failed — check MLX weights / runtime."
+                }
             }
         }
     }
@@ -204,7 +348,6 @@ final class PlaygroundViewModel: ObservableObject {
             exportMessage = "Export cancelled."
             return
         }
-        // Prefer .jsonl extension even if panel used .json UTI.
         var outURL = url
         if outURL.pathExtension.lowercased() != "jsonl" {
             outURL = outURL.deletingPathExtension().appendingPathExtension("jsonl")

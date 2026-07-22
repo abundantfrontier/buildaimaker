@@ -4,6 +4,7 @@ import BAMCore
 import BAMJobs
 import BAMModels
 import BAMPersistence
+import BAMRunnersMLX
 import BAMRunnersVoice
 
 /// Observable façade over `JobQueueController` for the Jobs sidebar pane.
@@ -22,10 +23,11 @@ final class JobsViewModel: ObservableObject {
         self.controller = controller
     }
 
-    /// Opens the default library database + composite runner (LLM fake + voice stub).
+    /// Opens the default library database + composite runner (LLM fake + voice stub + foundation adapter).
     static func makeDefault() throws -> JobsViewModel {
         let db = try LibraryDatabase.openDefault()
         let store = JobStore(database: db)
+        let foundationInstalled = FoundationToolkitProbe.probe().installed
         let runner = CompositeTrainingRunner(
             llm: FakeTrainingRunner(
                 config: FakeRunnerConfig(
@@ -40,6 +42,15 @@ final class JobsViewModel: ObservableObject {
                     stepCount: 8,
                     stepInterval: .milliseconds(120),
                     prepareDelay: .milliseconds(50)
+                )
+            ),
+            foundation: FoundationModelsAdapterRunner(
+                config: FoundationModelsAdapterRunnerConfig(
+                    stepCount: 8,
+                    stepInterval: .milliseconds(120),
+                    prepareDelay: .milliseconds(50),
+                    // Use real toolkit when installed; otherwise stub (dogfood-safe).
+                    forceFakeTrain: !foundationInstalled
                 )
             )
         )

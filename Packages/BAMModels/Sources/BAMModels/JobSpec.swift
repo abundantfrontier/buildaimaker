@@ -279,6 +279,29 @@ public struct JobSpec: Codable, Sendable, Equatable {
         try c.encodeIfPresent(resources, forKey: .resources)
     }
 
+    /// Convenience constructor for an Apple Foundation adapter job.
+    public static func foundationAdapter(
+        id: String,
+        datasetVersionId: String,
+        method: String = "foundation_adapter",
+        hyperparameters: LLMHyperparameters = LLMHyperparameters(learningRate: 1e-3, epochs: 3, batchSize: 4),
+        resources: JobResources = JobResources(maxMemoryGB: 32, threads: 8),
+        outputs: JobOutputs = JobOutputs()
+    ) -> JobSpec {
+        JobSpec(
+            id: id,
+            modality: .foundationAdapter,
+            baseModelId: "apple-foundation",
+            baseModelSourceKey: "apple/system-language-model",
+            datasetVersionId: datasetVersionId,
+            method: method,
+            chatTemplateId: nil,
+            hyperparameters: hyperparameters,
+            outputs: outputs,
+            resources: resources
+        )
+    }
+
     /// Convenience constructor for an LLM LoRA job.
     public static func llm(
         id: String,

@@ -9,6 +9,7 @@ struct ModelsView: View {
     @State private var catalogEntries: [CatalogEntry] = []
     @State private var localModels: [ScannedLocalModel] = []
     @State private var adapters: [AdapterCardRow] = []
+    @State private var foundationAdapterNames: [String] = []
     /// Full-page error only when the living catalog fails to load.
     @State private var catalogError: String?
     /// Section-local banner when local scan fails; catalog still shown.
@@ -214,7 +215,7 @@ struct ModelsView: View {
 
             Section {
                 if adapters.isEmpty {
-                    Text("No LoRA adapters yet. Complete a train (or fake train) under Train.")
+                    Text("No LoRA adapters yet. Complete a train (or fake train) under Train → Open MLX LoRA.")
                         .foregroundStyle(BAMColors.secondaryLabel)
                 } else {
                     ForEach(adapters) { row in
@@ -233,7 +234,7 @@ struct ModelsView: View {
                     }
                 }
             } header: {
-                Text("Adapters (model cards)")
+                Text("Open LoRA adapters (model cards)")
             } footer: {
                 Text(
                     "K25 MVP eval: hold-out validation loss + sample generations on each adapter card. "
@@ -241,6 +242,24 @@ struct ModelsView: View {
                 )
                 .font(.caption2)
                 .textSelection(.enabled)
+            }
+
+            Section {
+                if foundationAdapterNames.isEmpty {
+                    Text("No Foundation adapters yet. Train → Apple Foundation Adapter → Import or Publish stub.")
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                } else {
+                    ForEach(foundationAdapterNames, id: \.self) { name in
+                        Text(name)
+                            .font(.callout)
+                    }
+                }
+            } header: {
+                Text("Apple Foundation adapters")
+            } footer: {
+                Text(LibraryPaths.modelsFoundationAdapters.path)
+                    .font(.caption2)
+                    .textSelection(.enabled)
             }
         }
         .listStyle(.inset)
@@ -274,6 +293,9 @@ struct ModelsView: View {
         }
 
         adapters = Self.scanAdapterCards()
+        foundationAdapterNames = (try? FoundationAdapterService().listInstalled().map {
+            $0.isFake ? "\($0.displayName) (stub)" : $0.displayName
+        }) ?? []
     }
 
     private func refreshInstalledSourceKeys(

@@ -41,6 +41,11 @@ public enum LibraryPaths: Sendable {
         libraryRoot.appendingPathComponent("models/adapters", isDirectory: true)
     }
 
+    /// Apple Foundation Models adapter packages (`.fmadapter`), separate from open PEFT LoRA.
+    public static var modelsFoundationAdapters: URL {
+        libraryRoot.appendingPathComponent("models/foundation-adapters", isDirectory: true)
+    }
+
     public static var voices: URL {
         libraryRoot.appendingPathComponent("voices", isDirectory: true)
     }
@@ -75,6 +80,10 @@ public enum LibraryPaths: Sendable {
 
     public static func adapterDirectory(id: String) -> URL {
         modelsAdapters.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
+    }
+
+    public static func foundationAdapterDirectory(id: String) -> URL {
+        modelsFoundationAdapters.appendingPathComponent(sanitizedPathComponent(id), isDirectory: true)
     }
 
     public static func voiceDirectory(id: String) -> URL {

@@ -26,6 +26,8 @@ final class CharacterStudioLaunchContext: ObservableObject {
         var baseModelName: String?
         var baseModelSourceKey: String?
         var datasetId: String?
+        /// Prefer Apple Foundation adapter train when character is bound to system FM.
+        var prefersAppleFoundationAdapter: Bool = false
         var token: UUID = UUID()
     }
 
@@ -60,7 +62,8 @@ final class CharacterStudioLaunchContext: ObservableObject {
             baseModelPath: draft.baseModelPath,
             baseModelName: draft.baseModelName,
             baseModelSourceKey: draft.baseModelSourceKey,
-            datasetId: draft.datasetId
+            datasetId: draft.datasetId,
+            prefersAppleFoundationAdapter: draft.usesAppleFoundationModel
         )
     }
 

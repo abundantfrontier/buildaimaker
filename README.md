@@ -35,7 +35,7 @@ buildaimaker/
 | [Docs/design-buildaimaker.md](Docs/design-buildaimaker.md) | Full system design & PR plan |
 | [Docs/distribution-and-app-store.md](Docs/distribution-and-app-store.md) | Developer ID vs Mac App Store |
 | [Docs/native-vs-python-backends.md](Docs/native-vs-python-backends.md) | Swift shell vs managed Python train |
-| [Docs/adr/0003-apple-foundation-models.md](Docs/adr/0003-apple-foundation-models.md) | Apple on-device LLM + LoRA adapters |
+| [Docs/adr/0003-apple-foundation-models.md](Docs/adr/0003-apple-foundation-models.md) | Apple on-device LLM + Foundation adapters (dual train path) |
 | [Docs/pushing-to-github.md](Docs/pushing-to-github.md) | Push this branch with GitHub Desktop |
 
 ## Requirements

@@ -85,6 +85,8 @@ Ship paid app via direct download / license key (K23).
 - [ ] Mic usage description for Talk
 - [ ] No multi-GB post-install Python as primary path (or isolate to non-Store runtime)
 - [ ] Background Assets / entitlement plan if using Apple Foundation Models adapters in production
+  - Local dogfood: Train export/import + `SystemLanguageModel.Adapter` load (no entitlement required for local test)
+  - Production ship: request [Foundation Models Framework Adapter Entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.foundation-model-adapter); host `.fmadapter` via Background Assets (do not bloat the main app bundle)
 - [ ] Counsel review of SPDX pins (K24) before public paid launch
 
 ---

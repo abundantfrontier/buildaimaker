@@ -49,40 +49,58 @@ public enum CreatureFXRenderer {
         let targetRate: Double = 24_000
         let trimmed = speechText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if !trimmed.isEmpty,
-           let speech = try? await SystemSpeechSynthesizer.synthesize(text: trimmed)
-        {
-            var samples = resample(speech.samples, from: speech.sampleRate, to: targetRate)
-            // Size slider → pitch via resampling (higher size → higher pitch → shorter).
-            samples = resample(samples, from: 1.0, to: 1.0 / params.pitchRate)
-            applyGrit(&samples, grit: params.grit)
-            applyAtmosphere(&samples, amount: params.atmosphere, sampleRate: targetRate)
-
-            var mix = samples
-            for texture in params.textures {
-                let bed = synthesizeTexture(
-                    texture,
-                    sampleCount: mix.count,
-                    sampleRate: targetRate
+        if !trimmed.isEmpty {
+            do {
+                let speech = try await SystemSpeechSynthesizer.synthesize(
+                    text: trimmed,
+                    rate: params.speechRateFactor
                 )
-                mix = mixLayers(speech: mix, texture: bed, textureGain: 0.18)
-            }
-            normalize(&mix, peak: 0.89)
+                guard !speech.samples.isEmpty, speech.sampleRate > 0 else {
+                    throw CreatureFXError.ttsProducedNoAudio
+                }
 
-            return try writeResult(
-                samples: mix,
-                sampleRate: targetRate,
-                params: params,
-                characterName: characterName,
-                outputDirectory: outputDirectory,
-                engineId: spokenEngineId,
-                usedSystemTTS: true,
-                spokenText: trimmed,
-                fileManager: fileManager
-            )
+                var samples = resample(speech.samples, from: speech.sampleRate, to: targetRate)
+
+                // Strong character chain — presets must sound obviously different.
+                applyCharacterVoice(&samples, params: params, sampleRate: targetRate)
+
+                var mix = samples
+                // Leave headroom so texture beds stay audible after normalize.
+                if !params.textures.isEmpty {
+                    for i in mix.indices { mix[i] *= 0.72 }
+                }
+                for texture in params.textures {
+                    let bed = synthesizeTexture(
+                        texture,
+                        sampleCount: mix.count,
+                        sampleRate: targetRate
+                    )
+                    mix = mixLayers(
+                        speech: mix,
+                        texture: bed,
+                        textureGain: texture.mixGain,
+                        duckAmount: 0.35
+                    )
+                }
+                normalize(&mix, peak: 0.92)
+
+                return try writeResult(
+                    samples: mix,
+                    sampleRate: targetRate,
+                    params: params,
+                    characterName: characterName,
+                    outputDirectory: outputDirectory,
+                    engineId: spokenEngineId,
+                    usedSystemTTS: true,
+                    spokenText: trimmed,
+                    fileManager: fileManager
+                )
+            } catch {
+                // Fall through to buzz; caller can still play something.
+            }
         }
 
-        // Fallback buzz path.
+        // Fallback buzz path (no words).
         return try renderPreview(
             params: params,
             characterName: characterName,
@@ -113,14 +131,21 @@ public enum CreatureFXRenderer {
         applyAtmosphere(&speech, amount: params.atmosphere, sampleRate: sampleRate)
 
         var mix = speech
+        if !params.textures.isEmpty {
+            for i in mix.indices { mix[i] *= 0.72 }
+        }
         for texture in params.textures {
             let bed = synthesizeTexture(
                 texture,
                 sampleCount: n,
                 sampleRate: sampleRate
             )
-            // Duck texture under speech envelope.
-            mix = mixLayers(speech: mix, texture: bed, textureGain: 0.22)
+            mix = mixLayers(
+                speech: mix,
+                texture: bed,
+                textureGain: texture.mixGain,
+                duckAmount: 0.35
+            )
         }
 
         normalize(&mix, peak: 0.89)
@@ -149,24 +174,43 @@ public enum CreatureFXRenderer {
         spokenText: String?,
         fileManager: FileManager
     ) throws -> RenderResult {
-        let audioURL = outputDirectory.appendingPathComponent("preview.wav")
+        // Unique name each render so AVAudioPlayer never caches an old buzz file.
+        let stamp = Int(Date().timeIntervalSince1970 * 1000)
+        let audioURL = outputDirectory.appendingPathComponent("preview-\(stamp).wav")
         try writeWAV(samples: samples, sampleRate: sampleRate, url: audioURL)
+        // Also refresh stable name for anything that still points at preview.wav.
+        let stable = outputDirectory.appendingPathComponent("preview.wav")
+        if fileManager.fileExists(atPath: stable.path) {
+            try? fileManager.removeItem(at: stable)
+        }
+        try? fileManager.copyItem(at: audioURL, to: stable)
 
         var profile: [String: Any] = [
             "engineId": engineId,
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "characterName": characterName,
             "preset": params.preset.rawValue,
             "size": params.size,
             "grit": params.grit,
             "atmosphere": params.atmosphere,
+            "formant": params.formant,
+            "metallic": params.metallic,
+            "tremble": params.tremble,
+            "breath": params.breath,
+            "speed": params.speed,
+            "robotize": params.robotize,
+            "pitchRate": params.pitchRate,
             "textures": params.textures.map(\.rawValue).sorted(),
             "usedSystemTTS": usedSystemTTS,
             "teachTips": [
                 params.preset.teachTip,
-                "Size: \(params.sizeLabel)",
+                "Pitch: \(params.sizeLabel)",
+                "Tone: \(params.formantLabel)",
+                "Metal: \(params.metallicLabel)",
+                "Robot: \(params.robotizeLabel)",
                 "Grit: \(params.gritLabel)",
-                "Atmosphere: \(params.atmosphereLabel)",
+                "Speed: \(params.speedLabel)",
+                "Space: \(params.atmosphereLabel)",
                 usedSystemTTS
                     ? "Speech from system TTS, then creature FX."
                     : "Buzz carrier (TTS unavailable).",
@@ -224,6 +268,189 @@ public enum CreatureFXRenderer {
         }
     }
 
+    /// Full spoken-character processing (pitch, formant, metal, robot, tremble, breath, space).
+    public static func applyCharacterVoice(
+        _ samples: inout [Float],
+        params: CreatureFXParams,
+        sampleRate: Double
+    ) {
+        guard !samples.isEmpty else { return }
+
+        // 1) Pitch (deep ↔ high) — wide range so deep beast ≠ high fairy.
+        let pitch = max(0.45, min(2.15, params.pitchRate))
+        samples = resample(samples, from: 1.0, to: 1.0 / pitch)
+
+        // 2) Formant / tone color (dark ↔ bright).
+        applyFormant(&samples, formant: params.formant)
+
+        // 3) Metallic ring modulation.
+        applyMetallic(&samples, amount: params.metallic, sampleRate: sampleRate)
+
+        // 4) Robotize: downsample + crush.
+        applyRobotize(&samples, amount: params.robotize, sampleRate: sampleRate)
+
+        // 5) Grit / distortion.
+        applyGrit(&samples, grit: params.grit)
+
+        // 6) Tremble (AM vibrato).
+        applyTremble(&samples, amount: params.tremble, sampleRate: sampleRate)
+
+        // 7) Breath / air noise.
+        applyBreath(&samples, amount: params.breath)
+
+        // 8) Atmosphere / space last.
+        applyAtmosphere(&samples, amount: params.atmosphere, sampleRate: sampleRate)
+
+        // Preset-specific accent (extra identity on top of sliders).
+        applyPresetAccent(&samples, preset: params.preset, sampleRate: sampleRate)
+    }
+
+    /// Spectral tilt: low formant = lowpass emphasis, high = highpass + presence.
+    public static func applyFormant(_ samples: inout [Float], formant: Double) {
+        let f = min(1, max(0, formant))
+        if f < 0.48 {
+            // Dark: one-pole lowpass (stronger when f→0).
+            let strength = (0.48 - f) / 0.48
+            let alpha = Float(0.08 + (1 - strength) * 0.35)
+            var y: Float = 0
+            for i in 0..<samples.count {
+                y += alpha * (samples[i] - y)
+                samples[i] = y * (1.15 - Float(strength) * 0.2)
+            }
+        } else if f > 0.52 {
+            // Bright: high-shelf via difference of original and heavy lowpass.
+            let strength = (f - 0.52) / 0.48
+            let alpha: Float = 0.12
+            var y: Float = 0
+            for i in 0..<samples.count {
+                let x = samples[i]
+                y += alpha * (x - y)
+                let high = x - y
+                samples[i] = x * (1 - Float(strength) * 0.25) + high * (1 + Float(strength) * 1.6)
+            }
+        }
+    }
+
+    public static func applyMetallic(_ samples: inout [Float], amount: Double, sampleRate: Double) {
+        guard amount > 0.03 else { return }
+        let wet = Float(min(1, amount * 1.15))
+        let carrierHz = 160.0 + amount * 280.0
+        for i in 0..<samples.count {
+            let t = Double(i) / sampleRate
+            let carrier = sin(2 * .pi * carrierHz * t)
+            // Second partial for harsher chrome.
+            let carrier2 = sin(2 * .pi * carrierHz * 1.5 * t)
+            let ring = samples[i] * Float(carrier * 0.7 + carrier2 * 0.3)
+            samples[i] = samples[i] * (1 - wet * 0.75) + ring * wet
+        }
+    }
+
+    public static func applyRobotize(_ samples: inout [Float], amount: Double, sampleRate: Double) {
+        guard amount > 0.04, samples.count > 4 else { return }
+        // Hold-sample downsample — stronger hold = more "machine".
+        let hold = max(2, Int(2 + amount * 28))
+        var i = 0
+        while i < samples.count {
+            let v = samples[i]
+            let end = min(samples.count, i + hold)
+            for j in i..<end { samples[j] = v }
+            i = end
+        }
+        // Extra quantize
+        let steps = max(4, Int(40 - amount * 36))
+        for j in 0..<samples.count {
+            samples[j] = Float(Int(samples[j] * Float(steps))) / Float(steps)
+        }
+        // Mild AM buzz for vocoder-ish identity.
+        let buzzHz = 55.0 + amount * 40.0
+        let buzzWet = Float(amount * 0.35)
+        for j in 0..<samples.count {
+            let t = Double(j) / sampleRate
+            let buzz = Float(0.55 + 0.45 * sin(2 * .pi * buzzHz * t))
+            samples[j] *= (1 - buzzWet) + buzz * buzzWet
+        }
+    }
+
+    public static func applyTremble(_ samples: inout [Float], amount: Double, sampleRate: Double) {
+        guard amount > 0.03 else { return }
+        let depth = Float(amount * 0.45)
+        let rate = 4.5 + amount * 6.0
+        for i in 0..<samples.count {
+            let t = Double(i) / sampleRate
+            let mod = 1 + depth * Float(sin(2 * .pi * rate * t))
+            samples[i] *= mod
+        }
+    }
+
+    public static func applyBreath(_ samples: inout [Float], amount: Double) {
+        guard amount > 0.03 else { return }
+        let wet = Float(amount * 0.35)
+        for i in 0..<samples.count {
+            let noise = Float.random(in: -1...1)
+            let env = min(1, abs(samples[i]) * 2.5 + 0.15)
+            samples[i] = samples[i] * (1 - wet * 0.3) + noise * wet * env
+        }
+    }
+
+    /// Extra signature so robot vs alien vs ghost is obvious even with default sliders.
+    public static func applyPresetAccent(
+        _ samples: inout [Float],
+        preset: CreatureVoicePreset,
+        sampleRate: Double
+    ) {
+        switch preset {
+        case .robot, .android:
+            applyRobotize(&samples, amount: preset == .robot ? 0.35 : 0.18, sampleRate: sampleRate)
+            applyMetallic(&samples, amount: preset == .robot ? 0.25 : 0.15, sampleRate: sampleRate)
+        case .alien:
+            // Slight dual-delay phasing
+            applyDetuneChorus(&samples, amount: 0.35, sampleRate: sampleRate)
+        case .lagoon:
+            applyFormant(&samples, formant: 0.15)
+            applyAtmosphere(&samples, amount: 0.35, sampleRate: sampleRate)
+        case .ghost:
+            applyDetuneChorus(&samples, amount: 0.5, sampleRate: sampleRate)
+            applyAtmosphere(&samples, amount: 0.4, sampleRate: sampleRate)
+            applyTremble(&samples, amount: 0.2, sampleRate: sampleRate)
+        case .beast, .dragon:
+            // Already deep via size; add harmonic grit
+            applyGrit(&samples, grit: 0.25)
+        case .birdish, .fairy, .insect:
+            applyFormant(&samples, formant: 0.9)
+        case .goblin:
+            applyFormant(&samples, formant: 0.75)
+            applyGrit(&samples, grit: 0.2)
+        case .coyote:
+            applyGrit(&samples, grit: 0.18)
+            applyBreath(&samples, amount: 0.2)
+        case .wizard:
+            applyAtmosphere(&samples, amount: 0.3, sampleRate: sampleRate)
+            applyFormant(&samples, formant: 0.35)
+        case .pirate:
+            applyGrit(&samples, grit: 0.28)
+            applyFormant(&samples, formant: 0.4)
+        }
+    }
+
+    /// Cheap chorus/detune for alien/ghost identity.
+    public static func applyDetuneChorus(
+        _ samples: inout [Float],
+        amount: Double,
+        sampleRate: Double
+    ) {
+        guard amount > 0.05, samples.count > 16 else { return }
+        let delay = max(1, Int(0.012 * sampleRate))
+        let wet = Float(amount * 0.45)
+        var out = samples
+        for i in delay..<samples.count {
+            let mod = 1 + 0.003 * sin(2 * .pi * 1.7 * Double(i) / sampleRate)
+            let src = Double(i) - Double(delay) * mod
+            let i0 = max(0, min(samples.count - 1, Int(src)))
+            out[i] = samples[i] * (1 - wet) + samples[i0] * wet
+        }
+        samples = out
+    }
+
     // MARK: - Synthesis
 
     /// Formant-ish buzz that suggests speech without a TTS engine.
@@ -274,37 +501,144 @@ public enum CreatureFXRenderer {
         var out = [Float](repeating: 0, count: sampleCount)
         switch id {
         case .buzzSaw:
-            let f = 85.0
+            // Loud mid saw + octave — obviously mechanical.
             for i in 0..<sampleCount {
                 let t = Double(i) / sampleRate
-                let phase = t * f
+                let phase = t * 95
                 let saw = 2 * (phase - floor(phase + 0.5))
-                out[i] = Float(saw * 0.35)
+                let harsh = sin(2 * .pi * 190 * t)
+                out[i] = Float(saw * 0.55 + harsh * 0.2)
             }
         case .songbird:
             for i in 0..<sampleCount {
                 let t = Double(i) / sampleRate
-                let chirp = sin(2 * .pi * (1800 + 400 * sin(2 * .pi * 6 * t)) * t)
-                let gate = sin(2 * .pi * 3 * t) > 0.3 ? 1.0 : 0.0
-                out[i] = Float(chirp * 0.2 * gate)
+                let f = 2200 + 700 * sin(2 * .pi * 8 * t)
+                let chirp = sin(2 * .pi * f * t)
+                let gate = sin(2 * .pi * 4.5 * t) > 0.15 ? 1.0 : 0.0
+                out[i] = Float(chirp * 0.55 * gate)
             }
         case .drip:
-            let period = Int(sampleRate * 0.45)
+            let period = Int(sampleRate * 0.32)
             for i in 0..<sampleCount {
                 let m = i % max(period, 1)
-                if m < Int(sampleRate * 0.02) {
+                if m < Int(sampleRate * 0.04) {
                     let local = Double(m) / sampleRate
-                    out[i] = Float(sin(2 * .pi * 1200 * local) * exp(-local * 80) * 0.5)
+                    out[i] = Float(sin(2 * .pi * 1400 * local) * exp(-local * 60) * 0.95)
                 }
             }
         case .servo:
             for i in 0..<sampleCount {
                 let t = Double(i) / sampleRate
-                let tick = sin(2 * .pi * 40 * t) > 0.92 ? 1.0 : 0.0
-                let whine = sin(2 * .pi * 900 * t) * 0.08
-                out[i] = Float(tick * 0.25 + whine)
+                let tick = sin(2 * .pi * 18 * t) > 0.88 ? 1.0 : 0.0
+                let whine = sin(2 * .pi * 1100 * t) * 0.22
+                out[i] = Float(tick * 0.55 + whine)
+            }
+        case .thunder:
+            // Deep, obvious booms every ~0.7s + continuous sub rumble.
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let cycle = fmod(t, 0.75)
+                let boom = sin(2 * .pi * 32 * t) * exp(-cycle * 4.5)
+                let body = sin(2 * .pi * 48 * t) * 0.7 * boom
+                let rumble = sin(2 * .pi * 28 * t) * 0.25
+                let crack = cycle < 0.02 ? Double.random(in: -1...1) * 0.35 : 0
+                out[i] = Float((boom + body + rumble + crack) * 0.85)
+            }
+        case .radioStatic:
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let noise = Double.random(in: -1...1)
+                let gate = sin(2 * .pi * 9 * t) > 0.2 ? 1.0 : 0.25
+                let heterodyne = sin(2 * .pi * 2800 * t) * sin(2 * .pi * 17 * t)
+                out[i] = Float((noise * 0.45 + heterodyne * 0.2) * gate)
+            }
+        case .crystal:
+            // Bright, sparkly, high — opposite of thunder.
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let spark = fmod(t * 6.5, 1.0)
+                let env = exp(-spark * 8)
+                let a = sin(2 * .pi * 1760 * t)
+                let b = sin(2 * .pi * 2630 * t + 0.5)
+                let c = sin(2 * .pi * 3520 * t * 1.003)
+                let d = sin(2 * .pi * 5280 * t) * 0.4
+                out[i] = Float((a + 0.7 * b + 0.45 * c + d) * 0.22 * (0.35 + 0.65 * env))
+            }
+        case .windHowl:
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let noise = Double.random(in: -1...1)
+                let whoosh = noise * (0.55 + 0.45 * sin(2 * .pi * 0.4 * t))
+                let howl = sin(2 * .pi * (220 + 80 * sin(2 * .pi * 0.25 * t)) * t) * 0.35
+                out[i] = Float(whoosh * 0.4 + howl * 0.55)
+            }
+        case .glitch:
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let slice = Int(t * 50) % 6
+                let noise = Double.random(in: -1...1)
+                let blip = (slice == 0 || slice == 3) ? sin(2 * .pi * 1800 * t) : 0
+                let stutter = slice == 1 ? noise : noise * 0.08
+                let drop = slice == 4 ? sin(2 * .pi * 90 * t) * 0.8 : 0
+                out[i] = Float(blip * 0.45 + stutter * 0.4 + drop * 0.35)
+            }
+        case .bubble:
+            let period = Int(sampleRate * 0.16)
+            for i in 0..<sampleCount {
+                let m = i % max(period, 1)
+                if m < Int(sampleRate * 0.05) {
+                    let local = Double(m) / sampleRate
+                    let f = 500 + Double((i / max(period, 1)) % 9) * 110
+                    out[i] = Float(sin(2 * .pi * f * local) * exp(-local * 40) * 0.85)
+                }
+            }
+        case .chime:
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let hit = fmod(t, 0.42)
+                let env = exp(-hit * 5)
+                let partials =
+                    sin(2 * .pi * 1046 * t)
+                    + 0.6 * sin(2 * .pi * 1568 * t)
+                    + 0.35 * sin(2 * .pi * 2093 * t)
+                    + 0.2 * sin(2 * .pi * 3136 * t)
+                out[i] = Float(partials * 0.28 * env)
+            }
+        case .roar:
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let noise = Double.random(in: -1...1)
+                let growl = sin(2 * .pi * 65 * t) * 0.7 + sin(2 * .pi * 98 * t) * 0.45
+                let breath = noise * 0.28 * (0.5 + 0.5 * sin(2 * .pi * 2.2 * t))
+                out[i] = Float((growl + breath) * 0.65)
+            }
+        case .insectClick:
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let clickTrain = sin(2 * .pi * 22 * t) > 0.93
+                let click = clickTrain ? Double.random(in: -1...1) : 0
+                let wing = sin(2 * .pi * 280 * t) * 0.12
+                let buzz = sin(2 * .pi * 1900 * t) * 0.08 * (clickTrain ? 1 : 0.3)
+                out[i] = Float(click * 0.55 + wing + buzz)
+            }
+        case .ropeCreak:
+            for i in 0..<sampleCount {
+                let t = Double(i) / sampleRate
+                let creak = sin(2 * .pi * (100 + 45 * sin(2 * .pi * 1.6 * t)) * t)
+                let noise = Double.random(in: -1...1) * 0.15
+                let gate = 0.35 + 0.65 * max(0, sin(2 * .pi * 1.1 * t))
+                out[i] = Float((creak * 0.45 + noise) * gate)
+            }
+        case .fireCrackle:
+            for i in 0..<sampleCount {
+                let pop = Double.random(in: 0...1) > 0.985 ? Double.random(in: -1...1) : 0
+                let hiss = Double.random(in: -1...1) * 0.14
+                let low = sin(2 * .pi * 85 * Double(i) / sampleRate) * 0.12
+                out[i] = Float(pop * 0.7 + hiss + low)
             }
         }
+        // Ensure each bed has usable peak so quiet synthesis still competes after mix.
+        normalize(&out, peak: 0.95)
         return out
     }
 
@@ -326,13 +660,20 @@ public enum CreatureFXRenderer {
         }
     }
 
-    private static func mixLayers(speech: [Float], texture: [Float], textureGain: Float) -> [Float] {
+    /// Mix texture under speech. `duckAmount` 0 = full texture always; 1 = fully mute under speech.
+    private static func mixLayers(
+        speech: [Float],
+        texture: [Float],
+        textureGain: Float,
+        duckAmount: Float = 0.35
+    ) -> [Float] {
         let n = min(speech.count, texture.count)
         var out = [Float](repeating: 0, count: n)
         for i in 0..<n {
-            let env = min(1, abs(speech[i]) * 4) // crude speech detect
-            let duck = 1 - env * 0.75
-            out[i] = speech[i] + texture[i] * textureGain * Float(duck)
+            let env = min(1 as Float, abs(speech[i]) * 3.5)
+            // Keep at least (1 - duckAmount) of the texture even during loud speech.
+            let duck = 1 - env * duckAmount
+            out[i] = speech[i] + texture[i] * textureGain * duck
         }
         return out
     }

@@ -4,7 +4,9 @@ import Foundation
 public enum JobModality: String, Codable, Sendable, CaseIterable, Equatable {
     case llm
     case voiceClone
-    case voiceFinetune // Phase 2+; schema reserved
+    case voiceFinetune // reserved
+    /// Apple Foundation Models adapter (export / toolkit / import / stub).
+    case foundationAdapter
 }
 
 /// What a dataset contains (datasets table only).
@@ -34,7 +36,7 @@ public enum ModalityMapping: Sendable {
     public static func eligibleJobModalities(for dataset: DatasetModality) -> [JobModality] {
         switch dataset {
         case .text:
-            return [.llm]
+            return [.llm, .foundationAdapter]
         case .audio:
             return [.voiceClone, .voiceFinetune]
         }

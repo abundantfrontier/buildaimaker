@@ -497,7 +497,7 @@ struct CreateCharacterWizardView: View {
             Text("Step 4 — How they sound")
                 .font(.title2.weight(.semibold))
 
-            Text("Pick a preset (or tweak sliders), then Hear their voice. We use system speech for a short line, then creature FX (not a trained voice model yet).")
+            Text("Pick a creature preset — each loads deep/high pitch, formant, metal, robot, speed, and more. Then Hear their voice. System speech is reshaped so Robot, Alien, Ghost, etc. sound different (not just background beds).")
                 .foregroundStyle(BAMColors.secondaryLabel)
 
             GroupBox("Line that will be spoken") {
@@ -534,26 +534,86 @@ struct CreateCharacterWizardView: View {
             }
 
             let fx = model.currentFXParams()
-            labeledSlider("Size — \(fx.sizeLabel)", value: $model.draft.size)
-            labeledSlider("Grit — \(fx.gritLabel)", value: $model.draft.grit)
-            labeledSlider("Atmosphere — \(fx.atmosphereLabel)", value: $model.draft.atmosphere)
 
-            DisclosureGroup("Textures under the voice (optional)") {
-                VStack(alignment: .leading) {
-                    Toggle("Buzz saw", isOn: $model.draft.textureBuzzSaw)
-                    Toggle("Songbird", isOn: $model.draft.textureSongbird)
-                    Toggle("Drip", isOn: $model.draft.textureDrip)
-                    Toggle("Servo", isOn: $model.draft.textureServo)
+            Text("Speech synthesis")
+                .font(.headline)
+            Text("These reshape the spoken line itself. Drag Deep ↔ High for the biggest change; stack metal/robot for machines.")
+                .font(.caption)
+                .foregroundStyle(BAMColors.secondaryLabel)
+
+            voiceSlider(
+                "Pitch (deep ↔ high) — \(fx.sizeLabel)",
+                keyPath: \.size
+            )
+            voiceSlider(
+                "Tone color (dark ↔ bright) — \(fx.formantLabel)",
+                keyPath: \.formant
+            )
+            voiceSlider(
+                "Metallic ring — \(fx.metallicLabel)",
+                keyPath: \.metallic
+            )
+            voiceSlider(
+                "Robot / digital — \(fx.robotizeLabel)",
+                keyPath: \.robotize
+            )
+            voiceSlider(
+                "Grit / gravel — \(fx.gritLabel)",
+                keyPath: \.grit
+            )
+            voiceSlider(
+                "Tremble / vibrato — \(fx.trembleLabel)",
+                keyPath: \.tremble
+            )
+            voiceSlider(
+                "Breath / air — \(fx.breathLabel)",
+                keyPath: \.breath
+            )
+            voiceSlider(
+                "Speaking speed — \(fx.speedLabel)",
+                keyPath: \.speed
+            )
+            voiceSlider(
+                "Space / reverb — \(fx.atmosphereLabel)",
+                keyPath: \.atmosphere
+            )
+
+            Text("Background textures (optional)")
+                .font(.headline)
+                .padding(.top, 4)
+            Text("Beds under the spoken line. Fine as-is; the voice knobs above are what make creatures differ.")
+                .font(.caption)
+                .foregroundStyle(BAMColors.secondaryLabel)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8)], spacing: 8) {
+                ForEach(CreatureTextureID.allCases) { tex in
+                    Button {
+                        model.toggleTexture(tex)
+                    } label: {
+                        Text(tex.title)
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(8)
+                            .background(
+                                model.isTextureOn(tex)
+                                    ? Color.accentColor.opacity(0.2)
+                                    : Color.secondary.opacity(0.08)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .help(tex.teachTip)
                 }
-                .padding(.top, 6)
             }
 
             if model.voiceReady {
-                Label("Voice preview ready — you can finish.", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Button("Play again") { model.playPreview() }
+                Label(
+                    "Preview ready — use Play / Re-render in the footer (always visible).",
+                    systemImage: "checkmark.circle.fill"
+                )
+                .foregroundStyle(.green)
             } else {
-                tip("Click the green button below to generate and hear their voice, then you’ll save.")
+                tip("Use the footer: Hear their voice → then Play / Re-render anytime. Change a slider or preset and re-hear.")
             }
         }
     }
@@ -620,6 +680,56 @@ struct CreateCharacterWizardView: View {
                     .lineLimit(2)
             }
 
+            // Voice step: play / stop / re-render always pinned (not buried under texture grid).
+            if model.step == .voice {
+                HStack(spacing: 10) {
+                    Button {
+                        model.playPreview()
+                    } label: {
+                        Label("Play", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!model.voiceReady || model.isWorking || model.isPlayingPreview)
+                    .help("Play the last rendered preview")
+
+                    Button {
+                        model.stopPreview()
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!model.isPlayingPreview)
+                    .help("Stop the voice preview immediately")
+                    .keyboardShortcut(.cancelAction)
+
+                    Button {
+                        model.stopPreview(clearStatus: false)
+                        model.draft.previewAudioPath = nil
+                        model.renderVoicePreview()
+                    } label: {
+                        if model.isWorking {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Render speech", systemImage: "waveform")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isWorking)
+                    .help("System TTS + creature FX (new file every time)")
+
+                    if model.isPlayingPreview {
+                        Label("Playing…", systemImage: "speaker.wave.2.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if model.voiceReady {
+                        Label("Ready", systemImage: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+
             HStack(alignment: .center, spacing: 12) {
                 // Secondary / navigation — always in the bottom bar
                 if model.step == .done {
@@ -635,12 +745,16 @@ struct CreateCharacterWizardView: View {
                     }
                     .help("Start a new character wizard")
 
-                    Button("Train") {
+                    Button(model.draft.usesAppleFoundationModel ? "Specialize (Apple)" : "Train") {
                         let draft = model.draft
                         isPresented = false
                         onGoTrain?(draft)
                     }
-                    .help("Open Train with this character’s mind + model")
+                    .help(
+                        model.draft.usesAppleFoundationModel
+                            ? "Open Train on the Apple Foundation adapter path"
+                            : "Open Train with this character’s mind + open model (LoRA)"
+                    )
                 } else {
                     if model.step != .meet {
                         Button("Back") {
@@ -675,6 +789,28 @@ struct CreateCharacterWizardView: View {
                     .controlSize(.large)
                     .keyboardShortcut(.defaultAction)
                     .help("Chat with this character (Apple / selected model)")
+                } else if model.step == .voice {
+                    // On voice, primary is Finish when ready; Render is the dedicated button above.
+                    Button {
+                        if model.voiceReady {
+                            model.saveCharacter()
+                        } else {
+                            model.renderVoicePreview()
+                        }
+                    } label: {
+                        if model.isWorking {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(minWidth: 140)
+                        } else {
+                            Text(model.voiceReady ? model.primaryActionTitle : "Hear their voice")
+                                .frame(minWidth: 140)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(model.isWorking)
+                    .keyboardShortcut(.defaultAction)
                 } else {
                     Button {
                         model.performPrimaryAction()
@@ -726,7 +862,21 @@ struct CreateCharacterWizardView: View {
     private func labeledSlider(_ title: String, value: Binding<Double>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
+                .font(.callout)
             Slider(value: value, in: 0...1)
+        }
+    }
+
+    /// Voice knob that invalidates the preview WAV when dragged.
+    private func voiceSlider(_ title: String, keyPath: WritableKeyPath<CharacterDraft, Double>) -> some View {
+        let binding = Binding<Double>(
+            get: { model.draft[keyPath: keyPath] },
+            set: { model.setVoiceKnob(keyPath, to: $0) }
+        )
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.callout)
+            Slider(value: binding, in: 0...1)
         }
     }
 

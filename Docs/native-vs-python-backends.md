@@ -69,11 +69,11 @@ Need App Store for FULL product including train?
 ## Hybrid futures (compatible with architecture)
 
 1. **`TrainingRunner` backends**
-   - `MLXPythonRunner` (v1)
-   - `FoundationModelsAdapterRunner` (Apple adapters — train via Apple toolkit, run in-app)
+   - `MLXPythonRunner` / `LoRATrainService` (v1 open LoRA)
+   - `FoundationModelsAdapterRunner` (Apple adapters — toolkit path or stub; in-app Playground load)
    - `RemoteRunner` (post-PMF)
 2. **Same library / persona packs**, different materializers  
-3. Feature flags: `ff.llmTraining`, `ff.voiceClone`, future `ff.foundationModels`
+3. Feature flags: `ff.llmTraining`, `ff.voiceClone`, `ff.foundationModels` (on by default)
 
 ---
 

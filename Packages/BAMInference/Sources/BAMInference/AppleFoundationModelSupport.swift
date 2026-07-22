@@ -118,8 +118,8 @@ public struct AppleFoundationLLMBackend: LLMBackend, Sendable {
 
             let start = Date()
             let prompt = Self.formatPrompt(messages: request.messages)
-            let model = SystemLanguageModel.default
-            let session = LanguageModelSession(model: model)
+            let adapterPath = request.effectiveAdapterPath
+            let (session, detail, isStubAdapter) = try await Self.makeSession(adapterPath: adapterPath)
             let response = try await session.respond(to: prompt)
             let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
@@ -133,8 +133,8 @@ public struct AppleFoundationLLMBackend: LLMBackend, Sendable {
                 assistantMessage: .assistant(text),
                 backendId: backendId,
                 latencyMs: elapsed,
-                isStub: false,
-                detail: "SystemLanguageModel.default"
+                isStub: isStubAdapter,
+                detail: detail
             )
         }
         #endif
@@ -143,6 +143,122 @@ public struct AppleFoundationLLMBackend: LLMBackend, Sendable {
             message: "Apple Foundation Models framework not available in this build/OS."
         )
     }
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    private static func makeSession(
+        adapterPath: String?
+    ) async throws -> (LanguageModelSession, String, Bool) {
+        let base = SystemLanguageModel.default
+
+        guard let adapterPath, !adapterPath.isEmpty else {
+            return (LanguageModelSession(model: base), "SystemLanguageModel.default", false)
+        }
+
+        let packageURL = resolvePackageURL(from: adapterPath)
+        let signatureNote = Self.signatureNote(forPackage: packageURL)
+
+        // Stub packages from FoundationAdapterService.publishStub are not loadable.
+        if isStubPackage(at: packageURL) {
+            let detail = "SystemLanguageModel.default + stub adapter (not applied): \(packageURL.lastPathComponent)"
+                + (signatureNote.map { " · \($0)" } ?? "")
+            return (LanguageModelSession(model: base), detail, true)
+        }
+
+        do {
+            let specialized = try await loadAdapterModel(packageURL: packageURL)
+            let detail = "SystemLanguageModel + adapter \(packageURL.lastPathComponent)"
+                + (signatureNote.map { " · \($0)" } ?? "")
+            return (LanguageModelSession(model: specialized), detail, false)
+        } catch {
+            let sigHint = signatureNote.map { " \($0)" } ?? ""
+            throw BAMError(
+                code: .capabilityUnsupported,
+                message: """
+                Could not load Foundation adapter at \(packageURL.path): \(error.localizedDescription).\
+                \(sigHint) \
+                Ensure the package matches this OS system model revision, \
+                or train/export via Apple’s Adapter Training Toolkit and re-import.
+                """
+            )
+        }
+    }
+
+    /// Soft signature check against foundation_adapter.json next to the package.
+    private static func signatureNote(forPackage packageURL: URL) -> String? {
+        let meta = packageURL.deletingLastPathComponent()
+            .appendingPathComponent("foundation_adapter.json")
+        guard let data = try? Data(contentsOf: meta),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let stored = obj["baseModelSignature"] as? String,
+              !stored.isEmpty
+        else { return nil }
+        let current = Self.hostSignature()
+        let storedKey = Self.compatKey(stored)
+        let currentKey = Self.compatKey(current)
+        if storedKey == currentKey { return "signature ok (\(stored))" }
+        return "SIGNATURE MISMATCH: adapter=\(stored) host=\(current) — retrain recommended"
+    }
+
+    private static func hostSignature() -> String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return String(format: "macos-%d.%d.%d", v.majorVersion, v.minorVersion, v.patchVersion)
+    }
+
+    private static func compatKey(_ signature: String) -> String {
+        let parts = signature.split(separator: ".")
+        if parts.count >= 2 { return parts.prefix(2).joined(separator: ".") }
+        return signature
+    }
+
+    @available(macOS 26.0, *)
+    private static func loadAdapterModel(packageURL: URL) async throws -> SystemLanguageModel {
+        // Foundation Models: Adapter(fileURL:) → optional compile → SystemLanguageModel(adapter:).
+        let adapter = try SystemLanguageModel.Adapter(fileURL: packageURL)
+        do {
+            try await adapter.compile()
+        } catch {
+            // Already compiled or compile not required — continue.
+        }
+        return SystemLanguageModel(adapter: adapter)
+    }
+
+    private static func resolvePackageURL(from adapterPath: String) -> URL {
+        let url = URL(fileURLWithPath: adapterPath)
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            let preferred = url.appendingPathComponent("adapter.fmadapter")
+            if FileManager.default.fileExists(atPath: preferred.path) {
+                return preferred
+            }
+            if let found = try? FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: nil
+            ).first(where: { $0.pathExtension.lowercased() == "fmadapter" }) {
+                return found
+            }
+        }
+        return url
+    }
+
+    private static func isStubPackage(at url: URL) -> Bool {
+        // Directory metadata or package file body.
+        let meta = url.deletingLastPathComponent().appendingPathComponent("foundation_adapter.json")
+        if let data = try? Data(contentsOf: meta),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let fake = obj["fake"] as? Bool,
+           fake
+        {
+            return true
+        }
+        if let body = try? String(contentsOf: url, encoding: .utf8),
+           body.contains("BAM_FOUNDATION_ADAPTER_STUB")
+        {
+            return true
+        }
+        return false
+    }
+    #endif
 
     /// Flatten chat messages into a single prompt the system model can handle.
     static func formatPrompt(messages: [InferenceChatMessage]) -> String {

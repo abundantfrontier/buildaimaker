@@ -23,6 +23,8 @@ public struct FeatureFlags: Sendable, Equatable {
     public var telemetryOptIn: Bool
     /// Optional Hugging Face Hub download path (dogfood). Default off — CI stays offline.
     public var hfHubDownload: Bool
+    /// Apple Foundation adapter path (export / import / Playground load). Default on for dogfood.
+    public var foundationModels: Bool
 
     public init(
         /// PR-LLM-LoRA: default **true** for dogfood (design table: `ff.llmTraining` on).
@@ -37,7 +39,9 @@ public struct FeatureFlags: Sendable, Equatable {
         cloudRunner: Bool = false,
         knowledgePacks: Bool = false,
         telemetryOptIn: Bool = false,
-        hfHubDownload: Bool = false
+        hfHubDownload: Bool = false,
+        /// Apple FM adapters: default **true** so dual train paths show in dogfood.
+        foundationModels: Bool = true
     ) {
         self.llmTraining = llmTraining
         self.playground = playground
@@ -49,9 +53,10 @@ public struct FeatureFlags: Sendable, Equatable {
         self.knowledgePacks = knowledgePacks
         self.telemetryOptIn = telemetryOptIn
         self.hfHubDownload = hfHubDownload
+        self.foundationModels = foundationModels
     }
 
-    /// Default product flags (`llmTraining` + `playground` + `voiceClone` + `personaPacks` on).
+    /// Default product flags (llmTraining + playground + voiceClone + personaPacks + foundationModels on).
     public static let `default` = FeatureFlags()
 
     /// Stable string keys used in config / docs (e.g. `ff.llmTraining`).
@@ -66,6 +71,7 @@ public struct FeatureFlags: Sendable, Equatable {
         case knowledgePacks = "ff.knowledgePacks"
         case telemetryOptIn = "ff.telemetryOptIn"
         case hfHubDownload = "ff.hfHubDownload"
+        case foundationModels = "ff.foundationModels"
     }
 
     public func isEnabled(_ key: Key) -> Bool {
@@ -80,6 +86,7 @@ public struct FeatureFlags: Sendable, Equatable {
         case .knowledgePacks: return knowledgePacks
         case .telemetryOptIn: return telemetryOptIn
         case .hfHubDownload: return hfHubDownload
+        case .foundationModels: return foundationModels
         }
     }
 }

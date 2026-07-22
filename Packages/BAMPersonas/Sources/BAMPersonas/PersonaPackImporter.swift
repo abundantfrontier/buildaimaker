@@ -155,7 +155,14 @@ public struct PersonaPackImporter: Sendable {
 
         // Index embedded files of interest
         var embedded: [String: URL] = [:]
-        let interestingPrefixes = ["llm/adapter/", "voice/", "licenses/", "samples/"]
+        let interestingPrefixes = [
+            "llm/adapter/",
+            "llm/foundation_adapter/",
+            "llm/foundation_ref.json",
+            "voice/",
+            "licenses/",
+            "samples/",
+        ]
         if let enumerator = fm.enumerator(
             at: stagingDirectory,
             includingPropertiesForKeys: [.isRegularFileKey],

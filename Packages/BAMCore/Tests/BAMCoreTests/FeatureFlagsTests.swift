@@ -20,8 +20,13 @@ final class FeatureFlagsTests: XCTestCase {
         XCTAssertTrue(flags.isEnabled(.personaPacks))
         XCTAssertEqual(FeatureFlags.Key.personaPacks.rawValue, "ff.personaPacks")
 
+        // Apple Foundation adapters dual path (dogfood).
+        XCTAssertTrue(flags.foundationModels)
+        XCTAssertTrue(flags.isEnabled(.foundationModels))
+        XCTAssertEqual(FeatureFlags.Key.foundationModels.rawValue, "ff.foundationModels")
+
         let alwaysOn: Set<FeatureFlags.Key> = [
-            .llmTraining, .playground, .voiceClone, .personaPacks,
+            .llmTraining, .playground, .voiceClone, .personaPacks, .foundationModels,
         ]
         for key in FeatureFlags.Key.allCases where !alwaysOn.contains(key) {
             XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")
@@ -85,5 +90,12 @@ final class FeatureFlagsTests: XCTestCase {
         XCTAssertFalse(FeatureFlags.default.hfHubDownload)
         XCTAssertFalse(FeatureFlags.default.isEnabled(.hfHubDownload))
         XCTAssertEqual(FeatureFlags.Key.hfHubDownload.rawValue, "ff.hfHubDownload")
+    }
+
+    func testFoundationAdaptersPathHelpers() {
+        let root = LibraryPaths.modelsFoundationAdapters
+        XCTAssertTrue(root.path.hasSuffix("models/foundation-adapters") || root.path.contains("foundation-adapters"))
+        let dir = LibraryPaths.foundationAdapterDirectory(id: "abc-1")
+        XCTAssertEqual(dir.lastPathComponent, "abc-1")
     }
 }

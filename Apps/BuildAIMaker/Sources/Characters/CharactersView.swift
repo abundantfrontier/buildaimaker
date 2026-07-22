@@ -257,9 +257,14 @@ struct CharactersView: View {
                     Button {
                         openTrain(draft)
                     } label: {
-                        Label("Train this character", systemImage: "hammer")
+                        Label(
+                            draft.usesAppleFoundationModel
+                                ? "Specialize Apple model (adapter)"
+                                : "Train this character (LoRA)",
+                            systemImage: "hammer"
+                        )
                     }
-                    .disabled(draft.datasetId == nil && !draft.hasSelectedBaseModel)
+                    .disabled(draft.datasetId == nil && !draft.hasSelectedBaseModel && !draft.usesAppleFoundationModel)
                 } label: {
                     Label("Use", systemImage: "arrow.right.circle")
                 }
@@ -300,7 +305,12 @@ struct CharactersView: View {
             Button {
                 openTrain(draft)
             } label: {
-                Label("Train this character", systemImage: "hammer")
+                Label(
+                    draft.usesAppleFoundationModel
+                        ? "Specialize Apple model (adapter)"
+                        : "Train this character (LoRA)",
+                    systemImage: "hammer"
+                )
             }
             Divider()
             Button(role: .destructive) {

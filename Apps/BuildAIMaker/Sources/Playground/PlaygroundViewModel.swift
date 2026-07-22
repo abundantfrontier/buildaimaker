@@ -6,13 +6,21 @@ import BAMCharacterStudio
 import BAMCore
 import BAMInference
 import BAMModelCatalog
+import BAMRunnersMLX
 
-/// Scanned LoRA adapter under `models/adapters`.
+/// Scanned adapter under `models/adapters` (open LoRA) or `models/foundation-adapters`.
 struct ScannedAdapter: Identifiable, Equatable, Sendable {
+    enum Kind: String, Sendable, Equatable {
+        case openLora
+        case foundation
+    }
+
     var directoryName: String
     var localPath: String
     var displayName: String
     var hasAdapterConfig: Bool
+    var kind: Kind
+    var isFake: Bool
 
     var id: String { localPath }
 }
@@ -137,9 +145,27 @@ final class PlaygroundViewModel: ObservableObject {
         errorMessage = nil
         do {
             baseModels = try baseScanner.scan()
-            adapters = try Self.scanAdapters(
-                at: libraryRoot.appendingPathComponent("models/adapters", isDirectory: true)
+            let open = try Self.scanAdapters(
+                at: libraryRoot.appendingPathComponent("models/adapters", isDirectory: true),
+                kind: .openLora
             )
+            let foundation: [ScannedAdapter]
+            if featureFlags.foundationModels {
+                foundation = (try? FoundationAdapterService(libraryRoot: libraryRoot).listInstalled().map {
+                    ScannedAdapter(
+                        directoryName: $0.id,
+                        localPath: $0.directoryURL.path,
+                        displayName: $0.displayName + ($0.isFake ? " (stub)" : ""),
+                        hasAdapterConfig: true,
+                        kind: .foundation,
+                        isFake: $0.isFake
+                    )
+                }) ?? []
+            } else {
+                foundation = []
+            }
+            allAdapters = open + foundation
+            refreshVisibleAdapters()
             if selectedBasePath == nil {
                 selectedBasePath = baseModels.first?.localPath
             } else if let path = selectedBasePath,
@@ -162,6 +188,25 @@ final class PlaygroundViewModel: ObservableObject {
         }
     }
 
+    /// Adapters shown in the picker for the active backend.
+    private var allAdapters: [ScannedAdapter] = []
+
+    private func refreshVisibleAdapters() {
+        let usingApple = backendId == AppleFoundationLLMBackend.id
+            || backendPreference == .appleFoundation
+            || (backendPreference == .automatic && appleModelStatus == .available)
+        if usingApple {
+            adapters = allAdapters.filter { $0.kind == .foundation }
+        } else {
+            adapters = allAdapters.filter { $0.kind == .openLora }
+        }
+        if let path = selectedAdapterPath,
+           !adapters.contains(where: { $0.localPath == path })
+        {
+            selectedAdapterPath = adapters.first?.localPath
+        }
+    }
+
     /// Re-probe model capability + backend when the user changes the base model picker.
     func onSelectedBaseModelChanged() {
         modelCapability = LocalModelCapabilityProbe.probe(path: selectedBasePath)
@@ -179,6 +224,7 @@ final class PlaygroundViewModel: ObservableObject {
             backend = EchoLLMBackend()
             backendId = backend.backendId
             usingRealGenerate = false
+            refreshVisibleAdapters()
             return
         }
 
@@ -205,6 +251,7 @@ final class PlaygroundViewModel: ObservableObject {
         }
         backendId = backend.backendId
         usingRealGenerate = backendId != EchoLLMBackend.id
+        refreshVisibleAdapters()
     }
 
     private func updateStatusBanner() {
@@ -266,12 +313,14 @@ final class PlaygroundViewModel: ObservableObject {
             defer { isGenerating = false }
             do {
                 let formatStarted = Date()
+                let usesApple = activeBackend.backendId == AppleFoundationLLMBackend.id
                 var session = PlaygroundSession(
                     systemPrompt: systemPrompt,
                     messages: messages,
                     baseModelPath: base,
                     adapterPath: selectedAdapterPath,
-                    adapterEnabled: adapterEnabled
+                    adapterEnabled: adapterEnabled,
+                    allowsSystemModel: usesApple
                 )
                 let completeStarted = Date()
                 let result = try await session.send(userText: text, backend: activeBackend)
@@ -362,7 +411,11 @@ final class PlaygroundViewModel: ObservableObject {
 
     // MARK: - Adapter scan
 
-    static func scanAdapters(at adaptersRoot: URL, fileManager: FileManager = .default) throws -> [ScannedAdapter] {
+    static func scanAdapters(
+        at adaptersRoot: URL,
+        kind: ScannedAdapter.Kind = .openLora,
+        fileManager: FileManager = .default
+    ) throws -> [ScannedAdapter] {
         var isDir: ObjCBool = false
         guard fileManager.fileExists(atPath: adaptersRoot.path, isDirectory: &isDir),
               isDir.boolValue
@@ -388,7 +441,9 @@ final class PlaygroundViewModel: ObservableObject {
                     directoryName: name,
                     localPath: resolved.path,
                     displayName: name,
-                    hasAdapterConfig: hasConfig
+                    hasAdapterConfig: hasConfig,
+                    kind: kind,
+                    isFake: false
                 )
             )
         }

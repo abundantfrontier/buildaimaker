@@ -142,6 +142,8 @@ final class CreateCharacterViewModel: ObservableObject {
     private let store = CharacterLibraryStore()
     private let corpus = CorpusBuilder()
     private var audioPlayer: AVAudioPlayer?
+    /// Clears `isPlayingPreview` when the clip finishes (no AVAudioPlayerDelegate needed).
+    private var previewEndTask: Task<Void, Never>?
     /// True after the first intentional load; blocks accidental save of an empty draft.
     private var didLoadOnce = false
     /// When true, skip auto-persist during programmatic load/select.
@@ -178,8 +180,7 @@ final class CreateCharacterViewModel: ObservableObject {
             statusMessage = nil
         }
         lastError = nil
-        isPlayingPreview = false
-        audioPlayer?.stop()
+        stopPreview(clearStatus: false)
         refreshModels()
     }
 
@@ -347,8 +348,7 @@ final class CreateCharacterViewModel: ObservableObject {
         isEditingComplete = false
         statusMessage = nil
         lastError = nil
-        isPlayingPreview = false
-        audioPlayer?.stop()
+        stopPreview(clearStatus: false)
         refreshModels()
     }
 
@@ -503,14 +503,7 @@ final class CreateCharacterViewModel: ObservableObject {
             draft.vibe = preset.suggestedVibe
             draft.voicePreset = preset.voicePresetRawValue
             if let vp = CreatureVoicePreset(rawValue: preset.voicePresetRawValue) {
-                let p = CreatureFXParams.fromPreset(vp)
-                draft.size = p.size
-                draft.grit = p.grit
-                draft.atmosphere = p.atmosphere
-                draft.textureBuzzSaw = p.textures.contains(.buzzSaw)
-                draft.textureSongbird = p.textures.contains(.songbird)
-                draft.textureDrip = p.textures.contains(.drip)
-                draft.textureServo = p.textures.contains(.servo)
+                applyVoicePreset(vp)
             }
         }
     }
@@ -585,6 +578,7 @@ final class CreateCharacterViewModel: ObservableObject {
 
     func renderVoicePreview() {
         guard !isWorking else { return }
+        stopPreview(clearStatus: false)
         isWorking = true
         lastError = nil
         statusMessage = "Speaking line + applying creature FX…"
@@ -607,11 +601,12 @@ final class CreateCharacterViewModel: ObservableObject {
                 draft.previewAudioPath = result.audioURL.path
                 draft.voiceProfilePath = result.profileURL.path
                 if result.usedSystemTTS {
+                    let line = result.spokenText.map { " “\($0.prefix(48))\($0.count > 48 ? "…" : "")”" } ?? ""
                     statusMessage =
-                        "Voice ready (\(params.preset.title)) — TTS + FX. Press “Finish & save” below."
+                        "Voice ready (\(params.preset.title)) — spoke\(line) with creature FX. Press “Finish & save”."
                 } else {
                     statusMessage =
-                        "Voice ready (\(params.preset.title)) — buzz fallback (TTS unavailable). Press “Finish & save”."
+                        "Voice is buzz-only (system TTS failed). Check macOS speech voices in System Settings → Accessibility → Spoken Content."
                 }
                 persistDraft()
                 playPreview()
@@ -625,13 +620,50 @@ final class CreateCharacterViewModel: ObservableObject {
     func playPreview() {
         guard let path = draft.previewAudioPath else { return }
         let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: path) else {
+            lastError = "Preview file missing — press Hear their voice again."
+            return
+        }
         do {
-            audioPlayer = try AVAudioPlayer(contentsOf: url)
-            audioPlayer?.prepareToPlay()
+            stopPreview(clearStatus: false)
+            // New player instance each time (avoids replaying a stale buffer).
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.prepareToPlay()
+            player.volume = 1.0
+            audioPlayer = player
             isPlayingPreview = true
-            audioPlayer?.play()
+            guard player.play() else {
+                isPlayingPreview = false
+                lastError = "Could not start audio playback."
+                return
+            }
+            // Auto-clear playing state when the clip ends.
+            let duration = player.duration
+            previewEndTask = Task { @MainActor in
+                let ns = UInt64(max(0.05, duration + 0.05) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+                guard !Task.isCancelled else { return }
+                if self.audioPlayer === player {
+                    self.isPlayingPreview = false
+                    self.audioPlayer = nil
+                }
+            }
         } catch {
+            isPlayingPreview = false
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Stop the voice preview (sound test) immediately.
+    func stopPreview(clearStatus: Bool = true) {
+        previewEndTask?.cancel()
+        previewEndTask = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        isPlayingPreview = false
+        if clearStatus, draft.previewAudioPath != nil {
+            // Keep a light hint only when user explicitly stopped.
+            // Don't clobber richer status from render.
         }
     }
 
@@ -652,15 +684,22 @@ final class CreateCharacterViewModel: ObservableObject {
     func currentFXParams() -> CreatureFXParams {
         let preset = CreatureVoicePreset(rawValue: draft.voicePreset) ?? .alien
         var textures = Set<CreatureTextureID>()
-        if draft.textureBuzzSaw { textures.insert(.buzzSaw) }
-        if draft.textureSongbird { textures.insert(.songbird) }
-        if draft.textureDrip { textures.insert(.drip) }
-        if draft.textureServo { textures.insert(.servo) }
+        for id in draft.textureIdSet {
+            if let t = CreatureTextureID(rawValue: id) {
+                textures.insert(t)
+            }
+        }
         return CreatureFXParams(
             preset: preset,
             size: draft.size,
             grit: draft.grit,
             atmosphere: draft.atmosphere,
+            formant: draft.formant,
+            metallic: draft.metallic,
+            tremble: draft.tremble,
+            breath: draft.breath,
+            speed: draft.speed,
+            robotize: draft.robotize,
             textures: textures
         )
     }
@@ -671,10 +710,31 @@ final class CreateCharacterViewModel: ObservableObject {
         draft.size = p.size
         draft.grit = p.grit
         draft.atmosphere = p.atmosphere
-        draft.textureBuzzSaw = p.textures.contains(.buzzSaw)
-        draft.textureSongbird = p.textures.contains(.songbird)
-        draft.textureDrip = p.textures.contains(.drip)
-        draft.textureServo = p.textures.contains(.servo)
+        draft.formant = p.formant
+        draft.metallic = p.metallic
+        draft.tremble = p.tremble
+        draft.breath = p.breath
+        draft.speed = p.speed
+        draft.robotize = p.robotize
+        draft.textureIdSet = Set(p.textures.map(\.rawValue))
+        // Clear stale preview so Hear re-renders with new preset.
+        draft.previewAudioPath = nil
+    }
+
+    /// Update a voice slider and invalidate the old preview WAV.
+    func setVoiceKnob(_ keyPath: WritableKeyPath<CharacterDraft, Double>, to value: Double) {
+        draft[keyPath: keyPath] = value
+        draft.previewAudioPath = nil
+    }
+
+    func toggleTexture(_ id: CreatureTextureID) {
+        let on = !draft.textureIdSet.contains(id.rawValue)
+        draft.setTexture(id.rawValue, enabled: on)
+        draft.previewAudioPath = nil
+    }
+
+    func isTextureOn(_ id: CreatureTextureID) -> Bool {
+        draft.textureIdSet.contains(id.rawValue)
     }
 
     // MARK: - Private

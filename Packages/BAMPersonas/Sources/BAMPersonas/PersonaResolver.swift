@@ -39,6 +39,7 @@ public enum PersonaResolver: Sendable {
 
         // --- LLM branch ---
         if hasLLM, let llm = document.llm {
+            // Prefer open LoRA adapter id; Foundation adapter is parallel (Apple path).
             if let adapterId = llm.adapterArtifactId {
                 if let art = try library.artifact(id: adapterId) {
                     adapter = art
@@ -73,9 +74,33 @@ public enum PersonaResolver: Sendable {
                     errors.append(.missingBase)
                     messages.append("Missing base model while adapter is present")
                 }
+            } else if let foundationId = llm.foundationAdapterArtifactId {
+                // Apple Foundation adapter — base is the system model (may not be in models table).
+                if let art = try library.artifact(id: foundationId) {
+                    adapter = art
+                } else {
+                    // Directory-only install (Train publish without GRDB) — allow resolve;
+                    // Playground/Train scan disk by id. Soft: no fatal MISSING_ADAPTER.
+                    messages.append(
+                        "Foundation adapter id \(foundationId) not in library DB — use models/foundation-adapters scan"
+                    )
+                }
+                if let baseId = llm.baseModelId {
+                    if baseId == "apple-foundation" || baseId.hasPrefix("apple") {
+                        // System model — no disk base required.
+                    } else if let model = try library.model(id: baseId) {
+                        base = model
+                    } else {
+                        errors.append(.missingBase)
+                        messages.append("Base model not found: \(baseId)")
+                    }
+                }
+                // Signature mismatch is warned at chat time, not a hard resolve fail.
             } else if let baseId = llm.baseModelId {
                 if let model = try library.model(id: baseId) {
                     base = model
+                } else if baseId == "apple-foundation" {
+                    // Apple system model only — OK without library model row.
                 } else {
                     errors.append(.missingBase)
                     messages.append("Base model not found: \(baseId)")

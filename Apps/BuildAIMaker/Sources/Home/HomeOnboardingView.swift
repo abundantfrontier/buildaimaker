@@ -321,8 +321,7 @@ struct HomeOnboardingView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(step.title)
                         .font(.body.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .strikethrough(done, color: BAMColors.secondaryLabel)
+                        .foregroundStyle(done ? BAMColors.secondaryLabel : .primary)
                     Text(step.detail)
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)

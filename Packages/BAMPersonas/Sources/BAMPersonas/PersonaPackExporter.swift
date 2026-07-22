@@ -15,8 +15,10 @@ public struct PersonaPackExporter: Sendable {
     public struct ExportContext: Sendable {
         public var resolved: ResolvedPersona
         public var consent: ConsentRecord?
-        /// Absolute path to adapter directory to embed under `llm/adapter/` (optional).
+        /// Absolute path to adapter directory to embed under `llm/adapter/` (optional open LoRA).
         public var adapterDirectory: URL?
+        /// Absolute path to Foundation adapter directory to embed under `llm/foundation_adapter/`.
+        public var foundationAdapterDirectory: URL?
         /// Absolute path to reference wav to embed as `voice/reference.wav` (optional).
         public var voiceReferenceURL: URL?
         /// License text files: base_model / voice_engine.
@@ -28,6 +30,7 @@ public struct PersonaPackExporter: Sendable {
             resolved: ResolvedPersona,
             consent: ConsentRecord? = nil,
             adapterDirectory: URL? = nil,
+            foundationAdapterDirectory: URL? = nil,
             voiceReferenceURL: URL? = nil,
             baseModelLicenseText: String? = nil,
             voiceEngineLicenseText: String? = nil,
@@ -36,6 +39,7 @@ public struct PersonaPackExporter: Sendable {
             self.resolved = resolved
             self.consent = consent
             self.adapterDirectory = adapterDirectory
+            self.foundationAdapterDirectory = foundationAdapterDirectory
             self.voiceReferenceURL = voiceReferenceURL
             self.baseModelLicenseText = baseModelLicenseText
             self.voiceEngineLicenseText = voiceEngineLicenseText
@@ -91,12 +95,40 @@ public struct PersonaPackExporter: Sendable {
             try write(try encoder.encode(ref), relative: "llm/base_ref.json", under: stagingDirectory)
         }
 
-        // llm/adapter/ (optional embed)
+        // llm/adapter/ (optional open LoRA embed)
         if let adapterDir = context.adapterDirectory,
            fm.fileExists(atPath: adapterDir.path)
         {
             let dest = stagingDirectory.appendingPathComponent("llm/adapter", isDirectory: true)
             try copyDirectoryContents(from: adapterDir, to: dest)
+        }
+
+        // llm/foundation_adapter/ + foundation_ref.json (optional Apple FM embed)
+        if let foundationDir = context.foundationAdapterDirectory,
+           fm.fileExists(atPath: foundationDir.path)
+        {
+            let dest = stagingDirectory.appendingPathComponent("llm/foundation_adapter", isDirectory: true)
+            try copyDirectoryContents(from: foundationDir, to: dest)
+            let artId = doc.llm?.foundationAdapterArtifactId
+                ?? foundationDir.lastPathComponent
+            let packageRel: String?
+            if fm.fileExists(atPath: dest.appendingPathComponent("adapter.fmadapter").path) {
+                packageRel = "llm/foundation_adapter/adapter.fmadapter"
+            } else {
+                packageRel = "llm/foundation_adapter"
+            }
+            let ref = PersonaPackFoundationRef(
+                foundationAdapterArtifactId: artId,
+                baseModelSignature: doc.llm?.baseModelSignature,
+                packageRelativePath: packageRel
+            )
+            try write(try encoder.encode(ref), relative: "llm/foundation_ref.json", under: stagingDirectory)
+        } else if let artId = doc.llm?.foundationAdapterArtifactId {
+            let ref = PersonaPackFoundationRef(
+                foundationAdapterArtifactId: artId,
+                baseModelSignature: doc.llm?.baseModelSignature
+            )
+            try write(try encoder.encode(ref), relative: "llm/foundation_ref.json", under: stagingDirectory)
         }
 
         // voice/profile.json + optional reference

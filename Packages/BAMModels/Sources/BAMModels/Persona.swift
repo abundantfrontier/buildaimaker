@@ -14,15 +14,31 @@ public enum PersonaMode: String, Codable, Sendable, CaseIterable, Equatable {
 /// LLM component refs on a persona (ids only; no knowledge-pack keys in v1).
 public struct PersonaLLMComponents: Codable, Sendable, Equatable {
     public var baseModelId: String?
+    /// Open MLX LoRA adapter artifact id (`models/adapters/`).
     public var adapterArtifactId: String?
+    /// Apple Foundation adapter artifact id (`models/foundation-adapters/`).
+    public var foundationAdapterArtifactId: String?
+    /// OS / system model signature the Foundation adapter was trained against.
+    public var baseModelSignature: String?
 
-    public init(baseModelId: String? = nil, adapterArtifactId: String? = nil) {
+    public init(
+        baseModelId: String? = nil,
+        adapterArtifactId: String? = nil,
+        foundationAdapterArtifactId: String? = nil,
+        baseModelSignature: String? = nil
+    ) {
         self.baseModelId = baseModelId
         self.adapterArtifactId = adapterArtifactId
+        self.foundationAdapterArtifactId = foundationAdapterArtifactId
+        self.baseModelSignature = baseModelSignature
     }
 
     public var hasLLM: Bool {
-        baseModelId != nil || adapterArtifactId != nil
+        baseModelId != nil || adapterArtifactId != nil || foundationAdapterArtifactId != nil
+    }
+
+    public var usesFoundationAdapter: Bool {
+        foundationAdapterArtifactId != nil
     }
 }
 

@@ -242,7 +242,11 @@ struct PlaygroundView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Adapter (optional)")
+                    Text(
+                        textModel.backendId == AppleFoundationLLMBackend.id
+                            ? "Foundation adapter (optional)"
+                            : "LoRA adapter (optional)"
+                    )
                         .font(.caption)
                         .foregroundStyle(BAMColors.secondaryLabel)
                     Picker("Adapter", selection: $textModel.selectedAdapterPath) {

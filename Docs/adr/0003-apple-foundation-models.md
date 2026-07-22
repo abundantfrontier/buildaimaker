@@ -1,8 +1,17 @@
 # ADR 0003 — Apple Foundation Models & LoRA adapters
 
-**Status:** Accepted (strategy)  
+**Status:** Accepted (strategy) — **Phase 1 + Phase 2 landed**  
 **Date:** 2026-07-19  
+**Updated:** 2026-07-21  
 **Context:** macOS / Apple Intelligence era APIs for on-device LLMs and developer adapters
+
+### Implementation status
+
+| Phase | Status | Notes |
+|-------|--------|--------|
+| **Phase 1** | Done | Dual Train backend, export/import/stub, Playground FM adapter filter, `SystemLanguageModel.Adapter(fileURL:)` load |
+| **Phase 2** | Done | Toolkit path + CLI train service, `JobModality.foundationAdapter`, `FoundationModelsAdapterRunner`, Composite third arm, signature mismatch warnings, persona pack `foundationAdapter` / `baseModelSignature` / `llm/foundation_adapter/` |
+| **Later** | Open | Entitlement packaging, Background Assets CDN, in-queue GRDB artifact upsert, real-time toolkit progress NDJSON |
 
 ## Context
 

@@ -78,13 +78,28 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     public var styleTags: [StyleTag]
     public var riffCount: Int
     public var voicePreset: String
+    /// Pitch: 0 = deep/huge, 1 = high/tiny
     public var size: Double
     public var grit: Double
     public var atmosphere: Double
+    /// Tone color: 0 = dark/chesty, 1 = bright/nasal
+    public var formant: Double
+    /// Ring-mod metallic sheen
+    public var metallic: Double
+    /// Vibrato / nervous tremble
+    public var tremble: Double
+    /// Air / breath noise
+    public var breath: Double
+    /// Speech rate: 0 = slow, 1 = fast
+    public var speed: Double
+    /// Robotic downsample / bitcrush
+    public var robotize: Double
     public var textureBuzzSaw: Bool
     public var textureSongbird: Bool
     public var textureDrip: Bool
     public var textureServo: Bool
+    /// Extra / full texture id list (raw `CreatureTextureID` values). Preferred over bools.
+    public var textureIds: [String]
     public var bible: CharacterBible?
     public var examples: [DialogueExample]
     public var datasetId: String?
@@ -115,13 +130,20 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         styleTags: [StyleTag] = [],
         riffCount: Int = 2,
         voicePreset: String = CreatureSpeciesPreset.alien.voicePresetRawValue,
-        size: Double = 0.5,
-        grit: Double = 0.35,
-        atmosphere: Double = 0.4,
+        size: Double = 0.55,
+        grit: Double = 0.22,
+        atmosphere: Double = 0.45,
+        formant: Double = 0.48,
+        metallic: Double = 0.25,
+        tremble: Double = 0.2,
+        breath: Double = 0.08,
+        speed: Double = 0.45,
+        robotize: Double = 0.0,
         textureBuzzSaw: Bool = false,
         textureSongbird: Bool = false,
         textureDrip: Bool = false,
         textureServo: Bool = false,
+        textureIds: [String] = [],
         bible: CharacterBible? = nil,
         examples: [DialogueExample] = [],
         datasetId: String? = nil,
@@ -148,10 +170,17 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         self.size = size
         self.grit = grit
         self.atmosphere = atmosphere
+        self.formant = formant
+        self.metallic = metallic
+        self.tremble = tremble
+        self.breath = breath
+        self.speed = speed
+        self.robotize = robotize
         self.textureBuzzSaw = textureBuzzSaw
         self.textureSongbird = textureSongbird
         self.textureDrip = textureDrip
         self.textureServo = textureServo
+        self.textureIds = textureIds
         self.bible = bible
         self.examples = examples
         self.datasetId = datasetId
@@ -165,6 +194,25 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         self.isComplete = isComplete
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    /// Texture chip set (string ids matching `CreatureTextureID.rawValue`).
+    public var textureIdSet: Set<String> {
+        get { Set(textureIds) }
+        set {
+            textureIds = Array(newValue).sorted()
+            // Keep legacy bools in sync for older readers.
+            textureBuzzSaw = newValue.contains("buzzSaw")
+            textureSongbird = newValue.contains("songbird")
+            textureDrip = newValue.contains("drip")
+            textureServo = newValue.contains("servo")
+        }
+    }
+
+    public mutating func setTexture(_ id: String, enabled: Bool) {
+        var s = textureIdSet
+        if enabled { s.insert(id) } else { s.remove(id) }
+        textureIdSet = s
     }
 
     /// True when the draft has a base model path selected for later train/chat.
@@ -204,7 +252,8 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, speciesPreset, customSpecies, vibe, storyPaste, styleTags, riffCount
         case voicePreset, size, grit, atmosphere
-        case textureBuzzSaw, textureSongbird, textureDrip, textureServo
+        case formant, metallic, tremble, breath, speed, robotize
+        case textureBuzzSaw, textureSongbird, textureDrip, textureServo, textureIds
         case bible, examples, datasetId, voiceProfilePath, previewAudioPath
         case baseModelId, baseModelPath, baseModelName, baseModelSourceKey
         case wizardStepRaw, isComplete, createdAt, updatedAt
@@ -221,13 +270,30 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         styleTags = try c.decodeIfPresent([StyleTag].self, forKey: .styleTags) ?? []
         riffCount = try c.decodeIfPresent(Int.self, forKey: .riffCount) ?? 2
         voicePreset = try c.decodeIfPresent(String.self, forKey: .voicePreset) ?? CreatureSpeciesPreset.alien.voicePresetRawValue
-        size = try c.decodeIfPresent(Double.self, forKey: .size) ?? 0.5
-        grit = try c.decodeIfPresent(Double.self, forKey: .grit) ?? 0.35
-        atmosphere = try c.decodeIfPresent(Double.self, forKey: .atmosphere) ?? 0.4
+        size = try c.decodeIfPresent(Double.self, forKey: .size) ?? 0.55
+        grit = try c.decodeIfPresent(Double.self, forKey: .grit) ?? 0.22
+        atmosphere = try c.decodeIfPresent(Double.self, forKey: .atmosphere) ?? 0.45
+        // New speech-shaping knobs — fill from known preset defaults when missing (legacy drafts).
+        let legacy = VoiceKnobDefaults.forPreset(voicePreset)
+        formant = try c.decodeIfPresent(Double.self, forKey: .formant) ?? legacy.formant
+        metallic = try c.decodeIfPresent(Double.self, forKey: .metallic) ?? legacy.metallic
+        tremble = try c.decodeIfPresent(Double.self, forKey: .tremble) ?? legacy.tremble
+        breath = try c.decodeIfPresent(Double.self, forKey: .breath) ?? legacy.breath
+        speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? legacy.speed
+        robotize = try c.decodeIfPresent(Double.self, forKey: .robotize) ?? legacy.robotize
         textureBuzzSaw = try c.decodeIfPresent(Bool.self, forKey: .textureBuzzSaw) ?? false
         textureSongbird = try c.decodeIfPresent(Bool.self, forKey: .textureSongbird) ?? false
         textureDrip = try c.decodeIfPresent(Bool.self, forKey: .textureDrip) ?? false
         textureServo = try c.decodeIfPresent(Bool.self, forKey: .textureServo) ?? false
+        var ids = try c.decodeIfPresent([String].self, forKey: .textureIds) ?? []
+        // Migrate legacy bool chips into textureIds.
+        if ids.isEmpty {
+            if textureBuzzSaw { ids.append("buzzSaw") }
+            if textureSongbird { ids.append("songbird") }
+            if textureDrip { ids.append("drip") }
+            if textureServo { ids.append("servo") }
+        }
+        textureIds = ids
         bible = try c.decodeIfPresent(CharacterBible.self, forKey: .bible)
         examples = try c.decodeIfPresent([DialogueExample].self, forKey: .examples) ?? []
         datasetId = try c.decodeIfPresent(String.self, forKey: .datasetId)
@@ -296,5 +362,48 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         if !examples.isEmpty || datasetId != nil { return 2 }
         if hasSelectedBaseModel { return 1 }
         return 0
+    }
+}
+
+/// Local defaults for voice knobs so legacy drafts migrate without depending on BAMAudioFX.
+private enum VoiceKnobDefaults {
+    struct Knobs {
+        var formant: Double
+        var metallic: Double
+        var tremble: Double
+        var breath: Double
+        var speed: Double
+        var robotize: Double
+    }
+
+    static func forPreset(_ raw: String) -> Knobs {
+        switch raw {
+        case "robot":
+            return Knobs(formant: 0.55, metallic: 0.75, tremble: 0.08, breath: 0.08, speed: 0.5, robotize: 0.7)
+        case "android":
+            return Knobs(formant: 0.55, metallic: 0.55, tremble: 0.08, breath: 0.08, speed: 0.5, robotize: 0.4)
+        case "alien":
+            return Knobs(formant: 0.48, metallic: 0.25, tremble: 0.2, breath: 0.08, speed: 0.45, robotize: 0.0)
+        case "lagoon":
+            return Knobs(formant: 0.18, metallic: 0.05, tremble: 0.08, breath: 0.25, speed: 0.35, robotize: 0.0)
+        case "ghost":
+            return Knobs(formant: 0.35, metallic: 0.05, tremble: 0.45, breath: 0.45, speed: 0.28, robotize: 0.0)
+        case "beast", "dragon":
+            return Knobs(formant: 0.18, metallic: 0.05, tremble: 0.08, breath: raw == "dragon" ? 0.45 : 0.3, speed: 0.28, robotize: 0.0)
+        case "birdish", "fairy":
+            return Knobs(formant: 0.85, metallic: 0.05, tremble: raw == "fairy" ? 0.35 : 0.08, breath: 0.08, speed: raw == "fairy" ? 0.72 : 0.62, robotize: 0.0)
+        case "goblin":
+            return Knobs(formant: 0.7, metallic: 0.15, tremble: 0.25, breath: 0.08, speed: 0.62, robotize: 0.0)
+        case "insect":
+            return Knobs(formant: 0.85, metallic: 0.35, tremble: 0.35, breath: 0.08, speed: 0.72, robotize: 0.25)
+        case "coyote":
+            return Knobs(formant: 0.48, metallic: 0.05, tremble: 0.08, breath: 0.3, speed: 0.45, robotize: 0.0)
+        case "wizard":
+            return Knobs(formant: 0.35, metallic: 0.05, tremble: 0.08, breath: 0.2, speed: 0.28, robotize: 0.0)
+        case "pirate":
+            return Knobs(formant: 0.48, metallic: 0.05, tremble: 0.08, breath: 0.08, speed: 0.35, robotize: 0.0)
+        default:
+            return Knobs(formant: 0.5, metallic: 0.1, tremble: 0.1, breath: 0.1, speed: 0.45, robotize: 0.0)
+        }
     }
 }

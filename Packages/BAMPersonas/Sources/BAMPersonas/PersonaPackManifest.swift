@@ -63,6 +63,24 @@ public struct PersonaPackBaseRef: Codable, Sendable, Equatable {
     }
 }
 
+/// Optional Apple Foundation adapter ref written to `llm/foundation_ref.json`.
+public struct PersonaPackFoundationRef: Codable, Sendable, Equatable {
+    public var foundationAdapterArtifactId: String
+    public var baseModelSignature: String?
+    /// Relative path inside the pack (e.g. `llm/foundation_adapter/adapter.fmadapter`).
+    public var packageRelativePath: String?
+
+    public init(
+        foundationAdapterArtifactId: String,
+        baseModelSignature: String? = nil,
+        packageRelativePath: String? = nil
+    ) {
+        self.foundationAdapterArtifactId = foundationAdapterArtifactId
+        self.baseModelSignature = baseModelSignature
+        self.packageRelativePath = packageRelativePath
+    }
+}
+
 /// Voice profile snapshot written to `voice/profile.json` (no absolute host paths).
 public struct PersonaPackVoiceProfile: Codable, Sendable, Equatable {
     public var id: String

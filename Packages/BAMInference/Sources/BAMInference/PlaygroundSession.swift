@@ -11,6 +11,8 @@ public struct PlaygroundSession: Sendable, Equatable {
     /// A/B: when false, completions run against base only.
     public var adapterEnabled: Bool
     public var templateId: String
+    /// When true, chat is allowed without a local disk base (Apple system model).
+    public var allowsSystemModel: Bool
     public var lastBackendId: String?
     public var lastLatencyMs: Double?
     public var lastWasStub: Bool?
@@ -21,7 +23,8 @@ public struct PlaygroundSession: Sendable, Equatable {
         baseModelPath: String? = nil,
         adapterPath: String? = nil,
         adapterEnabled: Bool = true,
-        templateId: String = ChatPromptFormatter.chatML
+        templateId: String = ChatPromptFormatter.chatML,
+        allowsSystemModel: Bool = false
     ) {
         self.systemPrompt = systemPrompt
         self.messages = messages
@@ -29,14 +32,16 @@ public struct PlaygroundSession: Sendable, Equatable {
         self.adapterPath = adapterPath
         self.adapterEnabled = adapterEnabled
         self.templateId = templateId
+        self.allowsSystemModel = allowsSystemModel
         self.lastBackendId = nil
         self.lastLatencyMs = nil
         self.lastWasStub = nil
     }
 
-    /// Whether a user turn can be sent (base model selected, not empty draft later).
+    /// Whether a user turn can be sent.
     public var canChat: Bool {
-        baseModelPath != nil && !(baseModelPath?.isEmpty ?? true)
+        if allowsSystemModel { return true }
+        return baseModelPath != nil && !(baseModelPath?.isEmpty ?? true)
     }
 
     public mutating func clearTranscript() {

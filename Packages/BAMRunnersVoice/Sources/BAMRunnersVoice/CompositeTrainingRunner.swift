@@ -6,24 +6,28 @@ import os
 
 /// Routes `TrainingRunner` calls by `JobSpec.modality`.
 ///
-/// Used so a single `JobQueueController` can run LLM fake jobs and voice-clone
-/// stub jobs without dual processors fighting over the queue slot.
+/// Used so a single `JobQueueController` can run LLM fake jobs, voice-clone
+/// stub jobs, and Apple Foundation adapter jobs without dual processors fighting
+/// over the queue slot.
 public final class CompositeTrainingRunner: TrainingRunner, @unchecked Sendable {
     public let id: String
     public let protocolVersion: Int
 
     private let llm: any TrainingRunner
     private let voice: any TrainingRunner
+    private let foundation: (any TrainingRunner)?
     private let cancelledJobIds = OSAllocatedUnfairLock(initialState: Set<String>())
 
     public init(
         llm: any TrainingRunner,
         voice: any TrainingRunner,
+        foundation: (any TrainingRunner)? = nil,
         id: String = "composite-training-runner",
         protocolVersion: Int = ProtocolVersions.runnerProtocolVersion
     ) {
         self.llm = llm
         self.voice = voice
+        self.foundation = foundation
         self.id = id
         self.protocolVersion = protocolVersion
     }
@@ -31,21 +35,35 @@ public final class CompositeTrainingRunner: TrainingRunner, @unchecked Sendable 
     public func capabilities() async throws -> RunnerCapabilities {
         let llmCaps = try await llm.capabilities()
         let voiceCaps = try await voice.capabilities()
+        let foundationCaps = try await foundation?.capabilities()
         var modalities = Set(llmCaps.modalities)
         modalities.formUnion(voiceCaps.modalities)
+        if let foundationCaps {
+            modalities.formUnion(foundationCaps.modalities)
+        }
         var families = llmCaps.modelFamilies
         for f in voiceCaps.modelFamilies where !families.contains(f) {
             families.append(f)
+        }
+        if let foundationCaps {
+            for f in foundationCaps.modelFamilies where !families.contains(f) {
+                families.append(f)
+            }
         }
         var engines = llmCaps.engineIds ?? []
         for e in voiceCaps.engineIds ?? [] where !engines.contains(e) {
             engines.append(e)
         }
+        if let foundationCaps {
+            for e in foundationCaps.engineIds ?? [] where !engines.contains(e) {
+                engines.append(e)
+            }
+        }
         return RunnerCapabilities(
             modalities: JobModality.allCases.filter { modalities.contains($0) },
-            resume: llmCaps.resume || voiceCaps.resume,
+            resume: llmCaps.resume || voiceCaps.resume || (foundationCaps?.resume ?? false),
             modelFamilies: families,
-            maxSeqLen: llmCaps.maxSeqLen ?? voiceCaps.maxSeqLen,
+            maxSeqLen: llmCaps.maxSeqLen ?? voiceCaps.maxSeqLen ?? foundationCaps?.maxSeqLen,
             engineIds: engines.isEmpty ? nil : engines
         )
     }
@@ -70,12 +88,15 @@ public final class CompositeTrainingRunner: TrainingRunner, @unchecked Sendable 
         cancelledJobIds.withLock { $0.insert(jobId) }
         await llm.cancel(jobId: jobId)
         await voice.cancel(jobId: jobId)
+        await foundation?.cancel(jobId: jobId)
     }
 
     private func runner(for modality: JobModality) -> any TrainingRunner {
         switch modality {
         case .voiceClone, .voiceFinetune:
             return voice
+        case .foundationAdapter:
+            return foundation ?? llm
         case .llm:
             return llm
         }

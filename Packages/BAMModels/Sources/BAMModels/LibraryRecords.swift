@@ -24,6 +24,34 @@ public enum ModelKind: String, Codable, Sendable, CaseIterable, Equatable {
 public enum ArtifactKind: String, Codable, Sendable, CaseIterable, Equatable {
     case loraAdapter = "lora_adapter"
     case voiceProfile = "voice_profile"
+    /// Apple Foundation Models custom adapter (`.fmadapter` package).
+    case foundationAdapter = "foundation_adapter"
+}
+
+/// Which fine-tune / specialize path the Train wizard uses.
+public enum TrainBackend: String, Codable, Sendable, CaseIterable, Identifiable, Equatable {
+    /// Open weights under `models/base` + mlx-lm LoRA → `models/adapters`.
+    case openMlxLora = "open_mlx_lora"
+    /// System on-device FM + Apple adapter toolkit/import → `models/foundation-adapters`.
+    case appleFoundationAdapter = "apple_foundation_adapter"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .openMlxLora: return "Open MLX LoRA"
+        case .appleFoundationAdapter: return "Apple Foundation Adapter"
+        }
+    }
+
+    public var shortHelp: String {
+        switch self {
+        case .openMlxLora:
+            return "Fine-tune an open base model (Qwen/etc.) with LoRA. Publishes under models/adapters."
+        case .appleFoundationAdapter:
+            return "Specialize Apple’s on-device model with a .fmadapter. Export mind data, train via Apple’s toolkit, then import — or publish a stub for plumbing."
+        }
+    }
 }
 
 // MARK: - SQLite v1 row shapes (Codable; GRDB FetchableRecord arrives with repositories)

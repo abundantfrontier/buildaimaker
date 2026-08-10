@@ -1,0 +1,10 @@
+{"v":1,"type":"hello","workerId":"bam-echo-worker","workerVersion":"0.1.0","caps":{"modalities":["llm"],"resume":true,"modelFamilies":["echo"],"maxSeqLen":2048}}
+{"v":1,"type":"log","level":"info","message":"run start","ts":"2026-07-19T00:00:00Z"}
+{"v":1,"type":"heartbeat","rssBytes":268435456,"gpuUtil":0.1,"cpuUtil":0.2,"ts":"2026-07-19T00:00:00Z"}
+{"v":1,"type":"progress","step":1,"epoch":0.33,"loss":1.7,"lr":0.0001,"tokensPerSec":101.0,"etaSec":0.06,"metrics":{"totalSteps":3}}
+{"v":1,"type":"heartbeat","rssBytes":268435456,"gpuUtil":0.1,"cpuUtil":0.2,"ts":"2026-07-19T00:00:01Z"}
+{"v":1,"type":"progress","step":2,"epoch":0.66,"loss":1.4,"lr":0.0001,"tokensPerSec":102.0,"etaSec":0.03,"metrics":{"totalSteps":3}}
+{"v":1,"type":"checkpoint","path":"checkpoints/step-1","step":1}
+{"v":1,"type":"progress","step":3,"epoch":1.0,"loss":1.1,"lr":0.0001,"tokensPerSec":103.0,"etaSec":0.0,"metrics":{"totalSteps":3}}
+{"v":1,"type":"artifact","kind":"lora_adapter","path":"artifacts/adapter"}
+{"v":1,"type":"result","status":"succeeded","artifacts":[{"kind":"lora_adapter","path":"artifacts/adapter"}],"message":null}

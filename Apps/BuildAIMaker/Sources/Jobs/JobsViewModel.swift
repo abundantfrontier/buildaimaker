@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import BAMCore
@@ -15,7 +16,7 @@ final class JobsViewModel: ObservableObject {
     @Published private(set) var statusMessage: String?
     @Published private(set) var isBusy = false
 
-    private let controller: JobQueueController
+    private var controller: JobQueueController
     private var jobsTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
 
@@ -23,44 +24,81 @@ final class JobsViewModel: ObservableObject {
         self.controller = controller
     }
 
-    /// Opens the default library database + composite runner (LLM fake + voice stub + foundation adapter).
+    /// Rebind to the app-wide queue (Train / MCP share this instance).
+    func attachSharedQueue(_ shared: JobQueueController) {
+        if shared !== controller {
+            stop()
+            controller = shared
+        }
+        start()
+    }
+
+    var nowRunning: [JobRecord] {
+        jobs.filter {
+            switch $0.status {
+            case .queued, .preparing, .running: return true
+            default: return false
+            }
+        }
+    }
+
+    var recentFinished: [JobRecord] {
+        jobs.filter { job in
+            switch job.status {
+            case .queued, .preparing, .running: return false
+            default: return true
+            }
+        }
+    }
+
+    func openJobFolder(_ job: JobRecord) {
+        let dir = LibraryPaths.jobDirectory(id: job.id)
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir.path)
+    }
+
+    func jobTitle(_ job: JobRecord) -> String {
+        switch job.modality {
+        case .llm: return "Teaching"
+        case .foundationAdapter: return "Apple adapter"
+        case .voiceClone: return "Voice"
+        case .voiceFinetune: return "Voice teach"
+        }
+    }
+
+    func statusTitle(_ job: JobRecord) -> String {
+        switch job.status {
+        case .queued: return "Waiting"
+        case .preparing: return "Starting"
+        case .running: return "Running"
+        case .succeeded: return "Worked"
+        case .failed: return "Failed"
+        case .cancelled: return "Stopped"
+        case .interrupted: return "Cut off"
+        case .draft: return "Draft"
+        }
+    }
+
+    func whenLabel(_ job: JobRecord) -> String {
+        guard let date = JobTimestamps.parse(job.updatedAt) else { return job.updatedAt }
+        let secs = Date().timeIntervalSince(date)
+        if secs < 45 { return "Just now" }
+        if secs < 3600 { return "\(Int(secs / 60)) min ago" }
+        if secs < 86_400 { return "\(Int(secs / 3600))h ago" }
+        return "Earlier"
+    }
+
+    func durationLabel(_ job: JobRecord) -> String? {
+        guard let start = JobTimestamps.parse(job.createdAt),
+              let end = JobTimestamps.parse(job.updatedAt)
+        else { return nil }
+        let s = max(0, end.timeIntervalSince(start))
+        if s < 90 { return "\(Int(s))s" }
+        return "\(Int(s / 60)) min"
+    }
+
+    /// Shared product queue (same instance as Train / MCP).
     static func makeDefault() throws -> JobsViewModel {
-        let db = try LibraryDatabase.openDefault()
-        let store = JobStore(database: db)
-        let foundationInstalled = FoundationToolkitProbe.probe().installed
-        let runner = CompositeTrainingRunner(
-            llm: FakeTrainingRunner(
-                config: FakeRunnerConfig(
-                    stepCount: 20,
-                    stepInterval: .milliseconds(200),
-                    heartbeatEverySteps: 2,
-                    prepareDelay: .milliseconds(100)
-                )
-            ),
-            voice: StubVoiceCloneRunner(
-                config: StubVoiceCloneRunnerConfig(
-                    stepCount: 8,
-                    stepInterval: .milliseconds(120),
-                    prepareDelay: .milliseconds(50)
-                )
-            ),
-            foundation: FoundationModelsAdapterRunner(
-                config: FoundationModelsAdapterRunnerConfig(
-                    stepCount: 8,
-                    stepInterval: .milliseconds(120),
-                    prepareDelay: .milliseconds(50),
-                    // Use real toolkit when installed; otherwise stub (dogfood-safe).
-                    forceFakeTrain: !foundationInstalled
-                )
-            )
-        )
-        let controller = JobQueueController(
-            store: store,
-            runner: runner,
-            libraryRoot: LibraryPaths.libraryRoot,
-            heartbeatTimeout: HeartbeatMonitor.defaultTimeoutSeconds
-        )
-        return JobsViewModel(controller: controller)
+        JobsViewModel(controller: try AppJobQueueFactory.makeDefault())
     }
 
     func start() {
@@ -73,7 +111,7 @@ final class JobsViewModel: ObservableObject {
             for await snapshot in stream {
                 guard !Task.isCancelled else { break }
                 await MainActor.run {
-                    self.jobs = snapshot
+                    self.jobs = snapshot.sorted { $0.updatedAt > $1.updatedAt }
                 }
             }
         }
@@ -94,7 +132,7 @@ final class JobsViewModel: ObservableObject {
             do {
                 try await self.controller.recoverStaleJobs()
                 let listed = try await self.controller.listJobs()
-                self.jobs = listed
+                self.jobs = listed.sorted { $0.updatedAt > $1.updatedAt }
             } catch {
                 self.statusMessage = error.localizedDescription
             }
@@ -124,7 +162,7 @@ final class JobsViewModel: ObservableObject {
                     hyperparameters: LLMHyperparameters(epochs: 1, batchSize: 1)
                 )
                 _ = try await controller.enqueue(spec: spec)
-                statusMessage = "Queued fake job \(id.prefix(8))…"
+                statusMessage = "Queued synthetic job \(id.prefix(8))… (shared queue)"
             } catch {
                 statusMessage = error.localizedDescription
             }

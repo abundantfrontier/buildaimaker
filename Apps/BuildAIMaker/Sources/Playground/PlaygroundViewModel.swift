@@ -1,7 +1,9 @@
 import AppKit
+import AVFoundation
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
+import BAMAudioFX
 import BAMCharacterStudio
 import BAMCore
 import BAMInference
@@ -55,12 +57,36 @@ final class PlaygroundViewModel: ObservableObject {
     @Published private(set) var modelCapability: LocalModelCapability = .stub(reason: "No model selected")
     @Published private(set) var mlxAvailable: Bool = false
     @Published private(set) var usingRealGenerate: Bool = false
+
+    /// Caption next to the character picker — must match the live backend, not “any real model”.
+    var backendCaption: String {
+        switch backendId {
+        case AppleFoundationLLMBackend.id:
+            return "Apple on-device"
+        case MLXGenerateBackend.id:
+            return "Local MLX"
+        default:
+            return usingRealGenerate ? "Local model" : "Demo replies"
+        }
+    }
     /// Backend preference: Apple on-device first when available.
     @Published var backendPreference: LLMBackendPreference = .automatic {
         didSet { resolveBackend() }
     }
     @Published private(set) var appleModelStatus: AppleFoundationModelStatus = .unknown
     @Published private(set) var mlxPythonAvailable: Bool = false
+    /// When true, each assistant reply is spoken (system TTS + creature FX).
+    @Published var speakReplies: Bool = UserDefaults.standard.bool(forKey: "bam.playground.speakReplies") {
+        didSet {
+            UserDefaults.standard.set(speakReplies, forKey: "bam.playground.speakReplies")
+            if !speakReplies { stopSpeaking() }
+        }
+    }
+    @Published private(set) var isSpeaking = false
+    @Published private(set) var lastSpokenNote: String?
+    @Published private(set) var boundCharacterId: String?
+    @Published private(set) var voiceParams: CreatureFXParams?
+    @Published private(set) var characters: [CharacterDraft] = []
 
     private let libraryRoot: URL
     private let featureFlags: FeatureFlags
@@ -70,6 +96,10 @@ final class PlaygroundViewModel: ObservableObject {
     private let metricsStore: MVPMetricsStore
     private var traceRecorder: PlaygroundTraceRecorder
     private var lastAppliedPlaygroundToken: UUID?
+    private var lastIncomingChatNonce: String = ""
+    private var audioPlayer: AVAudioPlayer?
+    private var speakEndTask: Task<Void, Never>?
+    private var speakGeneration = 0
 
     init(
         libraryRoot: URL = LibraryPaths.libraryRoot,
@@ -82,7 +112,15 @@ final class PlaygroundViewModel: ObservableObject {
         self.featureFlags = featureFlags
         self.playgroundEnabled = featureFlags.playground
         self.forceEcho = forceEcho
-        self.backend = backend ?? LLMBackendFactory.makeDefault(preference: .automatic, forceEcho: forceEcho)
+        // Do not probe mlx-lm here: PlaygroundView constructs this during SwiftUI
+        // layout. A Process.waitUntilExit on the main thread aborts AttributeGraph.
+        if let backend {
+            self.backend = backend
+        } else if forceEcho {
+            self.backend = EchoLLMBackend()
+        } else {
+            self.backend = AppleFoundationLLMBackend.makeIfAvailable() ?? EchoLLMBackend()
+        }
         self.backendId = self.backend.backendId
         self.baseScanner = LocalModelScanner(
             modelsBaseURL: libraryRoot.appendingPathComponent("models/base", isDirectory: true)
@@ -93,19 +131,64 @@ final class PlaygroundViewModel: ObservableObject {
             enabled: PlaygroundTraceRecorder.isEnabled()
         )
         self.appleModelStatus = AppleFoundationModelSupport.probeStatus()
-        self.mlxPythonAvailable = MLXGenerateBackend.isAvailable()
+        self.mlxPythonAvailable = false
         self.usingRealGenerate = !self.backend.backendId.contains("echo")
     }
 
     func bootstrap() {
+        reloadCharacters()
         reload()
+        Task.detached { [weak self] in
+            _ = MLXGenerateBackend.isAvailable()
+            guard let self else { return }
+            await self.onSelectedBaseModelChanged()
+        }
+    }
+
+    func reloadCharacters() {
+        characters = (try? CharacterLibraryStore().list()) ?? []
+    }
+
+    /// Bind a library character (picker or MCP). Clears the transcript when the id changes.
+    func bindCharacter(id: String?) {
+        reloadCharacters()
+        guard let id, !id.isEmpty else {
+            boundCharacterId = nil
+            boundCharacterName = nil
+            voiceParams = nil
+            lastAppliedPlaygroundToken = nil
+            statusMessage = "No character selected — pick one to chat in-character."
+            return
+        }
+        if boundCharacterId == id, boundCharacterName != nil { return }
+        guard let draft = try? CharacterLibraryStore().load(id: id) else {
+            errorMessage = "Character not found."
+            return
+        }
+        lastAppliedPlaygroundToken = nil
+        applyCharacterLaunch(
+            CharacterStudioLaunchContext.PlaygroundTarget(
+                characterId: draft.id,
+                characterName: draft.displayTitle,
+                baseModelPath: draft.baseModelPath,
+                baseModelName: draft.baseModelName,
+                baseModelSourceKey: draft.baseModelSourceKey,
+                systemPrompt: draft.bible?.systemPrompt,
+                adapterPath: draft.adapterPath,
+                adapterName: draft.adapterName,
+                voiceParams: draft.creatureFXParams()
+            )
+        )
     }
 
     /// Apply character wizard / list handoff (model path + system prompt).
     func applyCharacterLaunch(_ target: CharacterStudioLaunchContext.PlaygroundTarget) {
         guard lastAppliedPlaygroundToken != target.token else { return }
         lastAppliedPlaygroundToken = target.token
+        boundCharacterId = target.characterId
         boundCharacterName = target.characterName
+        voiceParams = target.voiceParams
+            ?? (try? CharacterLibraryStore().load(id: target.characterId))?.creatureFXParams()
 
         let usesApple = target.baseModelSourceKey == CharacterDraft.appleFoundationSourceKey
             || target.baseModelPath == CharacterDraft.appleFoundationPath
@@ -136,9 +219,48 @@ final class PlaygroundViewModel: ObservableObject {
         }
         messages = []
         reload()
+        applyAdapterSelection(named: target.adapterName, path: target.adapterPath, characterName: target.characterName)
+        let adapterNote: String
+        if adapterEnabled, let path = selectedAdapterPath {
+            let label = adapters.first(where: { $0.localPath == path })?.displayName
+                ?? target.adapterName
+                ?? URL(fileURLWithPath: path).lastPathComponent
+            adapterNote = " · LoRA \(label)"
+        } else {
+            adapterNote = " · base model only (no LoRA pinned yet)"
+        }
         statusMessage = "Bound to character “\(target.characterName)”"
             + (target.baseModelName.map { " · \($0)" } ?? "")
             + (usesApple ? " · Apple on-device" : "")
+            + adapterNote
+    }
+
+    /// Prefer the character’s stored adapter; else a library adapter whose name matches.
+    private func applyAdapterSelection(named: String?, path: String?, characterName: String) {
+        func exists(_ p: String) -> Bool {
+            FileManager.default.fileExists(atPath: p)
+        }
+        if let path, exists(path) {
+            selectedAdapterPath = path
+            adapterEnabled = true
+            if !adapters.contains(where: { $0.localPath == path }) {
+                // Keep even if scan missed it (reload already ran).
+            }
+            return
+        }
+        let needle = characterName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !needle.isEmpty,
+           let match = adapters.first(where: {
+               $0.displayName.lowercased().contains(needle)
+                   || $0.directoryName.lowercased().contains(needle)
+           })
+        {
+            selectedAdapterPath = match.localPath
+            adapterEnabled = true
+            return
+        }
+        selectedAdapterPath = nil
+        adapterEnabled = false
     }
 
     func reload() {
@@ -294,6 +416,23 @@ final class PlaygroundViewModel: ObservableObject {
         !messages.isEmpty && messages.contains(where: { $0.role == "user" })
     }
 
+    func applyIncomingTurn(user: String, assistant: String, nonce: String) {
+        guard !nonce.isEmpty, nonce != lastIncomingChatNonce else { return }
+        lastIncomingChatNonce = nonce
+        let userTrim = user.trimmingCharacters(in: .whitespacesAndNewlines)
+        let asstTrim = assistant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !userTrim.isEmpty, !asstTrim.isEmpty else { return }
+        if messages.last?.role == "assistant", messages.last?.content == asstTrim {
+            return
+        }
+        messages.append(.user(userTrim))
+        messages.append(.assistant(asstTrim))
+        statusMessage = "Turn from agent · \(boundCharacterName ?? "Playground")"
+        if speakReplies {
+            speakAssistantReply(asstTrim)
+        }
+    }
+
     func send() {
         guard canSend else { return }
         modelCapability = LocalModelCapabilityProbe.probe(path: selectedBasePath)
@@ -305,6 +444,7 @@ final class PlaygroundViewModel: ObservableObject {
         isGenerating = true
         errorMessage = nil
         exportMessage = nil
+        stopSpeaking()
         traceRecorder.enabled = PlaygroundTraceRecorder.isEnabled()
 
         let activeBackend = backend
@@ -342,6 +482,10 @@ final class PlaygroundViewModel: ObservableObject {
                     completeEnded: completeEnded,
                     totalEnded: completeEnded
                 )
+                if speakReplies, let reply = messages.last(where: { $0.role == "assistant" })?.content {
+                    speakAssistantReply(reply)
+                }
+
                 if let url = try? traceRecorder.recordTurn(
                     stages: stages,
                     backendId: result.backendId,
@@ -366,11 +510,128 @@ final class PlaygroundViewModel: ObservableObject {
     }
 
     func clearTranscript() {
+        stopSpeaking()
         messages = []
         lastLatencyMs = nil
         lastWasStub = nil
         exportMessage = nil
+        lastSpokenNote = nil
         statusMessage = "Transcript cleared."
+    }
+
+    func stopSpeaking() {
+        speakGeneration += 1
+        speakEndTask?.cancel()
+        speakEndTask = nil
+        audioPlayer?.stop()
+        audioPlayer = nil
+        isSpeaking = false
+    }
+
+    /// Fresh card knobs (How-fast, textures). Cached `voiceParams` go stale after Voice edits.
+    private func liveVoiceParams() -> CreatureFXParams {
+        if let id = boundCharacterId,
+           let draft = try? CharacterLibraryStore().load(id: id)
+        {
+            let fresh = draft.creatureFXParams()
+            voiceParams = fresh
+            return fresh
+        }
+        return voiceParams ?? CreatureFXParams.fromPreset(.alien)
+    }
+
+    /// Speak the last assistant line with the bound character’s creature voice (or a mild default).
+    func speakAssistantReply(_ raw: String) {
+        let text = Self.speechText(from: raw)
+        guard !text.isEmpty else { return }
+        stopSpeaking()
+        speakGeneration += 1
+        let gen = speakGeneration
+        isSpeaking = true
+        lastSpokenNote = nil
+
+        // Reload from the card so Voice-step sliders apply without rebinding.
+        let params = liveVoiceParams()
+        let name = boundCharacterName ?? "Playground"
+        let characterId = boundCharacterId
+
+        Task { @MainActor in
+            defer {
+                if gen == self.speakGeneration, self.audioPlayer == nil {
+                    self.isSpeaking = false
+                }
+            }
+            do {
+                let dir: URL
+                if let characterId {
+                    dir = try CharacterLibraryStore().characterDirectory(id: characterId)
+                } else {
+                    dir = libraryRoot
+                        .appendingPathComponent("diagnostics", isDirectory: true)
+                        .appendingPathComponent("playground-tts", isDirectory: true)
+                }
+                let result = try await CreatureFXRenderer.renderSpokenPreview(
+                    speechText: text,
+                    params: params,
+                    characterName: name,
+                    outputDirectory: dir
+                )
+                guard gen == self.speakGeneration else { return }
+                try playSpokenURL(result.audioURL, duration: result.durationSeconds, generation: gen)
+                if result.usedCatalogTTS {
+                    lastSpokenNote = boundCharacterName.map {
+                        "Spoke as \($0) (\(params.preset.title) · \(params.preset.catalogSpeakerLabel))"
+                    } ?? "Spoke reply (\(params.preset.catalogSpeakerLabel))"
+                } else {
+                    lastSpokenNote = result.usedSystemTTS
+                        ? (boundCharacterName.map { "Spoke as \($0) (\(params.preset.title))" } ?? "Spoke reply")
+                        : "Voice preview was buzz-only (system TTS failed)."
+                }
+            } catch {
+                if gen == self.speakGeneration {
+                    lastSpokenNote = "Could not speak reply: \(error.localizedDescription)"
+                    isSpeaking = false
+                }
+            }
+        }
+    }
+
+    private func playSpokenURL(_ url: URL, duration: Double, generation: Int) throws {
+        let player = try AVAudioPlayer(contentsOf: url)
+        player.prepareToPlay()
+        player.volume = 1.0
+        audioPlayer = player
+        isSpeaking = true
+        guard player.play() else {
+            isSpeaking = false
+            audioPlayer = nil
+            lastSpokenNote = "Could not start audio playback."
+            return
+        }
+        speakEndTask = Task { @MainActor in
+            let ns = UInt64(max(0.05, duration + 0.08) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: ns)
+            guard !Task.isCancelled, generation == self.speakGeneration else { return }
+            if self.audioPlayer === player {
+                self.isSpeaking = false
+                self.audioPlayer = nil
+            }
+        }
+    }
+
+    /// Keep utterances short enough for snappy system TTS.
+    static func speechText(from raw: String, limit: Int = 900) -> String {
+        let collapsed = raw
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collapsed.isEmpty else { return "" }
+        if collapsed.count <= limit { return collapsed }
+        let idx = collapsed.index(collapsed.startIndex, offsetBy: limit)
+        var prefix = String(collapsed[..<idx])
+        if let space = prefix.lastIndex(of: " ") {
+            prefix = String(prefix[..<space])
+        }
+        return prefix.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
     }
 
     /// Export full conversation as JSONL dataset candidate via save panel.

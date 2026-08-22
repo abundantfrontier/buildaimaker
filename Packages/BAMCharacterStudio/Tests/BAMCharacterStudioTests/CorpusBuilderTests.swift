@@ -30,6 +30,24 @@ final class CorpusBuilderTests: XCTestCase {
         }
     }
 
+    func testSystemPromptOverrideWinsOverTemplate() {
+        let bible = CharacterBible(
+            name: "Rocky",
+            species: "Eridian engineer",
+            vibe: "literal",
+            systemPromptOverride:
+                "You are Rocky, the Eridian engineer. End questions with ', question?'."
+        )
+        XCTAssertEqual(
+            bible.systemPrompt,
+            "You are Rocky, the Eridian engineer. End questions with ', question?'."
+        )
+        let data = try! JSONEncoder().encode(bible)
+        let decoded = try! JSONDecoder().decode(CharacterBible.self, from: data)
+        XCTAssertEqual(decoded.systemPromptOverride, bible.systemPromptOverride)
+        XCTAssertEqual(decoded.systemPrompt, bible.systemPrompt)
+    }
+
     func testRiffIncreasesCount() {
         let builder = CorpusBuilder()
         let base = builder.build(

@@ -29,12 +29,27 @@ public enum RuntimePaths: Sendable {
         managedEnvRoot(appVersion: appVersion).appendingPathComponent(relativePath, isDirectory: false)
     }
 
+    /// Directories to walk when the process CWD is not the repo (Terminal / Finder).
+    public static func processSearchRoots(fileManager: FileManager = .default) -> [URL] {
+        var roots: [URL] = []
+        if let exe = Bundle.main.executableURL {
+            roots.append(exe.deletingLastPathComponent().standardizedFileURL)
+        }
+        let cwd = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+            .standardizedFileURL
+        if !roots.contains(where: { $0.path == cwd.path }) {
+            roots.append(cwd)
+        }
+        return roots
+    }
+
     /// Resolve pins root: explicit override, else `BAM_PYTHON_PINS_ROOT`, else
-    /// sibling `Workers/python` relative to CWD / package layout heuristics.
+    /// sibling `Workers/python` relative to the app binary / CWD.
     public static func resolvePinsRoot(
         override: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        searchRoots: [URL]? = nil
     ) -> URL? {
         if let override { return override.standardizedFileURL }
 
@@ -42,18 +57,20 @@ public enum RuntimePaths: Sendable {
             return URL(fileURLWithPath: envPath, isDirectory: true).standardizedFileURL
         }
 
-        // Walk from CWD upward looking for Workers/python/runtime-pins.json
-        var dir = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        for _ in 0..<8 {
-            let candidate = dir
-                .appendingPathComponent("Workers/python", isDirectory: true)
-            let pins = candidate.appendingPathComponent(pinsFileName, isDirectory: false)
-            if fileManager.fileExists(atPath: pins.path) {
-                return candidate.standardizedFileURL
+        let roots = searchRoots ?? processSearchRoots(fileManager: fileManager)
+        for start in roots {
+            var dir = start
+            for _ in 0..<10 {
+                let candidate = dir
+                    .appendingPathComponent("Workers/python", isDirectory: true)
+                let pins = candidate.appendingPathComponent(pinsFileName, isDirectory: false)
+                if fileManager.fileExists(atPath: pins.path) {
+                    return candidate.standardizedFileURL
+                }
+                let parent = dir.deletingLastPathComponent()
+                if parent.path == dir.path { break }
+                dir = parent
             }
-            let parent = dir.deletingLastPathComponent()
-            if parent.path == dir.path { break }
-            dir = parent
         }
         return nil
     }

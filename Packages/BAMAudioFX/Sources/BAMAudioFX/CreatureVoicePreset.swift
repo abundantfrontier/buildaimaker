@@ -2,6 +2,10 @@ import Foundation
 
 /// Named creature voice starting points (CS-3).
 public enum CreatureVoicePreset: String, CaseIterable, Identifiable, Codable, Sendable {
+    /// Soft, even read (classroom-safe). Higher / female-leaning.
+    case sultry
+    /// Matching low, even read. Lower / male-leaning.
+    case deep
     case robot
     case alien
     case lagoon
@@ -21,6 +25,8 @@ public enum CreatureVoicePreset: String, CaseIterable, Identifiable, Codable, Se
 
     public var title: String {
         switch self {
+        case .sultry: return "Warm"
+        case .deep: return "Deep"
         case .robot: return "Robot"
         case .alien: return "Alien"
         case .lagoon: return "Lagoon"
@@ -40,10 +46,14 @@ public enum CreatureVoicePreset: String, CaseIterable, Identifiable, Codable, Se
 
     public var teachTip: String {
         switch self {
+        case .sultry:
+            return "A soft, unhurried read. Good for poems and quiet lines."
+        case .deep:
+            return "A low, even read. The male match to Warm — same pace, different speaker."
         case .robot:
             return "Metal + bitcrush: words stay clear with a machine vibe."
         case .alien:
-            return "Formant shift + shimmer: polite outsider energy."
+            return "Slow, clipped English with bells in the words. Curious visitor energy."
         case .lagoon:
             return "Low-pass + wet reverb: underwater patience."
         case .ghost:
@@ -71,13 +81,126 @@ public enum CreatureVoicePreset: String, CaseIterable, Identifiable, Codable, Se
         }
     }
 
+    /// One line for novices (no DSP jargon).
+    public var plainSummary: String {
+        switch self {
+        case .sultry: return "Soft, unhurried, higher"
+        case .deep: return "Low, even, unhurried"
+        case .robot: return "Clipped, metallic, machine"
+        case .alien: return "Slow, musical, clipped"
+        case .lagoon: return "Low and watery"
+        case .ghost: return "Airy and far away"
+        case .beast: return "Deep and chesty"
+        case .birdish: return "Bright and quick"
+        case .goblin: return "High and raspy"
+        case .dragon: return "Huge and smoky"
+        case .fairy: return "Tiny and sparkling"
+        case .android: return "Almost human, a bit digital"
+        case .coyote: return "Dry laugh, desert grit"
+        case .wizard: return "Warm and old-study"
+        case .pirate: return "Gravelly swagger"
+        case .insect: return "Thin, clicky speech"
+        }
+    }
+
+    /// Kokoro speaker for this card. Each default id is unique so cards don't share a throat.
+    public func catalogVoiceId(register: VoiceRegister) -> String {
+        if register == defaultRegister {
+            return defaultCatalogVoiceId
+        }
+        return alternateCatalogVoiceId
+    }
+
+    /// Short speaker name shown on the card (Kokoro id without prefix).
+    public var catalogSpeakerLabel: String {
+        let id = defaultCatalogVoiceId
+        if let us = id.range(of: "_") {
+            return String(id[us.upperBound...]).capitalized
+        }
+        return id
+    }
+
+    /// Default-register speaker (15 unique ids).
+    public var defaultCatalogVoiceId: String {
+        switch self {
+        case .sultry: return "af_nicole"
+        case .deep: return "am_michael"
+        case .alien: return "am_puck"
+        case .fairy: return "af_heart"
+        case .birdish: return "af_aoede"
+        case .insect: return "af_kore"
+        case .ghost: return "bf_emma"
+        case .android: return "af_alloy"
+        case .robot: return "am_onyx"
+        case .beast: return "am_fenrir"
+        case .dragon: return "am_santa"
+        case .goblin: return "am_adam"
+        case .lagoon: return "am_echo"
+        case .coyote: return "am_liam"
+        case .wizard: return "bm_george"
+        case .pirate: return "bm_fable"
+        }
+    }
+
+    /// Other-register speaker (may reuse ids; default row stays unique).
+    public var alternateCatalogVoiceId: String {
+        switch self {
+        case .sultry: return "am_michael"
+        case .deep: return "af_nicole"
+        case .alien: return "af_bella"
+        case .fairy: return "am_puck"
+        case .birdish: return "af_sky"
+        case .insect: return "am_echo"
+        case .ghost: return "bm_george"
+        case .android: return "am_eric"
+        case .robot: return "af_alloy"
+        case .beast: return "am_onyx"
+        case .dragon: return "am_fenrir"
+        case .goblin: return "af_kore"
+        case .lagoon: return "af_sarah"
+        case .coyote: return "af_sarah"
+        case .wizard: return "bf_emma"
+        case .pirate: return "bf_isabella"
+        }
+    }
+
+    public func catalogLang(register: VoiceRegister) -> String {
+        let id = catalogVoiceId(register: register)
+        if id.hasPrefix("bf_") || id.hasPrefix("bm_") { return "en-gb" }
+        return "en-us"
+    }
+
+    /// Human-leaning: identity is source + EQ/breath, never comb/chorus.
+    public var isHumanLeaning: Bool {
+        switch self {
+        case .sultry, .deep, .pirate, .wizard, .coyote:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// True when the creature needs a different *mouth size* (OLA formant).
+    /// Cheap OLA plus a short delay is the whirly-tube / corrugated-pipe timbre.
+    public var usesMouthSizeFormant: Bool {
+        switch self {
+        case .beast, .dragon, .fairy, .insect, .goblin, .birdish:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Default slider positions 0...1 (wide spread so presets are obviously different).
     public var defaultSize: Double {
         switch self {
+        // Near the TTS larynx. Pitch-stretching a female source is what made sultry metallic.
+        case .sultry: return 0.34
+        case .deep: return 0.32
         case .beast, .dragon: return 0.08
         case .robot: return 0.32
         case .android: return 0.42
-        case .alien: return 0.58
+        case .alien: return 0.34
         case .lagoon: return 0.28
         case .ghost, .wizard: return 0.38
         case .birdish: return 0.82
@@ -88,29 +211,46 @@ public enum CreatureVoicePreset: String, CaseIterable, Identifiable, Codable, Se
         }
     }
 
+    /// Which system TTS body to start from (FX only finishes the character).
+    public var speechVoiceHint: SpeechVoiceHint {
+        switch self {
+        case .sultry: return .sultry
+        case .deep: return .deepMale
+        case .beast, .dragon, .pirate, .wizard: return .deepMale
+        case .robot, .android: return .noveltyRobot
+        case .ghost: return .whisper
+        case .fairy, .birdish, .insect, .goblin: return .child
+        case .lagoon, .coyote, .alien: return .male
+        }
+    }
+
+    /// Default Lower / Higher tessitura for this card.
+    public var defaultRegister: VoiceRegister {
+        switch self {
+        case .sultry, .ghost, .fairy, .birdish, .goblin, .insect:
+            return .higher
+        case .deep, .alien, .beast, .dragon, .pirate, .wizard, .robot, .android, .lagoon, .coyote:
+            return .lower
+        }
+    }
+
     public var defaultGrit: Double {
         switch self {
-        case .robot: return 0.55
-        case .beast, .dragon, .pirate: return 0.52
-        case .goblin, .coyote: return 0.45
-        case .android: return 0.28
-        case .lagoon: return 0.25
-        case .alien, .insect: return 0.22
-        case .ghost, .fairy, .wizard: return 0.12
-        case .birdish: return 0.15
+        case .pirate, .beast, .dragon: return 0.22
+        case .goblin, .coyote: return 0.18
+        case .sultry, .deep: return 0
+        default: return 0.08
         }
     }
 
     public var defaultAtmosphere: Double {
         switch self {
-        case .ghost: return 0.85
-        case .lagoon, .wizard: return 0.75
-        case .dragon: return 0.55
-        case .alien, .fairy: return 0.45
-        case .beast, .coyote: return 0.35
-        case .robot, .android, .insect: return 0.25
-        case .birdish: return 0.4
-        case .goblin, .pirate: return 0.3
+        case .ghost: return 0.55
+        case .lagoon, .wizard: return 0.42
+        case .dragon: return 0.28
+        case .sultry, .deep: return 0.04
+        case .alien: return 0.12
+        default: return 0.12
         }
     }
 
@@ -118,62 +258,117 @@ public enum CreatureVoicePreset: String, CaseIterable, Identifiable, Codable, Se
         switch self {
         case .beast, .dragon, .lagoon: return 0.18
         case .ghost, .wizard: return 0.35
-        case .alien, .coyote, .pirate: return 0.48
+        case .sultry, .deep: return 0.40
+        case .alien: return 0.50
+        case .coyote, .pirate: return 0.48
         case .robot, .android: return 0.55
         case .goblin: return 0.7
         case .birdish, .fairy, .insect: return 0.85
         }
     }
 
-    public var defaultMetallic: Double {
-        switch self {
-        case .robot: return 0.75
-        case .android: return 0.55
-        case .insect: return 0.35
-        case .alien: return 0.25
-        case .goblin: return 0.15
-        default: return 0.05
-        }
-    }
+    public var defaultMetallic: Double { 0 }
 
     public var defaultTremble: Double {
         switch self {
-        case .ghost: return 0.45
-        case .fairy, .insect: return 0.35
-        case .alien: return 0.2
-        case .goblin: return 0.25
-        default: return 0.08
+        case .ghost: return 0.16
+        case .alien: return 0.08
+        default: return 0
         }
     }
 
     public var defaultBreath: Double {
         switch self {
-        case .ghost, .dragon: return 0.45
-        case .beast, .coyote: return 0.3
-        case .lagoon: return 0.25
-        case .wizard: return 0.2
-        default: return 0.08
+        case .sultry, .deep: return 0.30
+        case .ghost: return 0.16
+        case .dragon, .beast: return 0.1
+        default: return 0
         }
     }
 
     public var defaultSpeed: Double {
         switch self {
+        case .sultry, .deep, .alien: return 0.22
         case .wizard, .ghost, .beast, .dragon: return 0.28
         case .lagoon, .pirate: return 0.35
-        case .alien, .coyote: return 0.45
+        case .coyote: return 0.45
         case .robot, .android: return 0.5
         case .goblin, .birdish: return 0.62
         case .fairy, .insect: return 0.72
         }
     }
 
-    public var defaultRobotize: Double {
+    public var defaultRobotize: Double { 0 }
+}
+
+/// Overall speaker range (TTS body + a mild size/formant nudge).
+public enum VoiceRegister: String, CaseIterable, Identifiable, Codable, Sendable {
+    case lower
+    case higher
+
+    public var id: String { rawValue }
+
+    public var title: String {
         switch self {
-        case .robot: return 0.7
-        case .android: return 0.4
-        case .insect: return 0.25
-        default: return 0.0
+        case .lower: return "Lower"
+        case .higher: return "Higher"
         }
+    }
+
+    public var detail: String {
+        switch self {
+        case .lower: return "Deeper speaker (usually male-leaning)"
+        case .higher: return "Brighter speaker (usually female-leaning)"
+        }
+    }
+
+    public var sizeBias: Double {
+        switch self {
+        case .lower: return -0.10
+        case .higher: return 0.12
+        }
+    }
+
+    public var formantBias: Double {
+        switch self {
+        case .lower: return -0.08
+        case .higher: return 0.10
+        }
+    }
+}
+
+/// Preferred system-TTS body so FX is not fighting a mismatched larynx.
+public enum SpeechVoiceHint: String, Sendable, Codable {
+    case deepMale
+    case male
+    case female
+    case child
+    case whisper
+    case noveltyRobot
+    case sultry
+
+    /// `say -v` names to try, first installed wins.
+    public var preferredSayNames: [String] {
+        switch self {
+        case .noveltyRobot:
+            return ["Zarvox", "Trinoids", "Fred", "Reed"]
+        case .whisper:
+            return ["Whisper", "Samantha", "Kathy"]
+        case .child:
+            return ["Junior", "Princess", "Kathy", "Shelley"]
+        case .deepMale:
+            return ["Ralph", "Bruce", "Albert", "Daniel", "Alex"]
+        case .male:
+            return ["Alex", "Daniel", "Tom", "Fred"]
+        case .female:
+            return ["Samantha", "Victoria", "Karen", "Moira", "Fiona"]
+        case .sultry:
+            return ["Flo", "Samantha", "Victoria", "Zoe", "Allison", "Ava", "Susan", "Karen", "Moira"]
+        }
+    }
+
+    var preferredNameFragments: [String] {
+        preferredSayNames.map { $0.lowercased() }
     }
 }
 
@@ -252,24 +447,12 @@ public enum CreatureTextureID: String, CaseIterable, Identifiable, Codable, Send
         }
     }
 
-    /// How loud this bed is relative to speech (tuned so textures are obvious).
+    /// Quiet beds under speech (opt-in). Words stay louder than the layer.
     public var mixGain: Float {
         switch self {
-        case .buzzSaw: return 0.42
-        case .songbird: return 0.38
-        case .drip: return 0.48
-        case .servo: return 0.40
-        case .thunder: return 0.55
-        case .radioStatic: return 0.40
-        case .crystal: return 0.48
-        case .windHowl: return 0.42
-        case .glitch: return 0.45
-        case .bubble: return 0.50
-        case .chime: return 0.46
-        case .roar: return 0.50
-        case .insectClick: return 0.44
-        case .ropeCreak: return 0.42
-        case .fireCrackle: return 0.46
+        case .thunder, .roar: return 0.16
+        case .buzzSaw, .radioStatic, .fireCrackle: return 0.12
+        default: return 0.14
         }
     }
 }

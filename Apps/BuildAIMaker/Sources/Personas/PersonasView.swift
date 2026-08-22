@@ -6,6 +6,9 @@ import BAMPersonas
 import BAMResourcesUI
 
 /// Personas pane: create/list personas and export/import Pack Format v1 zips.
+///
+/// Not in the sidebar. Packs do not drive Playground yet (that binds a Character).
+/// Keep this view for a later ship.
 struct PersonasView: View {
     let featureFlags: FeatureFlags
     @StateObject private var model: PersonasViewModel
@@ -233,6 +236,7 @@ struct PersonasView: View {
                     Label("Create", systemImage: "plus.circle.fill")
                 }
                 .disabled(model.isBusy || model.draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .guideHighlight("personas.create")
             }
 
             Section("Pack Format v1") {

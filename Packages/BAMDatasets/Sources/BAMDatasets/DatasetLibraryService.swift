@@ -32,7 +32,7 @@ public final class DatasetLibraryService: @unchecked Sendable {
     public let store: DatasetStore
     public let importer: DatasetImporter
     public let libraryRoot: URL
-    private let fileManager: FileManager
+    let fileManager: FileManager
 
     public init(
         database: LibraryDatabase,

@@ -7,6 +7,9 @@ import BAMResourcesUI
 import BAMRunnersVoice
 
 /// Voices pane: list profiles, import reference audio, require consent, start clone job.
+///
+/// Not in the sidebar. Clone still uses `StubVoiceCloneRunner` (no real F5-TTS).
+/// Character → Voice (Kokoro) is the shipping path. Keep this view for a later ship.
 struct VoicesView: View {
     let featureFlags: FeatureFlags
     @StateObject private var model: VoicesViewModel
@@ -197,6 +200,7 @@ struct VoicesView: View {
                     Label("Import reference WAV…", systemImage: "waveform.badge.plus")
                 }
                 .disabled(model.isBusy)
+                .guideHighlight("voices.import")
             } header: {
                 Text("Reference audio")
             }

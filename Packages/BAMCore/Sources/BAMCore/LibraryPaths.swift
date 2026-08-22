@@ -37,6 +37,11 @@ public enum LibraryPaths: Sendable {
         libraryRoot.appendingPathComponent("models/base", isDirectory: true)
     }
 
+    /// Kokoro catalog speakers (`kokoro-v1.0.onnx` + `voices-v1.0.bin`).
+    public static var modelsTTS: URL {
+        libraryRoot.appendingPathComponent("models/tts/kokoro", isDirectory: true)
+    }
+
     public static var modelsAdapters: URL {
         libraryRoot.appendingPathComponent("models/adapters", isDirectory: true)
     }
@@ -68,6 +73,21 @@ public enum LibraryPaths: Sendable {
 
     public static var downloadCache: URL {
         libraryRoot.appendingPathComponent("cache/downloads", isDirectory: true)
+    }
+
+    /// Private App RPC Unix socket for MCP bridge / CLI (same directory as token).
+    public static var mcpSocket: URL {
+        libraryRoot.appendingPathComponent("mcp.sock", isDirectory: false)
+    }
+
+    /// Auth token for App RPC (0600), co-located with `mcp.sock`.
+    public static var mcpToken: URL {
+        libraryRoot.appendingPathComponent("mcp.token", isDirectory: false)
+    }
+
+    /// PID lock for single GUI instance owning the socket.
+    public static var mcpPidLock: URL {
+        libraryRoot.appendingPathComponent("mcp.pid", isDirectory: false)
     }
 
     public static func datasetDirectory(id: String) -> URL {

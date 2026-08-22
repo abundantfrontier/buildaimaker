@@ -21,7 +21,7 @@ public enum RuntimeRecovery: Sendable {
         """
         Training runtime integrity failed (\(BAMErrorCode.runtimeIntegrity.rawValue)). \
         Open Settings → Training runtime and choose “Repair training runtime”. \
-        BuildAIMaker will reinstall the managed Python environment from pinned locks. \
+        BuildAIMaker will refresh worker pins and reinstall the managed Python environment (including mlx-lm). \
         System Python is not used as a fallback.
         """
 

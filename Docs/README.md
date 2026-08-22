@@ -11,6 +11,8 @@
 | [dogfood-test-data.md](./dogfood-test-data.md) | Public + in-repo datasets/models/voice for testing |
 | [creature-voice-pipeline.md](./creature-voice-pipeline.md) | Creature FX, SFX layers, later voice fine-tune |
 | [character-studio-ux.md](./character-studio-ux.md) | One-stop Character Studio UX (toy + research) |
+| [design-native-app-action-api-mcp.md](./design-native-app-action-api-mcp.md) | Native Action API + MCP control plane |
+| [mcp-bridge.md](./mcp-bridge.md) | `buildaimaker-mcp` stdio bridge + Grok snippet |
 
 ## Architecture snapshot
 

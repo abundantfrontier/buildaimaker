@@ -83,6 +83,16 @@ final class CharacterDraftTests: XCTestCase {
         XCTAssertTrue(draft.progressLabel.contains("Model picked"))
     }
 
+    func testNewDraftStartsOnAlienChordMix() {
+        let draft = CharacterDraft(name: "Visitor")
+        XCTAssertEqual(draft.voicePreset, "alien")
+        XCTAssertEqual(draft.voiceRegister, "lower")
+        XCTAssertEqual(draft.speed, 0.22, accuracy: 0.01)
+        XCTAssertTrue(draft.textureIdSet.contains("chime"))
+        XCTAssertTrue(draft.textureIdSet.contains("crystal"))
+        XCTAssertGreaterThan(draft.textureLevel("chime"), 0.2)
+    }
+
     func testVoiceSynthesisKnobsRoundTrip() throws {
         var draft = CharacterDraft(name: "Unit-7", voicePreset: "robot")
         draft.size = 0.12

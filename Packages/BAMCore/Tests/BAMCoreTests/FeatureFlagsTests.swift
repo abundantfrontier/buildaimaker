@@ -24,9 +24,12 @@ final class FeatureFlagsTests: XCTestCase {
         XCTAssertTrue(flags.foundationModels)
         XCTAssertTrue(flags.isEnabled(.foundationModels))
         XCTAssertEqual(FeatureFlags.Key.foundationModels.rawValue, "ff.foundationModels")
+        XCTAssertTrue(flags.controlPlane)
+        XCTAssertTrue(flags.isEnabled(.controlPlane))
 
         let alwaysOn: Set<FeatureFlags.Key> = [
             .llmTraining, .playground, .voiceClone, .personaPacks, .foundationModels,
+            .controlPlane,
         ]
         for key in FeatureFlags.Key.allCases where !alwaysOn.contains(key) {
             XCTAssertFalse(flags.isEnabled(key), "\(key.rawValue) should default off")

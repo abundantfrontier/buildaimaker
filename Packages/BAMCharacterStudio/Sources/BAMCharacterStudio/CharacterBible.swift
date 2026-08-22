@@ -12,6 +12,8 @@ public struct CharacterBible: Codable, Equatable, Sendable {
     public var styleTags: [String]
     public var generatedAt: String
     public var generator: String
+    /// Imported / authored system text. When set, Playground and mind encode use this as-is.
+    public var systemPromptOverride: String?
 
     public init(
         name: String,
@@ -23,7 +25,8 @@ public struct CharacterBible: Codable, Equatable, Sendable {
         sourceNotes: String = "",
         styleTags: [String] = [],
         generatedAt: String = ISO8601DateFormatter().string(from: Date()),
-        generator: String = "template-v1"
+        generator: String = "template-v1",
+        systemPromptOverride: String? = nil
     ) {
         self.name = name
         self.species = species
@@ -35,10 +38,16 @@ public struct CharacterBible: Codable, Equatable, Sendable {
         self.styleTags = styleTags
         self.generatedAt = generatedAt
         self.generator = generator
+        self.systemPromptOverride = systemPromptOverride
     }
 
     /// System prompt content for training dialogues.
     public var systemPrompt: String {
+        if let override = systemPromptOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty
+        {
+            return override
+        }
         var parts: [String] = [
             "You are \(name), a \(species.isEmpty ? "fictional character" : species).",
         ]

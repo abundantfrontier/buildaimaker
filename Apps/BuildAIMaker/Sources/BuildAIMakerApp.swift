@@ -1,13 +1,19 @@
 import AppKit
+import BAMAudioFX
 import SwiftUI
 
 @main
 struct BuildAIMakerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var controlPlane = ControlPlaneEnvironment()
 
     var body: some Scene {
         WindowGroup {
             RootView()
+                .environmentObject(controlPlane)
+                .task {
+                    await controlPlane.bootstrap()
+                }
                 .onAppear {
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate(ignoringOtherApps: true)
@@ -25,6 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        Task.detached(priority: .utility) {
+            await CatalogTTSRuntime.ensureReady()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -1,4 +1,5 @@
 import AppKit
+import BAMControlPlane
 import BAMCore
 import BAMDatasets
 import BAMModels
@@ -8,6 +9,7 @@ import UniformTypeIdentifiers
 
 /// Datasets library: list, import sheet, validation errors, and message preview.
 struct DatasetsView: View {
+    @EnvironmentObject private var controlPlane: ControlPlaneEnvironment
     @StateObject private var model = DatasetsViewModel()
 
     var body: some View {
@@ -20,6 +22,21 @@ struct DatasetsView: View {
         }
         .navigationTitle(SidebarDestination.datasets.title)
         .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    Task { await model.previewMindDedupe(via: controlPlane) }
+                } label: {
+                    if model.isDeduping {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Dedupe minds", systemImage: "square.stack.3d.up.slash")
+                    }
+                }
+                .disabled(model.service == nil || model.isDeduping)
+                .guideHighlight("datasets.dedupe")
+                .help("Dry-run orphan “X mind” duplicates, then confirm delete. Same as MCP minds.dedupe.")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     model.showImportSheet = true
@@ -27,13 +44,37 @@ struct DatasetsView: View {
                     Label("Import", systemImage: "plus")
                 }
                 .disabled(model.service == nil)
+                .guideHighlight("datasets.import")
             }
         }
         .sheet(isPresented: $model.showImportSheet) {
             DatasetImportSheet(model: model)
         }
+        .confirmationDialog(
+            "Remove duplicate minds?",
+            isPresented: $model.showDedupeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete duplicates", role: .destructive) {
+                Task { await model.confirmMindDedupe(via: controlPlane) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(model.dedupePreviewMessage ?? "Delete orphan duplicate mind datasets. Character-linked minds stay.")
+        }
         .task {
             model.bootstrap()
+        }
+        .onChange(of: controlPlane.stateRevision) { _, _ in
+            model.reload()
+            if let id = controlPlane.selectionMap["datasetId"] {
+                model.selectedDatasetId = id
+            }
+        }
+        .onChange(of: controlPlane.sessionNonce) { _, _ in
+            if controlPlane.highlight == "datasets.import" {
+                model.showImportSheet = true
+            }
         }
     }
 
@@ -48,6 +89,14 @@ struct DatasetsView: View {
 
     private var listPane: some View {
         VStack(spacing: 0) {
+            if let status = model.dedupeStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+            }
             if model.datasets.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "doc.text")
@@ -64,6 +113,7 @@ struct DatasetsView: View {
                         model.showImportSheet = true
                     }
                     .buttonStyle(.borderedProminent)
+                    .guideHighlight("datasets.import")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -390,6 +440,10 @@ final class DatasetsViewModel: ObservableObject {
     @Published var importError: String?
     @Published var isValidating = false
     @Published var isImporting = false
+    @Published var showDedupeConfirm = false
+    @Published var dedupePreviewMessage: String?
+    @Published var dedupeStatus: String?
+    @Published var isDeduping = false
 
     private(set) var service: DatasetLibraryService?
     /// Security-scoped access started for the NSOpenPanel URL (if any).
@@ -490,6 +544,55 @@ final class DatasetsViewModel: ObservableObject {
                 reload()
             }
             isLoadingPreview = false
+        }
+    }
+
+    /// Dry-run `minds.dedupe`, then ask before deleting orphans.
+    func previewMindDedupe(via plane: ControlPlaneEnvironment) async {
+        guard !isDeduping else { return }
+        isDeduping = true
+        dedupeStatus = nil
+        defer { isDeduping = false }
+        let outcome = await plane.invoke(
+            MindsDedupeHandler.id,
+            params: .object(["dryRun": .bool(true)])
+        )
+        guard outcome.ok else {
+            dedupeStatus = outcome.error?.message ?? "Dedupe dry-run failed"
+            return
+        }
+        let deleted = outcome.data?["deletedCount"]?.intValue ?? 0
+        let examined = outcome.data?["examined"]?.intValue ?? 0
+        let kept: Int
+        if case .array(let arr) = outcome.data?["kept"] {
+            kept = arr.count
+        } else {
+            kept = 0
+        }
+        if deleted == 0 {
+            dedupeStatus = "No duplicate minds to remove (\(examined) examined)."
+            return
+        }
+        dedupePreviewMessage =
+            "Would delete \(deleted) orphan mind dataset(s) and keep \(kept). "
+            + "Datasets still linked to a character are never removed."
+        showDedupeConfirm = true
+    }
+
+    func confirmMindDedupe(via plane: ControlPlaneEnvironment) async {
+        guard !isDeduping else { return }
+        isDeduping = true
+        defer { isDeduping = false }
+        let outcome = await plane.invoke(
+            MindsDedupeHandler.id,
+            params: .object(["dryRun": .bool(false)])
+        )
+        if outcome.ok {
+            let n = outcome.data?["deletedCount"]?.intValue ?? 0
+            dedupeStatus = "Removed \(n) duplicate mind dataset(s)."
+            reload()
+        } else {
+            dedupeStatus = outcome.error?.message ?? "Dedupe failed"
         }
     }
 

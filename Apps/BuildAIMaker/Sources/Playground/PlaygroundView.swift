@@ -1,4 +1,5 @@
 import SwiftUI
+import BAMCharacterStudio
 import BAMCore
 import BAMInference
 import BAMResourcesUI
@@ -6,18 +7,23 @@ import BAMResourcesUI
 /// Playground shell: Text chat + Talk mode (STT→LLM→TTS) panes.
 struct PlaygroundView: View {
     @EnvironmentObject private var characterLaunch: CharacterStudioLaunchContext
+    @EnvironmentObject private var controlPlane: ControlPlaneEnvironment
     @StateObject private var textModel = PlaygroundViewModel()
     @StateObject private var talkModel = TalkViewModel()
     @State private var pane: TalkViewModel.PaneMode = .text
+    @State private var showChatSettings = false
+    @State private var lastSessionNonce = ""
 
     private let featureFlags = FeatureFlags.default
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            panePicker
-            Divider()
+            // Talk pane (STT → LLM → TTS) is future; ff.talkMode stays off.
+            // Spoken replies in the text pane use Character voice (Kokoro + FX).
+            if featureFlags.talkMode {
+                panePicker
+                Divider()
+            }
             Group {
                 switch pane {
                 case .text:
@@ -33,9 +39,15 @@ struct PlaygroundView: View {
         }
         .background(BAMColors.detailBackground)
         .navigationTitle(SidebarDestination.playground.title)
+        .toolbar { playgroundToolbar }
+        .sheet(isPresented: $showChatSettings) {
+            chatSettingsSheet
+        }
         .onAppear {
+            textModel.reloadCharacters()
             textModel.bootstrap()
             applyPendingCharacter()
+            applySessionFromControlPlane()
             if featureFlags.talkMode {
                 talkModel.bootstrap()
             }
@@ -43,24 +55,59 @@ struct PlaygroundView: View {
         .onChange(of: characterLaunch.pendingPlayground?.token) { _, _ in
             applyPendingCharacter()
         }
+        .onChange(of: controlPlane.sessionNonce) { _, _ in
+            applySessionFromControlPlane()
+        }
         .onChange(of: textModel.selectedBasePath) { _, _ in
             textModel.onSelectedBaseModelChanged()
+        }
+    }
+
+    private var characterPickerBinding: Binding<String?> {
+        Binding(
+            get: { textModel.boundCharacterId },
+            set: { textModel.bindCharacter(id: $0) }
+        )
+    }
+
+    private func applySessionFromControlPlane() {
+        let nonce = controlPlane.sessionNonce
+        guard !nonce.isEmpty, nonce != lastSessionNonce else { return }
+        lastSessionNonce = nonce
+        if let speak = controlPlane.pendingSpeakReplies {
+            textModel.speakReplies = speak
+        }
+        if let id = controlPlane.selectionMap["characterId"] {
+            textModel.bindCharacter(id: id)
+        }
+        if let user = controlPlane.incomingChatUser,
+           let assistant = controlPlane.incomingChatAssistant
+        {
+            textModel.applyIncomingTurn(user: user, assistant: assistant, nonce: nonce)
+        }
+        if let pending = controlPlane.pendingUserMessage, !pending.isEmpty {
+            textModel.draft = pending
+            if textModel.canSend {
+                textModel.send()
+            }
         }
     }
 
     private func applyPendingCharacter() {
         if let target = characterLaunch.consumePlayground() {
             textModel.applyCharacterLaunch(target)
+        } else if textModel.boundCharacterId == nil,
+                  let target = characterLaunch.playgroundTargetForActiveCharacter()
+        {
+            textModel.applyCharacterLaunch(target)
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            Label("Playground", systemImage: SidebarDestination.playground.systemImage)
-                .font(.headline)
-            Spacer()
+    @ToolbarContentBuilder
+    private var playgroundToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
             if pane == .text, let latency = textModel.lastLatencyMs {
-                Text("\(Int(latency)) ms · \(textModel.backendId)")
+                Text("\(Int(latency)) ms")
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
             }
@@ -68,6 +115,14 @@ struct PlaygroundView: View {
                 Text(talkModel.phaseLabel)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
+            }
+            if pane == .text, textModel.isSpeaking {
+                Button {
+                    textModel.stopSpeaking()
+                } label: {
+                    Label("Stop speaking", systemImage: "stop.fill")
+                }
+                .help("Stop reading the current reply aloud")
             }
             Button {
                 if pane == .text {
@@ -79,16 +134,19 @@ struct PlaygroundView: View {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             .help("Rescan base models and adapters")
-
             if pane == .text {
+                Button {
+                    showChatSettings = true
+                } label: {
+                    Label("Chat settings", systemImage: "slider.horizontal.3")
+                }
+                .help("Backend, model, and how they talk")
                 Button {
                     textModel.clearTranscript()
                 } label: {
                     Label("Clear", systemImage: "trash")
                 }
                 .disabled(textModel.messages.isEmpty)
-                .help("Clear chat transcript")
-
                 Menu {
                     Button("Export conversation (1 row)") {
                         textModel.exportTranscript(paired: false)
@@ -100,7 +158,6 @@ struct PlaygroundView: View {
                     Label("Export JSONL", systemImage: "square.and.arrow.up")
                 }
                 .disabled(!textModel.canExport)
-                .help("Export transcript as OpenAI-messages JSONL dataset candidate")
             } else {
                 Button {
                     talkModel.clearTranscript()
@@ -108,32 +165,31 @@ struct PlaygroundView: View {
                     Label("Clear", systemImage: "trash")
                 }
                 .disabled(talkModel.messages.isEmpty)
-                .help("Clear Talk transcript")
             }
         }
-        .padding(12)
     }
 
+    @ViewBuilder
     private var panePicker: some View {
-        HStack {
-            Picker("Mode", selection: $pane) {
-                ForEach(TalkViewModel.PaneMode.allCases) { mode in
-                    if mode == .talk && !featureFlags.talkMode {
-                        Text("\(mode.title) (off)").tag(mode)
-                    } else {
+        // Hide Text/Talk when Talk is flagged off — that pair plus Speak replies
+        // reads as two unexplained modes.
+        if featureFlags.talkMode {
+            HStack {
+                Picker("Mode", selection: $pane) {
+                    ForEach(TalkViewModel.PaneMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 240)
+                Spacer()
+                Text(pane == .text ? "Type to chat" : "Hold the mic to talk")
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.tertiaryLabel)
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 240)
-            Spacer()
-            Text(pane == .text ? "Text chat" : "Push-to-talk · STT→LLM→TTS")
-                .font(.caption)
-                .foregroundStyle(BAMColors.tertiaryLabel)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     private var talkDisabledPlaceholder: some View {
@@ -151,143 +207,60 @@ struct PlaygroundView: View {
     // MARK: - Text pane (existing playground)
 
     private var textPane: some View {
-        VStack(spacing: 0) {
-            if !textModel.playgroundEnabled {
-                Text("ff.playground is off — playground UI is disabled.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+        textTranscript
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    textConfigBar
+                    Divider()
+                }
+                .background(BAMColors.detailBackground)
             }
-            textConfigBar
-            Divider()
-            textTranscript
-            Divider()
-            textComposer
-        }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    textComposer
+                }
+                .background(BAMColors.detailBackground)
+            }
     }
 
     private var textConfigBar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Backend preference: Apple on-device first when available.
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Chat backend")
-                        .font(.caption)
-                        .foregroundStyle(BAMColors.secondaryLabel)
-                    Picker("Backend", selection: $textModel.backendPreference) {
-                        ForEach(LLMBackendPreference.allCases) { pref in
-                            Text(pref.title).tag(pref)
-                        }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Picker("Character", selection: characterPickerBinding) {
+                    Text("None").tag(Optional<String>.none)
+                    ForEach(textModel.characters) { draft in
+                        Text(draft.displayTitle).tag(Optional(draft.id))
                     }
-                    .labelsHidden()
-                    .frame(maxWidth: 320)
                 }
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(textModel.appleModelStatus.isUsable ? Color.green : Color.orange)
-                            .frame(width: 8, height: 8)
-                        Text("Apple FM: \(textModel.appleModelStatus.rawValue)")
-                            .font(.caption2.weight(.semibold))
-                    }
-                    Text(textModel.appleModelStatus.detail)
-                        .font(.caption2)
-                        .foregroundStyle(BAMColors.secondaryLabel)
-                        .lineLimit(2)
-                }
-                Spacer()
-            }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 260, alignment: .leading)
+                .guideHighlight("playground.character")
+                .help("Chat as this character — system prompt and voice come from their card.")
 
-            if let name = textModel.boundCharacterName {
-                HStack(spacing: 8) {
-                    Label("Character: \(name)", systemImage: "theatermasks")
-                        .font(.caption.weight(.semibold))
-                    Text(textModel.backendId)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            (textModel.usingRealGenerate ? Color.green : Color.orange).opacity(0.2),
-                            in: Capsule()
-                        )
-                }
-            } else if textModel.statusMessage != nil {
-                Text(textModel.statusMessage ?? "")
+                Text(textModel.backendCaption)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
+                if textModel.adapterEnabled, let path = textModel.selectedAdapterPath {
+                    Text("LoRA · \(textModel.adapters.first(where: { $0.localPath == path })?.displayName ?? URL(fileURLWithPath: path).lastPathComponent)")
+                        .font(.caption)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                } else if textModel.boundCharacterId != nil {
+                    Text("Base only — no LoRA yet")
+                        .font(.caption)
+                        .foregroundStyle(BAMColors.secondaryLabel)
+                }
+                Spacer(minLength: 8)
             }
 
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(textModel.backendId == AppleFoundationLLMBackend.id
-                          ? "Open base (optional for Apple)"
-                          : "Base model (MLX)")
-                        .font(.caption)
-                        .foregroundStyle(BAMColors.secondaryLabel)
-                    if textModel.baseModels.isEmpty {
-                        Text("No local base models")
-                            .foregroundStyle(BAMColors.tertiaryLabel)
-                            .font(.callout)
-                    } else {
-                        Picker("Base model", selection: $textModel.selectedBasePath) {
-                            ForEach(textModel.baseModels) { m in
-                                Text(m.displayName)
-                                    .tag(Optional(m.localPath))
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 280)
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(
-                        textModel.backendId == AppleFoundationLLMBackend.id
-                            ? "Foundation adapter (optional)"
-                            : "LoRA adapter (optional)"
-                    )
-                        .font(.caption)
-                        .foregroundStyle(BAMColors.secondaryLabel)
-                    Picker("Adapter", selection: $textModel.selectedAdapterPath) {
-                        Text("None").tag(Optional<String>.none)
-                        ForEach(textModel.adapters) { a in
-                            Text(a.displayName)
-                                .tag(Optional(a.localPath))
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 280)
-                    .disabled(textModel.adapters.isEmpty)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("A/B adapter")
-                        .font(.caption)
-                        .foregroundStyle(BAMColors.secondaryLabel)
-                    Toggle(
-                        textModel.adapterEnabled ? "Adapter on" : "Adapter off (base only)",
-                        isOn: $textModel.adapterEnabled
-                    )
-                    .toggleStyle(.switch)
-                    .disabled(textModel.selectedAdapterPath == nil)
-                    .help("Toggle adapter off to compare base-only replies")
-                }
-
-                Spacer()
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("System prompt")
+            if let err = textModel.errorMessage {
+                Label(err, systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(BAMColors.secondaryLabel)
-                TextField("System override", text: $textModel.systemPrompt, axis: .vertical)
-                    .lineLimit(2...4)
-                    .textFieldStyle(.roundedBorder)
+                    .foregroundStyle(.orange)
             }
-
-            if let status = textModel.statusMessage {
-                Text(status)
+            if let spoken = textModel.lastSpokenNote {
+                Text(spoken)
                     .font(.caption)
                     .foregroundStyle(BAMColors.secondaryLabel)
             }
@@ -297,18 +270,60 @@ struct PlaygroundView: View {
                     .foregroundStyle(BAMColors.secondaryLabel)
                     .textSelection(.enabled)
             }
-            if let err = textModel.errorMessage {
-                Label(err, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
 
-            Text("ff.playground: \(textModel.playgroundEnabled ? "on" : "off") · backend: \(textModel.backendId)")
-                .font(.caption2)
-                .foregroundStyle(BAMColors.tertiaryLabel)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private var chatSettingsSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Chat backend") {
+                    Picker("Backend", selection: $textModel.backendPreference) {
+                        ForEach(LLMBackendPreference.allCases) { pref in
+                            Text(pref.title).tag(pref)
+                        }
+                    }
+                }
+                Section("Base model") {
+                    if textModel.baseModels.isEmpty {
+                        Text("None installed")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Model", selection: $textModel.selectedBasePath) {
+                            ForEach(textModel.baseModels) { m in
+                                Text(m.displayName).tag(Optional(m.localPath))
+                            }
+                        }
+                    }
+                }
+                Section("Adapter") {
+                    Picker("Adapter", selection: $textModel.selectedAdapterPath) {
+                        Text("None").tag(Optional<String>.none)
+                        ForEach(textModel.adapters) { a in
+                            Text(a.displayName).tag(Optional(a.localPath))
+                        }
+                    }
+                    .disabled(textModel.adapters.isEmpty)
+                    Toggle("Use adapter", isOn: $textModel.adapterEnabled)
+                        .disabled(textModel.selectedAdapterPath == nil)
+                }
+                Section("How they talk") {
+                    TextEditor(text: $textModel.systemPrompt)
+                        .font(.body)
+                        .frame(minHeight: 160)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Chat settings")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showChatSettings = false }
+                }
+            }
+        }
+        .frame(minWidth: 480, minHeight: 420)
     }
 
     private var textTranscript: some View {
@@ -318,10 +333,13 @@ struct PlaygroundView: View {
                     Image(systemName: "bubble.left.and.bubble.right")
                         .font(.system(size: 36, weight: .light))
                         .foregroundStyle(BAMColors.secondaryLabel)
-                    Text("Chat against a base model and optional LoRA adapter.")
-                        .font(.callout)
-                        .foregroundStyle(BAMColors.tertiaryLabel)
-                    Text("Use A/B to turn the adapter off and compare.")
+                    Text(
+                        textModel.boundCharacterName.map { "Send a message to talk with \($0)." }
+                            ?? "Send a message to start chatting."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(BAMColors.tertiaryLabel)
+                    Text("Turn on Speak replies to hear answers aloud.")
                         .font(.caption)
                         .foregroundStyle(BAMColors.tertiaryLabel)
                 }
@@ -354,7 +372,7 @@ struct PlaygroundView: View {
         HStack {
             if message.role == "user" { Spacer(minLength: 40) }
             VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
-                Text(message.role)
+                Text(displayName(for: message.role))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(BAMColors.secondaryLabel)
                 Text(message.content)
@@ -370,6 +388,17 @@ struct PlaygroundView: View {
         }
     }
 
+    private func displayName(for role: String) -> String {
+        switch role {
+        case "user":
+            return "You"
+        case "assistant":
+            return textModel.boundCharacterName ?? "Assistant"
+        default:
+            return role.capitalized
+        }
+    }
+
     private func bubbleColor(for role: String) -> Color {
         switch role {
         case "user":
@@ -382,26 +411,46 @@ struct PlaygroundView: View {
     }
 
     private var textComposer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("Message…", text: $textModel.draft, axis: .vertical)
-                .lineLimit(1...5)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { textModel.send() }
-                .disabled(!textModel.playgroundEnabled || textModel.isGenerating)
-
-            if textModel.isGenerating {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 28, height: 28)
-            } else {
-                Button {
-                    textModel.send()
-                } label: {
-                    Label("Send", systemImage: "paperplane.fill")
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $textModel.speakReplies) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Speak replies in character voice")
+                        .font(.callout.weight(.medium))
+                    Text(
+                        textModel.speakReplies
+                            ? (textModel.boundCharacterName.map {
+                                "On — \($0)’s answers are read aloud."
+                            } ?? "On — answers are read aloud.")
+                            : "Off — answers stay on screen. Turn on to hear them spoken."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(BAMColors.secondaryLabel)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!textModel.canSend)
-                .keyboardShortcut(.return, modifiers: [.command])
+            }
+            .toggleStyle(.switch)
+
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("Message…", text: $textModel.draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { textModel.send() }
+                    .disabled(!textModel.playgroundEnabled || textModel.isGenerating)
+
+                if textModel.isGenerating {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 28, height: 28)
+                } else {
+                    Button {
+                        textModel.send()
+                    } label: {
+                        Label("Send", systemImage: "paperplane.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!textModel.canSend)
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    .guideHighlight("playground.send")
+                }
             }
         }
         .padding(12)

@@ -75,4 +75,51 @@ public enum ChatPromptFormatter: Sendable {
         }
         return out
     }
+
+    /// OpenAI-style `{role, content}` rows for mlx-lm / Gemma `apply_chat_template`.
+    ///
+    /// Keeps the system card and the newest turns. Drops the oldest user/assistant
+    /// pairs when the packed text would overflow `maxContentChars` (KV-cache cap
+    /// for laptop generate — not the model's theoretical context).
+    public static func messagesForMLXChat(
+        _ messages: [InferenceChatMessage],
+        maxContentChars: Int = 12_000
+    ) -> [[String: String]] {
+        var system: String?
+        var rest: [InferenceChatMessage] = []
+        for message in messages {
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+            switch message.role {
+            case "system":
+                if system == nil { system = content }
+            case "user", "assistant":
+                rest.append(InferenceChatMessage(role: message.role, content: content))
+            default:
+                continue
+            }
+        }
+        func pack() -> [[String: String]] {
+            var rows: [[String: String]] = []
+            if let system {
+                rows.append(["role": "system", "content": system])
+            }
+            for message in rest {
+                rows.append(["role": message.role, "content": message.content])
+            }
+            return rows
+        }
+        func packedChars(_ rows: [[String: String]]) -> Int {
+            rows.reduce(0) { $0 + ($1["content"]?.count ?? 0) }
+        }
+        var rows = pack()
+        while packedChars(rows) > maxContentChars, rest.count > 1 {
+            rest.removeFirst()
+            if rest.first?.role == "assistant" {
+                rest.removeFirst()
+            }
+            rows = pack()
+        }
+        return rows
+    }
 }

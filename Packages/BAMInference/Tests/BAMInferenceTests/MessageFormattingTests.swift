@@ -84,4 +84,36 @@ final class MessageFormattingTests: XCTestCase {
         let result = ChatPromptFormatter.messagesForCompletion(history: history, systemOverride: "  ")
         XCTAssertEqual(result, history)
     }
+
+    func testMessagesForMLXChat_keepsFullHistoryAndSystem() {
+        let messages: [InferenceChatMessage] = [
+            .system("You are Rocky."),
+            .user("Hi"),
+            .assistant("Hello friend."),
+            .user("Who am I talking to?"),
+        ]
+        let rows = ChatPromptFormatter.messagesForMLXChat(messages)
+        XCTAssertEqual(rows.count, 4)
+        XCTAssertEqual(rows[0]["role"], "system")
+        XCTAssertEqual(rows[1]["role"], "user")
+        XCTAssertEqual(rows[1]["content"], "Hi")
+        XCTAssertEqual(rows[2]["role"], "assistant")
+        XCTAssertEqual(rows[3]["content"], "Who am I talking to?")
+    }
+
+    func testMessagesForMLXChat_dropsOldestWhenOverBudget() {
+        var messages: [InferenceChatMessage] = [.system("SYS")]
+        messages.append(.user(String(repeating: "a", count: 400)))
+        messages.append(.assistant(String(repeating: "b", count: 400)))
+        messages.append(.user(String(repeating: "c", count: 400)))
+        messages.append(.assistant(String(repeating: "d", count: 400)))
+        messages.append(.user("latest"))
+        let rows = ChatPromptFormatter.messagesForMLXChat(messages, maxContentChars: 500)
+        XCTAssertEqual(rows.first?["role"], "system")
+        XCTAssertEqual(rows.last?["role"], "user")
+        XCTAssertEqual(rows.last?["content"], "latest")
+        XCTAssertLessThan(rows.count, 6)
+        let chars = rows.reduce(0) { $0 + ($1["content"]?.count ?? 0) }
+        XCTAssertLessThanOrEqual(chars, 500 + 3) // system "SYS" may sit with latest
+    }
 }

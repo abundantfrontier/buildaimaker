@@ -1,6 +1,7 @@
 import AVFoundation
 import BAMAudioFX
 import BAMCharacterStudio
+import BAMControlPlane
 import BAMCore
 import BAMDatasets
 import BAMInference
@@ -148,6 +149,12 @@ final class CreateCharacterViewModel: ObservableObject {
     private var didLoadOnce = false
     /// When true, skip auto-persist during programmatic load/select.
     private var suppressPersist = false
+    /// Shared Action API — mind writes go through `character.importMind`.
+    private weak var controlPlane: ControlPlaneEnvironment?
+
+    func attachControlPlane(_ plane: ControlPlaneEnvironment) {
+        controlPlane = plane
+    }
 
     /// When true, user is re-editing a previously finished character.
     @Published private(set) var isEditingComplete: Bool = false
@@ -316,12 +323,11 @@ final class CreateCharacterViewModel: ObservableObject {
                 step = .voice
                 persistDraft()
             } else {
-                buildMind(importDataset: true)
-                // Stay on mind so user sees previews; they press Continue again.
+                Task { await buildMindAndImport() }
             }
         case .voice:
             if voiceReady {
-                saveCharacter()
+                Task { await saveCharacter() }
             } else {
                 renderVoicePreview()
             }
@@ -508,11 +514,48 @@ final class CreateCharacterViewModel: ObservableObject {
         }
     }
 
-    func buildMind(importDataset: Bool) {
+    /// Build practice lines and write the mind dataset via `character.importMind`.
+    func buildMindAndImport() async {
+        guard !isWorking else { return }
         isWorking = true
         lastError = nil
         defer { isWorking = false }
 
+        let jsonl = buildMindCorpus()
+        guard persistDraft() else { return }
+        await importMindDataset(jsonl: jsonl)
+    }
+
+    func riffMore() {
+        Task { await riffMoreAndImport() }
+    }
+
+    func riffMoreAndImport() async {
+        guard !isWorking else { return }
+        isWorking = true
+        lastError = nil
+        defer { isWorking = false }
+
+        if draft.bible == nil || draft.examples.isEmpty {
+            let jsonl = buildMindCorpus()
+            guard persistDraft() else { return }
+            await importMindDataset(jsonl: jsonl)
+            return
+        }
+        guard let bible = draft.bible else { return }
+        let jsonl = encodeCurrentJSONL()
+        let current = CorpusBuildResult(bible: bible, examples: draft.examples, jsonl: jsonl)
+        let next = corpus.riff(result: current, extra: 3)
+        draft.examples = next.examples
+        draft.bible = next.bible
+        statusMessage = "Riffed +3 lines (now \(next.rowCount))."
+        guard persistDraft() else { return }
+        await importMindDataset(jsonl: next.jsonl.isEmpty ? encodeCurrentJSONL() : next.jsonl)
+    }
+
+    /// Template corpus only (no library write). Returns JSONL for import.
+    @discardableResult
+    private func buildMindCorpus() -> String {
         let tags = Set(draft.styleTags)
         let result = corpus.build(
             name: draft.name,
@@ -527,33 +570,7 @@ final class CreateCharacterViewModel: ObservableObject {
         draft.bible = result.bible
         draft.examples = result.examples
         statusMessage = "Built \(result.rowCount) practice lines. Press Continue → Voice when ready."
-
-        if importDataset {
-            do {
-                let id = try saveDataset(jsonl: result.jsonl, name: "\(draft.displayTitle) mind")
-                draft.datasetId = id
-                statusMessage =
-                    "Saved \(result.rowCount) practice lines. Press “Continue → Voice” below."
-            } catch {
-                lastError = (error as? BAMError)?.errorDescription ?? error.localizedDescription
-            }
-        }
-
-        persistDraft()
-    }
-
-    func riffMore() {
-        guard let bible = draft.bible, !draft.examples.isEmpty else {
-            buildMind(importDataset: false)
-            return
-        }
-        let jsonl = encodeCurrentJSONL()
-        let current = CorpusBuildResult(bible: bible, examples: draft.examples, jsonl: jsonl)
-        let next = corpus.riff(result: current, extra: 3)
-        draft.examples = next.examples
-        draft.bible = next.bible
-        statusMessage = "Riffed +3 lines (now \(next.rowCount))."
-        persistDraft()
+        return result.jsonl
     }
 
     /// Line spoken by system TTS before creature FX (from mind samples or a default).
@@ -581,12 +598,19 @@ final class CreateCharacterViewModel: ObservableObject {
         stopPreview(clearStatus: false)
         isWorking = true
         lastError = nil
-        statusMessage = "Speaking line + applying creature FX…"
-
         let speechText = voicePreviewSpeechText()
         let params = currentFXParams()
         let characterName = draft.displayTitle
         let characterId = draft.id
+        switch CatalogTTSRuntime.currentStatus() {
+        case .ready:
+            statusMessage = "Speaking as \(params.preset.catalogSpeakerLabel)…"
+        case .installing(let note):
+            statusMessage = "\(note) Using a Mac voice this time."
+        default:
+            statusMessage = "Speaking line…"
+        }
+        Task.detached { await CatalogTTSRuntime.ensureReady() }
 
         Task { @MainActor in
             defer { isWorking = false }
@@ -600,10 +624,14 @@ final class CreateCharacterViewModel: ObservableObject {
                 )
                 draft.previewAudioPath = result.audioURL.path
                 draft.voiceProfilePath = result.profileURL.path
-                if result.usedSystemTTS {
+                if result.usedCatalogTTS {
+                    let speaker = result.catalogVoiceId.map { $0.replacingOccurrences(of: "_", with: " ") } ?? params.preset.catalogSpeakerLabel
+                    statusMessage =
+                        "Voice ready (\(params.preset.title) · \(speaker)). Press “Finish & save”."
+                } else if result.usedSystemTTS {
                     let line = result.spokenText.map { " “\($0.prefix(48))\($0.count > 48 ? "…" : "")”" } ?? ""
                     statusMessage =
-                        "Voice ready (\(params.preset.title)) — spoke\(line) with creature FX. Press “Finish & save”."
+                        "Voice ready (\(params.preset.title)) — Mac voice\(line). Character speakers install in the background."
                 } else {
                     statusMessage =
                         "Voice is buzz-only (system TTS failed). Check macOS speech voices in System Settings → Accessibility → Spoken Content."
@@ -667,10 +695,13 @@ final class CreateCharacterViewModel: ObservableObject {
         }
     }
 
-    func saveCharacter() {
-        // Ensure mind exists even if user skipped rebuilding.
+    func saveCharacter() async {
         if draft.examples.isEmpty {
-            buildMind(importDataset: true)
+            _ = buildMindCorpus()
+            _ = persistDraft()
+            await importMindDataset(jsonl: encodeCurrentJSONL())
+        } else if draft.datasetId == nil {
+            await importMindDataset(jsonl: encodeCurrentJSONL())
         }
         let wasEditing = isEditingComplete
         guard persistDraft(markComplete: true) else { return }
@@ -682,31 +713,29 @@ final class CreateCharacterViewModel: ObservableObject {
     }
 
     func currentFXParams() -> CreatureFXParams {
+        draft.creatureFXParams()
+    }
+
+    func applyVoicePresetAndHear(_ preset: CreatureVoicePreset) {
+        applyVoicePreset(preset)
+        renderVoicePreview()
+    }
+
+    func applyVoiceRegister(_ register: VoiceRegister) {
+        draft.voiceRegister = register.rawValue
         let preset = CreatureVoicePreset(rawValue: draft.voicePreset) ?? .alien
-        var textures = Set<CreatureTextureID>()
-        for id in draft.textureIdSet {
-            if let t = CreatureTextureID(rawValue: id) {
-                textures.insert(t)
-            }
-        }
-        return CreatureFXParams(
-            preset: preset,
-            size: draft.size,
-            grit: draft.grit,
-            atmosphere: draft.atmosphere,
-            formant: draft.formant,
-            metallic: draft.metallic,
-            tremble: draft.tremble,
-            breath: draft.breath,
-            speed: draft.speed,
-            robotize: draft.robotize,
-            textures: textures
-        )
+        let p = CreatureFXParams.fromPreset(preset, register: register)
+        draft.size = p.size
+        draft.formant = p.formant
+        draft.previewAudioPath = nil
+        renderVoicePreview()
     }
 
     func applyVoicePreset(_ preset: CreatureVoicePreset) {
         draft.voicePreset = preset.rawValue
-        let p = CreatureFXParams.fromPreset(preset)
+        let register = preset.defaultRegister
+        draft.voiceRegister = register.rawValue
+        let p = CreatureFXParams.fromPreset(preset, register: register)
         draft.size = p.size
         draft.grit = p.grit
         draft.atmosphere = p.atmosphere
@@ -717,6 +746,7 @@ final class CreateCharacterViewModel: ObservableObject {
         draft.speed = p.speed
         draft.robotize = p.robotize
         draft.textureIdSet = Set(p.textures.map(\.rawValue))
+        draft.textureLevels = p.textureMix
         // Clear stale preview so Hear re-renders with new preset.
         draft.previewAudioPath = nil
     }
@@ -728,29 +758,83 @@ final class CreateCharacterViewModel: ObservableObject {
     }
 
     func toggleTexture(_ id: CreatureTextureID) {
-        let on = !draft.textureIdSet.contains(id.rawValue)
-        draft.setTexture(id.rawValue, enabled: on)
-        draft.previewAudioPath = nil
+        let next = draft.textureLevel(id.rawValue) < 0.02 ? 0.4 : 0
+        setTextureLevel(id, next)
     }
 
     func isTextureOn(_ id: CreatureTextureID) -> Bool {
-        draft.textureIdSet.contains(id.rawValue)
+        draft.textureLevel(id.rawValue) > 0.02
+    }
+
+    func textureLevel(_ id: CreatureTextureID) -> Double {
+        draft.textureLevel(id.rawValue)
+    }
+
+    func setTextureLevel(_ id: CreatureTextureID, _ value: Double) {
+        draft.setTextureLevel(id.rawValue, value)
+        draft.previewAudioPath = nil
     }
 
     // MARK: - Private
 
-    private func saveDataset(jsonl: String, name: String) throws -> String {
+    /// Write mind JSONL through `character.importMind` (same path as MCP).
+    private func importMindDataset(jsonl: String) async {
+        let name = "\(draft.displayTitle) mind"
+        if let plane = controlPlane, plane.isReady {
+            let outcome = await plane.invoke(
+                CharacterImportMindHandler.id,
+                params: .object([
+                    "characterId": .string(draft.id),
+                    "jsonl": .string(jsonl),
+                    "name": .string(name),
+                    "identityPolicy": .string(MindIdentityPolicy.mergeByStableId.rawValue),
+                ])
+            )
+            if outcome.ok, let id = outcome.data?["datasetId"]?.stringValue {
+                draft.datasetId = id
+                persistDraft()
+                OnboardingStore().markCompleted(.importDataset)
+                if outcome.data?["unchanged"]?.boolValue != true {
+                    MVPMetricsStore.shared.increment(.datasetImportOK)
+                }
+                let rows = outcome.data?["rowCount"]?.intValue ?? draft.examples.count
+                if outcome.data?["unchanged"]?.boolValue == true {
+                    statusMessage = "Mind unchanged (\(rows) lines). Press Continue → Voice."
+                } else if outcome.data?["created"]?.boolValue == true {
+                    statusMessage = "Saved \(rows) practice lines. Press “Continue → Voice” below."
+                } else {
+                    statusMessage = "Updated mind dataset (\(rows) lines). Press Continue → Voice."
+                }
+                return
+            }
+            if outcome.error?.code != ActionErrorCode.unknownAction.rawValue {
+                lastError = outcome.error?.message ?? "Mind import failed"
+                return
+            }
+            // Handler not registered yet — same upsert as the handler uses.
+        }
+        do {
+            let id = try saveDatasetFallback(jsonl: jsonl, name: name)
+            draft.datasetId = id
+            OnboardingStore().markCompleted(.importDataset)
+            MVPMetricsStore.shared.increment(.datasetImportOK)
+            statusMessage = "Saved practice lines. Press “Continue → Voice” below."
+            persistDraft()
+        } catch {
+            lastError = (error as? BAMError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Local upsert when the control plane is not attached (tests / previews).
+    private func saveDatasetFallback(jsonl: String, name: String) throws -> String {
         let service = try DatasetLibraryService.openDefault()
-
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bam-char-\(UUID().uuidString).jsonl")
-        try jsonl.data(using: .utf8)!.write(to: tmp)
-        defer { try? FileManager.default.removeItem(at: tmp) }
-
-        let result = try service.importer.importDataset(
-            DatasetImportRequest(sourceURL: tmp, name: name, importMode: .copy)
+        let result = try service.upsertMindJSONL(
+            jsonl: jsonl,
+            name: name,
+            existingDatasetId: draft.datasetId,
+            policy: .mergeByStableId
         )
-        return result.dataset.id
+        return result.datasetId
     }
 
     private func encodeCurrentJSONL() -> String {

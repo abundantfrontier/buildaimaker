@@ -154,6 +154,35 @@ public final class DatasetStore: Sendable {
         }
     }
 
+    public func updateName(datasetId: String, name: String) throws {
+        try database.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE datasets SET name = ? WHERE id = ?",
+                arguments: [name, datasetId]
+            )
+        }
+    }
+
+    /// Appends a new version row for an existing dataset (in-place content updates).
+    public func insertVersion(_ version: DatasetVersionRecord) throws {
+        try database.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO dataset_versions (id, dataset_id, version, content_hash, row_count, meta_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    version.id,
+                    version.datasetId,
+                    version.version,
+                    version.contentHash,
+                    version.rowCount,
+                    version.metaJSON,
+                ]
+            )
+        }
+    }
+
     public func insertBookmark(
         id: String,
         entityType: String,

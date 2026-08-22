@@ -21,51 +21,85 @@ public enum SystemSpeechSynthesizer: Sendable {
     public static func synthesize(
         text: String,
         language: String = "en-US",
-        rate: Float = AVSpeechUtteranceDefaultSpeechRate * 0.92
+        rate: Float = AVSpeechUtteranceDefaultSpeechRate * 0.92,
+        voiceHint: SpeechVoiceHint = .male,
+        pitchMultiplier: Float = 1.0
     ) async throws -> SpeechAudio {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw CreatureFXError.emptySpeechText
         }
 
-        // Prefer CLI `say` on macOS — more reliable offline file capture than write callbacks.
-        // Map AVSpeech-ish rate (≈0.32…0.78) into say -r words-per-minute (≈90…300).
         let clamped = Double(max(0.28, min(0.82, rate)))
         let wpm = Int(90 + (clamped - 0.28) / 0.54 * 210)
-        if let viaSay = try? await synthesizeWithSay(text: trimmed, rateWPM: wpm) {
+        if let viaSay = try? await synthesizeWithSay(
+            text: trimmed,
+            rateWPM: wpm,
+            voiceHint: voiceHint
+        ) {
             return viaSay
         }
 
-        // Fall back to AVSpeechSynthesizer buffer capture.
-        return try await synthesizeWithAVSpeech(text: trimmed, language: language, rate: rate)
+        return try await synthesizeWithAVSpeech(
+            text: trimmed,
+            language: language,
+            rate: rate,
+            voiceHint: voiceHint,
+            pitchMultiplier: pitchMultiplier
+        )
     }
 
     // MARK: - macOS `say`
 
     /// `/usr/bin/say -o out.aiff "…"` then decode with AVAudioFile.
-    public static func synthesizeWithSay(text: String, rateWPM: Int = 175) async throws -> SpeechAudio {
+    public static func synthesizeWithSay(
+        text: String,
+        rateWPM: Int = 175,
+        voiceHint: SpeechVoiceHint = .male
+    ) async throws -> SpeechAudio {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let audio = try synthesizeWithSaySync(
+                        text: text,
+                        rateWPM: rateWPM,
+                        voiceName: resolveSayVoice(hint: voiceHint)
+                    )
+                    continuation.resume(returning: audio)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func synthesizeWithSaySync(
+        text: String,
+        rateWPM: Int,
+        voiceName: String?
+    ) throws -> SpeechAudio {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("bam-say-\(UUID().uuidString).aiff")
         defer { try? FileManager.default.removeItem(at: tmp) }
 
+        var args = ["-r", String(max(90, min(320, rateWPM))), "-o", tmp.path]
+        if let voiceName, !voiceName.isEmpty {
+            args.insert(contentsOf: ["-v", voiceName], at: 0)
+        }
+        args.append(text)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        // -r rate in words per minute; -o writes AIFF.
-        process.arguments = ["-r", String(max(90, min(320, rateWPM))), "-o", tmp.path, text]
-        let err = Pipe()
-        process.standardError = err
+        process.arguments = args
+        process.standardError = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-
         try process.run()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let msg = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: tmp.path)
+        else {
             throw CreatureFXError.ttsProducedNoAudio
         }
-        guard FileManager.default.fileExists(atPath: tmp.path) else {
-            throw CreatureFXError.ttsProducedNoAudio
-        }
-
         return try loadAudioFile(url: tmp)
     }
 
@@ -90,7 +124,9 @@ public enum SystemSpeechSynthesizer: Sendable {
     public static func synthesizeWithAVSpeech(
         text: String,
         language: String,
-        rate: Float
+        rate: Float,
+        voiceHint: SpeechVoiceHint = .male,
+        pitchMultiplier: Float = 1.0
     ) async throws -> SpeechAudio {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.main.async {
@@ -102,9 +138,9 @@ public enum SystemSpeechSynthesizer: Sendable {
                     AVSpeechUtteranceMaximumSpeechRate,
                     max(AVSpeechUtteranceMinimumSpeechRate, rate)
                 )
-                utterance.pitchMultiplier = 1.0
+                utterance.pitchMultiplier = min(1.35, max(0.7, pitchMultiplier))
                 utterance.volume = 1.0
-                utterance.voice = preferredVoice(language: language)
+                utterance.voice = preferredVoice(language: language, hint: voiceHint)
 
                 box.synthesizer.write(utterance) { buffer in
                     if box.finished { return }
@@ -127,18 +163,92 @@ public enum SystemSpeechSynthesizer: Sendable {
         }
     }
 
-    private static func preferredVoice(language: String) -> AVSpeechSynthesisVoice? {
+    private static func preferredVoice(
+        language: String,
+        hint: SpeechVoiceHint
+    ) -> AVSpeechSynthesisVoice? {
         let voices = AVSpeechSynthesisVoice.speechVoices()
         let langVoices = voices.filter {
             $0.language.lowercased().hasPrefix(language.prefix(2).lowercased())
         }
-        if let enhanced = langVoices.first(where: { $0.quality == .enhanced }) {
-            return enhanced
+        let pool = langVoices.isEmpty ? voices : langVoices
+        let names = hint.preferredNameFragments
+        if let named = pool.first(where: { voice in
+            let n = voice.name.lowercased()
+            return names.contains { n.contains($0) }
+        }) {
+            return named
         }
-        if let exact = AVSpeechSynthesisVoice(language: language) {
-            return exact
+        switch hint {
+        case .deepMale, .male, .noveltyRobot:
+            if let male = pool.first(where: { $0.gender == .male }) { return male }
+        case .female, .whisper:
+            if let female = pool.first(where: { $0.gender == .female }) { return female }
+        case .child:
+            if let child = pool.first(where: {
+                $0.name.localizedCaseInsensitiveContains("junior")
+                    || $0.name.localizedCaseInsensitiveContains("princess")
+                    || $0.name.localizedCaseInsensitiveContains("kathy")
+            }) {
+                return child
+            }
+            if let female = pool.first(where: { $0.gender == .female }) { return female }
+        case .sultry:
+            if let female = pool.first(where: { $0.gender == .female && $0.quality == .enhanced }) {
+                return female
+            }
+            if let female = pool.first(where: { $0.gender == .female }) { return female }
         }
-        return langVoices.first ?? voices.first
+        return pool.first(where: { $0.quality == .enhanced }) ?? pool.first
+    }
+
+    private static let sayVoiceLock = NSLock()
+    private static var cachedSayVoices: [String]?
+
+    /// Installed `say -v` names, e.g. "Alex", "Samantha", "Zarvox".
+    public static func installedSayVoiceNames() -> [String] {
+        sayVoiceLock.lock()
+        if let cachedSayVoices {
+            sayVoiceLock.unlock()
+            return cachedSayVoices
+        }
+        sayVoiceLock.unlock()
+        let names = listSayVoices()
+        sayVoiceLock.lock()
+        cachedSayVoices = names
+        sayVoiceLock.unlock()
+        return names
+    }
+
+    public static func resolveSayVoice(hint: SpeechVoiceHint) -> String? {
+        let installed = installedSayVoiceNames()
+        for candidate in hint.preferredSayNames {
+            if installed.contains(where: { $0.caseInsensitiveCompare(candidate) == .orderedSame }) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func listSayVoices() -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.arguments = ["-v", "?"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let text = String(data: data, encoding: .utf8) ?? ""
+            return text.split(whereSeparator: \.isNewline).compactMap { line in
+                let name = line.split(separator: " ").first.map(String.init) ?? ""
+                return name.isEmpty ? nil : name
+            }
+        } catch {
+            return []
+        }
     }
 
     /// Extract mono float samples from a PCM buffer (float32 / int16 / int32).
@@ -230,12 +340,14 @@ public enum CreatureFXError: Error, LocalizedError, Sendable {
     case emptySpeechText
     case ttsProducedNoAudio
     case invalidSampleRate
+    case catalogUnavailable
 
     public var errorDescription: String? {
         switch self {
         case .emptySpeechText: return "Nothing to speak for voice preview."
         case .ttsProducedNoAudio: return "System TTS produced no audio."
         case .invalidSampleRate: return "Invalid audio sample rate."
+        case .catalogUnavailable: return "Character voice catalog is not ready."
         }
     }
 }

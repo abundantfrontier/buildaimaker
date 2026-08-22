@@ -1,3 +1,4 @@
+import BAMAudioFX
 import BAMCharacterStudio
 import Foundation
 import SwiftUI
@@ -15,6 +16,10 @@ final class CharacterStudioLaunchContext: ObservableObject {
         var baseModelName: String?
         var baseModelSourceKey: String?
         var systemPrompt: String?
+        var adapterPath: String?
+        var adapterName: String?
+        /// Creature voice knobs (wizard Voice step) for Playground speak-replies.
+        var voiceParams: CreatureFXParams?
         /// Generation token so re-opening the same character still applies.
         var token: UUID = UUID()
     }
@@ -49,7 +54,10 @@ final class CharacterStudioLaunchContext: ObservableObject {
             baseModelPath: draft.baseModelPath,
             baseModelName: draft.baseModelName,
             baseModelSourceKey: draft.baseModelSourceKey,
-            systemPrompt: draft.bible?.systemPrompt
+            systemPrompt: draft.bible?.systemPrompt,
+            adapterPath: draft.adapterPath,
+            adapterName: draft.adapterName,
+            voiceParams: draft.creatureFXParams()
         )
     }
 
@@ -86,5 +94,23 @@ final class CharacterStudioLaunchContext: ObservableObject {
         let value = pendingTrain
         pendingTrain = nil
         return value
+    }
+
+    /// Rebuild a Playground handoff from the last bound character (sidebar return).
+    func playgroundTargetForActiveCharacter() -> PlaygroundTarget? {
+        guard let id = activeCharacterId,
+              let draft = try? CharacterLibraryStore().load(id: id)
+        else { return nil }
+        return PlaygroundTarget(
+            characterId: draft.id,
+            characterName: draft.displayTitle,
+            baseModelPath: draft.baseModelPath,
+            baseModelName: draft.baseModelName,
+            baseModelSourceKey: draft.baseModelSourceKey,
+            systemPrompt: draft.bible?.systemPrompt,
+            adapterPath: draft.adapterPath,
+            adapterName: draft.adapterName,
+            voiceParams: draft.creatureFXParams()
+        )
     }
 }

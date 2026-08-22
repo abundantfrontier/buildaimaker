@@ -20,10 +20,13 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+_EMIT_LOCK = threading.Lock()
 
 
 PROTOCOL_V = 1
@@ -36,8 +39,10 @@ def _iso_now() -> str:
 
 
 def emit(obj: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n"
+    with _EMIT_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def emit_hello() -> None:
@@ -342,23 +347,71 @@ def cancel_flag_set(paths: dict[str, Any]) -> bool:
     return bool(flag and Path(flag).exists())
 
 
+def ensure_gemma4_unified_alias() -> None:
+    """0.31.3 knows gemma4 but not gemma4_unified (mlx-lm #1349, on main)."""
+    try:
+        from mlx_lm import utils as mlx_utils  # type: ignore
+
+        remap = getattr(mlx_utils, "MODEL_REMAPPING", None)
+        if isinstance(remap, dict):
+            remap.setdefault("gemma4_unified", "gemma4")
+    except Exception as exc:
+        emit_log(f"could not alias gemma4_unified: {exc}", level="warn")
+
+
+def prepare_lora_data_dir(data_path: str, dest: Path) -> Path:
+    """mlx-lm wants train.jsonl (chat messages OK). Library datasets use source.jsonl."""
+    src = Path(data_path)
+    jsonl: Optional[Path] = None
+    if src.is_file() and src.suffix == ".jsonl":
+        jsonl = src
+    elif src.is_dir():
+        for name in ("train.jsonl", "source.jsonl"):
+            cand = src / name
+            if cand.exists():
+                jsonl = cand
+                break
+    if jsonl is None:
+        raise FileNotFoundError(f"no JSONL stories at {data_path}")
+    lines = [ln for ln in jsonl.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not lines:
+        raise ValueError(f"stories file is empty: {jsonl}")
+    dest.mkdir(parents=True, exist_ok=True)
+    n_valid = max(1, len(lines) // 12) if len(lines) >= 12 else 0
+    train = lines[:-n_valid] if n_valid else lines
+    valid = lines[-n_valid:] if n_valid else []
+    (dest / "train.jsonl").write_text("\n".join(train) + "\n", encoding="utf-8")
+    if valid:
+        (dest / "valid.jsonl").write_text("\n".join(valid) + "\n", encoding="utf-8")
+    emit_log(f"lora data {len(train)} train / {len(valid)} valid from {jsonl.name}")
+    return dest
+
+
+def classify_mlx_fail(err: str) -> tuple[str, str]:
+    low = err.lower()
+    if "parameters not in model" in low or "vision_embedder" in low:
+        return (
+            "BAM_MODEL_WEIGHTS",
+            "This Gemma 4 file includes picture weights. Teaching now skips those and uses the text part.",
+        )
+    if "gemma4_unified" in low or ("model type" in low and "not supported" in low):
+        return (
+            "BAM_MODEL_UNSUPPORTED",
+            "This starting model (Gemma 4 unified) isn’t supported by the teaching software yet.",
+        )
+    if "training set not found" in low or "must provide training set" in low:
+        return (
+            "BAM_DATASET_INVALID",
+            "Stories weren’t in the file layout teaching expects (need train.jsonl).",
+        )
+    return ("BAM_WORKER_CRASH", err[-800:] if err else "mlx-lm train failed")
+
+
 def run_real_mlx_lm(job: Optional[dict[str, Any]], paths: dict[str, Any]) -> int:
-    """Invoke mlx-lm LoRA when the managed runtime has the package installed.
-
-    Documented CLI (mlx-lm):
-      python -m mlx_lm lora \\
-        --model <baseModelPath> \\
-        --train \\
-        --data <dataset_dir_or_jsonl_parent> \\
-        --adapter-path <outputPath/adapter> \\
-        --batch-size … --lora-layers … --iters …
-
-    We prefer the Python API when available, then fall back to the module CLI.
-    On any failure we emit an error and exit non-zero (no silent fake fallback
-    once real mode was selected).
-    """
+    """Invoke mlx-lm LoRA when the managed runtime has the package installed."""
     emit_log("real mlx-lm LoRA train start")
     emit_heartbeat()
+    ensure_gemma4_unified_alias()
 
     base = paths.get("baseModelPath")
     data = paths.get("datasetPath")
@@ -377,97 +430,159 @@ def run_real_mlx_lm(job: Optional[dict[str, Any]], paths: dict[str, Any]) -> int
 
     adapter = adapter_dir_from_paths(paths)
     adapter.mkdir(parents=True, exist_ok=True)
+    job_dir = Path(paths.get("jobDir") or adapter.parent)
+    try:
+        data_dir = prepare_lora_data_dir(str(data), job_dir / "data")
+    except Exception as prep_err:
+        emit(
+            {
+                "v": PROTOCOL_V,
+                "type": "error",
+                "code": "BAM_DATASET_INVALID",
+                "message": str(prep_err),
+                "retriable": False,
+            }
+        )
+        emit_result("failed", str(prep_err))
+        return 1
 
     hp = (job or {}).get("hyperparameters") or {}
-    # Coarse mapping from JobSpec hyperparameters → mlx-lm knobs.
     batch_size = int(hp.get("batchSize") or 1)
     lora_rank = int(hp.get("loraRank") or 16)
-    iters = max(10, int(hp.get("epochs") or 1) * 10)
+    epochs = max(1, int(hp.get("epochs") or 1))
+    n_train = 0
+    train_file = data_dir / "train.jsonl"
+    if train_file.exists():
+        n_train = sum(1 for line in train_file.read_text(encoding="utf-8").splitlines() if line.strip())
+    # One reread ≈ one pass over the stories (not 10 tiny steps).
+    iters = min(2000, max(80, (n_train * epochs) // max(1, batch_size)))
+    emit_log(f"train steps={iters} (stories={n_train} × {epochs} pass)")
+    max_seq = int(hp.get("maxSeqLen") or 2048)
+    lr = float(hp.get("learningRate") or 1e-4)
+    grad_accum = int(hp.get("gradAccum") or 1)
 
+    # Child process so mlx-lm prints stay off the protocol pipe.
+    # The child applies the gemma4_unified alias before importing the trainer.
+    import subprocess
+
+    launcher = job_dir / "run_mlx_lora.py"
+    launcher.write_text(
+        '''\
+from mlx_lm import utils as _u
+_u.MODEL_REMAPPING.setdefault("gemma4_unified", "gemma4")
+
+from mlx_lm.models import gemma4 as _g4
+
+_orig_sanitize = _g4.Model.sanitize
+
+
+def _sanitize(self, weights):
+    # Gemma 4 unified QAT ships vision_embedder.* that text LoRA does not use.
+    cleaned = {}
+    for key, value in weights.items():
+        tail = key[6:] if key.startswith("model.") else key
+        head = tail.split(".", 1)[0]
+        if head.startswith(("vision", "audio", "multi_modal", "multimodal")):
+            continue
+        cleaned[key] = value
+    return _orig_sanitize(self, cleaned)
+
+
+_g4.Model.sanitize = _sanitize
+
+from mlx_lm.lora import main as _main
+_main()
+''',
+        encoding="utf-8",
+    )
+    cmd = [
+        sys.executable,
+        str(launcher),
+        "--model",
+        str(base),
+        "--train",
+        "--data",
+        str(data_dir),
+        "--adapter-path",
+        str(adapter),
+        "--batch-size",
+        str(batch_size),
+        "--iters",
+        str(iters),
+        "--learning-rate",
+        str(lr),
+        "--max-seq-length",
+        str(max_seq),
+        "--grad-accumulation-steps",
+        str(grad_accum),
+        "--num-layers",
+        "16",
+    ]
+    emit_log(
+        f"exec mlx_lm lora (aliased) model={base} data={data_dir} adapter={adapter} "
+        f"rank~{lora_rank} batch={batch_size} iters={iters}"
+    )
+    emit_log("exec: " + " ".join(cmd))
+    stop_pulse = threading.Event()
+
+    def _pulse() -> None:
+        while not stop_pulse.wait(5.0):
+            emit_heartbeat()
+            emit_log("still teaching — loading the model or updating weights…")
+
+    pulser = threading.Thread(target=_pulse, name="bam-lora-heartbeat", daemon=True)
+    pulser.start()
     try:
-        # Attempt in-process fine-tune API (signature varies by mlx-lm version).
-        # Documented for dogfood; pin exact version in requirements.lock.
-        from mlx_lm import lora as mlx_lora  # type: ignore
-
-        emit_log(
-            f"calling mlx_lm.lora train model={base} data={data} adapter={adapter} "
-            f"rank={lora_rank} batch={batch_size} iters={iters}"
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except Exception as cli_err:
+        emit(
+            {
+                "v": PROTOCOL_V,
+                "type": "error",
+                "code": "BAM_WORKER_CRASH",
+                "message": f"mlx-lm CLI failed to start: {cli_err}",
+                "retriable": False,
+            }
         )
-        # Many mlx-lm releases expose a train helper; if the signature differs,
-        # fall through to CLI.
-        train_fn = getattr(mlx_lora, "train", None) or getattr(mlx_lora, "run", None)
-        if callable(train_fn):
-            train_fn(
-                model=base,
-                data=data,
-                adapter_path=str(adapter),
-                batch_size=batch_size,
-                lora_rank=lora_rank,
-                iters=iters,
-            )
-        else:
-            raise RuntimeError("mlx_lm.lora has no train/run helper; use CLI")
-    except Exception as api_err:
-        emit_log(f"mlx_lm API path unavailable ({api_err}); trying CLI", level="warn")
-        import subprocess
+        emit_result("failed", str(cli_err))
+        return 1
+    finally:
+        stop_pulse.set()
+    if proc.returncode != 0:
+        err = (proc.stderr or "") + "\n" + (proc.stdout or "")
+        code, headline = classify_mlx_fail(err)
+        emit(
+            {
+                "v": PROTOCOL_V,
+                "type": "error",
+                "code": code,
+                "message": (err[-2000:] if err.strip() else headline),
+                "retriable": False,
+            }
+        )
+        emit_result("failed", headline)
+        return 1
 
-        cmd = [
-            sys.executable,
-            "-m",
-            "mlx_lm",
-            "lora",
-            "--model",
-            str(base),
-            "--train",
-            "--data",
-            str(Path(data).parent if str(data).endswith(".jsonl") else data),
-            "--adapter-path",
-            str(adapter),
-            "--batch-size",
-            str(batch_size),
-            "--iters",
-            str(iters),
-        ]
-        emit_log("exec: " + " ".join(cmd))
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        except Exception as cli_err:
-            emit(
-                {
-                    "v": PROTOCOL_V,
-                    "type": "error",
-                    "code": "BAM_WORKER_CRASH",
-                    "message": f"mlx-lm CLI failed to start: {cli_err}",
-                    "retriable": False,
-                }
-            )
-            emit_result("failed", str(cli_err))
-            return 1
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "mlx-lm failed")[-2000:]
-            emit(
-                {
-                    "v": PROTOCOL_V,
-                    "type": "error",
-                    "code": "BAM_WORKER_CRASH",
-                    "message": err,
-                    "retriable": False,
-                }
-            )
-            emit_result("failed", "mlx-lm train failed")
-            return 1
+    weights = adapter / "adapters.safetensors"
+    size = weights.stat().st_size if weights.exists() else 0
+    if size < 50_000:
+        emit(
+            {
+                "v": PROTOCOL_V,
+                "type": "error",
+                "code": "BAM_WORKER_CRASH",
+                "message": (
+                    f"Trainer exited without real weights "
+                    f"(adapters.safetensors size={size})."
+                ),
+                "retriable": False,
+            }
+        )
+        emit_result("failed", "Teaching finished too fast and did not save real weights.")
+        return 1
 
-    # Ensure model card + metrics exist even if mlx-lm only wrote weights.
     train_loss = 0.5
     hold_out = 0.75
-    if not (adapter / "model_card.md").exists():
-        write_stub_adapter(
-            paths=paths,
-            job=job,
-            train_loss=train_loss,
-            hold_out_loss=hold_out,
-            fake=False,
-        )
 
     emit(
         {

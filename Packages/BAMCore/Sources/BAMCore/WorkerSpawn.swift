@@ -139,32 +139,38 @@ public enum WorkerSpawn: Sendable {
             }
         }
 
-        let cwd = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        var dir = cwd
-        for _ in 0..<8 {
-            for config in ["debug", "release"] {
-                let candidate = dir
-                    .appendingPathComponent(".build", isDirectory: true)
-                    .appendingPathComponent(config, isDirectory: true)
-                    .appendingPathComponent(name, isDirectory: false)
-                if fileManager.isExecutableFile(atPath: candidate.path)
-                    || fileManager.fileExists(atPath: candidate.path)
-                {
-                    return candidate
-                }
-                // Apple Silicon triple path used by SwiftPM
-                let archCandidate = dir
-                    .appendingPathComponent(".build", isDirectory: true)
-                    .appendingPathComponent("arm64-apple-macosx", isDirectory: true)
-                    .appendingPathComponent(config, isDirectory: true)
-                    .appendingPathComponent(name, isDirectory: false)
-                if fileManager.fileExists(atPath: archCandidate.path) {
-                    return archCandidate
-                }
+        let roots = RuntimePaths.processSearchRoots(fileManager: fileManager)
+        for start in roots {
+            let sibling = start.appendingPathComponent(name, isDirectory: false)
+            if fileManager.fileExists(atPath: sibling.path) {
+                return sibling
             }
-            let parent = dir.deletingLastPathComponent()
-            if parent.path == dir.path { break }
-            dir = parent
+            var dir = start
+            for _ in 0..<10 {
+                for config in ["debug", "release"] {
+                    let candidate = dir
+                        .appendingPathComponent(".build", isDirectory: true)
+                        .appendingPathComponent(config, isDirectory: true)
+                        .appendingPathComponent(name, isDirectory: false)
+                    if fileManager.isExecutableFile(atPath: candidate.path)
+                        || fileManager.fileExists(atPath: candidate.path)
+                    {
+                        return candidate
+                    }
+                    // Apple Silicon triple path used by SwiftPM
+                    let archCandidate = dir
+                        .appendingPathComponent(".build", isDirectory: true)
+                        .appendingPathComponent("arm64-apple-macosx", isDirectory: true)
+                        .appendingPathComponent(config, isDirectory: true)
+                        .appendingPathComponent(name, isDirectory: false)
+                    if fileManager.fileExists(atPath: archCandidate.path) {
+                        return archCandidate
+                    }
+                }
+                let parent = dir.deletingLastPathComponent()
+                if parent.path == dir.path { break }
+                dir = parent
+            }
         }
         return nil
     }

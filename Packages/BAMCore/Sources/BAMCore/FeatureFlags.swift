@@ -5,11 +5,11 @@ import Foundation
 /// Defaults after PR-Persona / PR-Play-Text / PR-LLM-LoRA / PR-Voice-UI:
 /// - `ff.llmTraining` **on** (dogfood)
 /// - `ff.playground` **on** (text playground always available)
-/// - `ff.voiceClone` **on**
-/// - `ff.personaPacks` **on** (resolution + Pack Format v1)
+/// - `ff.voiceClone` **on** (library/clone plumbing; **sidebar Voices UI is hidden**)
+/// - `ff.personaPacks` **on** (resolution + Pack Format v1; **sidebar Personas UI is hidden**)
 /// Remaining flags stay off until their shipping PRs enable them. Overrides can
 /// still be applied via `UserDefaults` / dev tooling by constructing a custom
-/// `FeatureFlags`.
+/// `FeatureFlags`. Talk mode (`ff.talkMode`) stays off — Playground Speak is the spoken path.
 public struct FeatureFlags: Sendable, Equatable {
     public var llmTraining: Bool
     /// Text playground (base + optional adapter chat). Always on after PR-Play-Text.
@@ -25,6 +25,8 @@ public struct FeatureFlags: Sendable, Equatable {
     public var hfHubDownload: Bool
     /// Apple Foundation adapter path (export / import / Playground load). Default on for dogfood.
     public var foundationModels: Bool
+    /// Native Action API + MCP control plane (`BAMControlPlane`). Default on for dogfood.
+    public var controlPlane: Bool
 
     public init(
         /// PR-LLM-LoRA: default **true** for dogfood (design table: `ff.llmTraining` on).
@@ -41,7 +43,9 @@ public struct FeatureFlags: Sendable, Equatable {
         telemetryOptIn: Bool = false,
         hfHubDownload: Bool = false,
         /// Apple FM adapters: default **true** so dual train paths show in dogfood.
-        foundationModels: Bool = true
+        foundationModels: Bool = true,
+        /// Action API control plane: default **true** for dogfood.
+        controlPlane: Bool = true
     ) {
         self.llmTraining = llmTraining
         self.playground = playground
@@ -54,6 +58,7 @@ public struct FeatureFlags: Sendable, Equatable {
         self.telemetryOptIn = telemetryOptIn
         self.hfHubDownload = hfHubDownload
         self.foundationModels = foundationModels
+        self.controlPlane = controlPlane
     }
 
     /// Default product flags (llmTraining + playground + voiceClone + personaPacks + foundationModels on).
@@ -72,6 +77,7 @@ public struct FeatureFlags: Sendable, Equatable {
         case telemetryOptIn = "ff.telemetryOptIn"
         case hfHubDownload = "ff.hfHubDownload"
         case foundationModels = "ff.foundationModels"
+        case controlPlane = "ff.controlPlane"
     }
 
     public func isEnabled(_ key: Key) -> Bool {
@@ -87,6 +93,7 @@ public struct FeatureFlags: Sendable, Equatable {
         case .telemetryOptIn: return telemetryOptIn
         case .hfHubDownload: return hfHubDownload
         case .foundationModels: return foundationModels
+        case .controlPlane: return controlPlane
         }
     }
 }

@@ -318,6 +318,7 @@ struct ModelBrowserView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.isInstalling)
+                .guideHighlight("models.install")
                 .help("Download into models/base (network; multi-GB)")
             }
             if let page = listing.pageURL, let url = URL(string: page) {

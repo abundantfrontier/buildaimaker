@@ -228,6 +228,17 @@ final class DatasetImporterTests: XCTestCase {
         XCTAssertEqual(afterHeal?.status, .ready)
     }
 
+    func testChatExampleLastUserAssistantAndSystem() {
+        let example = ChatExample(messages: [
+            ChatMessage(role: "system", content: "You are Rocky."),
+            ChatMessage(role: "user", content: "Hello"),
+            ChatMessage(role: "assistant", content: "Yes, yes, yes!"),
+        ])
+        XCTAssertEqual(example.systemPrompt, "You are Rocky.")
+        XCTAssertEqual(example.lastUserAssistant?.user, "Hello")
+        XCTAssertEqual(example.lastUserAssistant?.assistant, "Yes, yes, yes!")
+    }
+
     func testValidateAPI() throws {
         let service = try DatasetLibraryService.openInMemoryForTesting(libraryRoot: tempRoot)
         let good = try copyFixture("valid_sharegpt.jsonl")

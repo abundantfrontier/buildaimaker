@@ -22,6 +22,7 @@ private struct CharacterWizardSession: Identifiable, Equatable {
 struct CharactersView: View {
     @Binding var selection: SidebarDestination?
     @EnvironmentObject private var characterLaunch: CharacterStudioLaunchContext
+    @EnvironmentObject private var controlPlane: ControlPlaneEnvironment
     @State private var drafts: [CharacterDraft] = []
     @State private var wizardSession: CharacterWizardSession?
     @State private var loadError: String?
@@ -29,6 +30,7 @@ struct CharactersView: View {
     /// Pending delete confirmation target.
     @State private var pendingDelete: CharacterDraft?
     @State private var showDeleteConfirm = false
+    @State private var lastSessionNonce: String = ""
 
     private let store = CharacterLibraryStore()
 
@@ -68,6 +70,7 @@ struct CharactersView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    .guideHighlight("characters.create")
                 }
             } else {
                 List {
@@ -91,6 +94,7 @@ struct CharactersView: View {
                         } label: {
                             Label("Create a new character", systemImage: "plus.circle.fill")
                         }
+                        .guideHighlight("characters.create")
                     }
 
                     if !completed.isEmpty {
@@ -128,6 +132,7 @@ struct CharactersView: View {
                 } label: {
                     Label("Create", systemImage: "plus")
                 }
+                .guideHighlight("characters.create")
             }
         }
         .sheet(item: $wizardSession, onDismiss: {
@@ -149,6 +154,7 @@ struct CharactersView: View {
                         selection = .train
                     }
                 )
+                .environmentObject(controlPlane)
                 // Force a fresh view identity per draft so StateObject cannot reuse a blank wizard.
                 .id(session.id)
             }
@@ -178,7 +184,45 @@ struct CharactersView: View {
         } message: {
             Text(deleteError ?? "")
         }
-        .onAppear(perform: reload)
+        .onAppear {
+            reload()
+            applySessionIntent()
+        }
+        .onChange(of: controlPlane.stateRevision) { _, _ in
+            reload()
+            applySessionIntent()
+        }
+        .onChange(of: controlPlane.sessionNonce) { _, _ in
+            applySessionIntent()
+        }
+    }
+
+    private func isSelected(_ draft: CharacterDraft) -> Bool {
+        controlPlane.selectionMap["characterId"] == draft.id
+    }
+
+    private func applySessionIntent() {
+        let nonce = controlPlane.sessionNonce
+        guard !nonce.isEmpty, nonce != lastSessionNonce else { return }
+        lastSessionNonce = nonce
+        let open = controlPlane.selectionMap["open"]
+        if open == "create" {
+            openNew()
+            return
+        }
+        guard let id = controlPlane.selectionMap["characterId"],
+              let draft = (try? store.load(id: id)) ?? drafts.first(where: { $0.id == id })
+        else { return }
+        switch open {
+        case "edit":
+            openResume(draft)
+        case "playground":
+            openPlayground(draft)
+        case "train":
+            openTrain(draft)
+        default:
+            break
+        }
     }
 
     private var deleteDialogTitle: String {
@@ -237,12 +281,14 @@ struct CharactersView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
+                .guideHighlight(isSelected(draft) ? "characters.edit" : "")
             } else {
                 Button("Edit") {
                     openResume(draft)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
+                .guideHighlight(isSelected(draft) ? "characters.edit" : "")
             }
 
             if draft.hasSelectedBaseModel || draft.datasetId != nil {
@@ -288,6 +334,13 @@ struct CharactersView: View {
             .accessibilityLabel(draft.isComplete ? "Remove character" : "Discard unfinished character")
         }
         .padding(.vertical, 6)
+        .background(
+            isSelected(draft)
+                ? Color.accentColor.opacity(0.10)
+                : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .guideHighlight(isSelected(draft) ? "characters.row" : "")
         .contextMenu {
             Button {
                 openResume(draft)

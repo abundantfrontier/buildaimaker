@@ -46,17 +46,41 @@ Treat every creature voice as a **signal chain** applied to:
 - neutral **TTS** output, or  
 - both (TTS → FX for consistency)
 
+### Public baseline (what actually works)
+
+There is no single “turn Samantha into 15 characters” cookbook. The published
+recipes split by **archetype**. Mixing them is how you get a whirly-tube robot
+instead of a person.
+
+1. **Pick the larynx first.** TTS voice / actor is most of the character.
+   Cheap DSP cannot invent a new speaker. **Kokoro catalog** (`kokoro-catalog-v1`)
+   is the default larynx: each preset maps to a distinct speaker id. macOS `say`
+   is the fallback while the ~350 MB model installs.
+2. **Human (sultry, pirate, warm baritone).** Source + EQ + breath + rate.
+   Close-mic: boost ~180 Hz (proximity), cut ~400 Hz (box), a little air
+   above ~7 kHz. Breath is *highpassed noise that rides the speech envelope*,
+   not white hiss. Slow down a little. **No delay, no chorus, no comb, no
+   big formant OLA.** Comb / 8–12 ms delay *is* the corrugated spinning-tube
+   sound (same physics as C-3PO).
+3. **Robot / android.** Comb filter (Dream Foundry / Boom Box Post: C-3PO),
+   optional bitcrush. Delay is correct here.
+4. **Creature (beast, fairy, goblin).** Pitch + *small* formant for mouth
+   size (Sage: large formant shifts sound unnatural) + grit. Optional SFX bed.
+5. **Ghost / alien.** Detune/chorus + space. Delay is a feature.
+
+Sultry in this app follows (1)+(2). Robot follows (3).
+
 ### Example chains (presets)
 
 | Preset | Typical processing |
 |--------|-------------------|
-| **Robot** | Bitcrush / downsample, ring mod, mild distortion, metallic EQ |
-| **Alien** | Formant shift, pitch jitter, phaser, stereo widening |
-| **Lagoon / swamp** | Low-pass, underwater feel, slow chorus, wet reverb |
-| **Ghost** | Pitch down slightly, long reverb, reverse-tail optional |
-| **Goblin** | Pitch up, narrow band, light grit |
-| **Dog-like (speech)** | Formant shift + slight growl distortion — still **words**, not pure bark |
-| **Huge beast** | Pitch down, sub boost, harmonic saturation |
+| **Sultry** | Female source, near-unity pitch, warmth EQ, intimate breath, slow, dry |
+| **Robot** | Comb filter, optional bitcrush / ring mod |
+| **Alien** | Slow clipped English, chimes + crystal in the voice |
+| **Lagoon / swamp** | Low-pass, underwater feel, wet reverb |
+| **Ghost** | Detune chorus + long reverb |
+| **Goblin** | Pitch up, mouth-size formant, light grit |
+| **Huge beast** | Pitch down, formant down, grit |
 
 ### Mac implementation (fits native app)
 

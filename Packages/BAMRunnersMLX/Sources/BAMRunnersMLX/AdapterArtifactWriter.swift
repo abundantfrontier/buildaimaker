@@ -137,11 +137,15 @@ public struct AdapterArtifactWriter: @unchecked Sendable {
         if fileManager.fileExists(atPath: dest.path) {
             try fileManager.removeItem(at: dest)
         }
-        try fileManager.createDirectory(
-            at: dest.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try fileManager.copyItem(at: jobAdapter, to: dest)
+        try fileManager.createDirectory(at: dest, withIntermediateDirectories: true)
+        // mlx-lm writes step checkpoints (`0000100_adapters.safetensors`, …) next to
+        // the final weights. Copy only the usable pair — a full-folder copy is
+        // hundreds of MB and froze Teach on every visit.
+        for name in [Self.adapterConfigFileName, Self.weightsFileName] {
+            let src = jobAdapter.appendingPathComponent(name)
+            guard fileManager.fileExists(atPath: src.path) else { continue }
+            try fileManager.copyItem(at: src, to: dest.appendingPathComponent(name))
+        }
 
         // Refresh model card with library artifact id.
         var resolvedHoldOut = holdOutLoss

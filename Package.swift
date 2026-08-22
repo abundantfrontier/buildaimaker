@@ -20,10 +20,12 @@ let package = Package(
         .library(name: "BAMCharacterStudio", targets: ["BAMCharacterStudio"]),
         .library(name: "BAMAudioFX", targets: ["BAMAudioFX"]),
         .library(name: "BAMResourcesUI", targets: ["BAMResourcesUI"]),
+        .library(name: "BAMControlPlane", targets: ["BAMControlPlane"]),
         .executable(name: "BuildAIMaker", targets: ["BuildAIMaker"]),
         .executable(name: "bam-echo-worker", targets: ["bam-echo-worker"]),
         .executable(name: "bam-llm-worker", targets: ["bam-llm-worker"]),
         .executable(name: "bam-voice-worker", targets: ["bam-voice-worker"]),
+        .executable(name: "buildaimaker-mcp", targets: ["buildaimaker-mcp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -61,6 +63,11 @@ let package = Package(
             path: "Packages/BAMAudioFX/Sources/BAMAudioFX"
         ),
         .target(name: "BAMResourcesUI", dependencies: ["BAMCore"], path: "Packages/BAMResourcesUI/Sources/BAMResourcesUI"),
+        .target(
+            name: "BAMControlPlane",
+            dependencies: [],
+            path: "Packages/BAMControlPlane/Sources/BAMControlPlane"
+        ),
         .executableTarget(
             name: "BuildAIMaker",
             dependencies: [
@@ -79,12 +86,18 @@ let package = Package(
                 "BAMCharacterStudio",
                 "BAMAudioFX",
                 "BAMResourcesUI",
+                "BAMControlPlane",
             ],
             path: "Apps/BuildAIMaker/Sources"
         ),
         .executableTarget(name: "bam-echo-worker", path: "Workers/bam-echo-worker/Sources"),
         .executableTarget(name: "bam-llm-worker", dependencies: ["BAMCore"], path: "Workers/bam-llm-worker/Sources"),
         .executableTarget(name: "bam-voice-worker", dependencies: ["BAMCore"], path: "Workers/bam-voice-worker/Sources"),
+        .executableTarget(
+            name: "buildaimaker-mcp",
+            dependencies: ["BAMControlPlane"],
+            path: "Workers/buildaimaker-mcp/Sources"
+        ),
         .testTarget(name: "BAMCoreTests", dependencies: ["BAMCore"], path: "Packages/BAMCore/Tests/BAMCoreTests"),
         .testTarget(name: "BAMModelsTests", dependencies: ["BAMModels", "BAMCore"], path: "Packages/BAMModels/Tests/BAMModelsTests"),
         .testTarget(name: "BAMPersistenceTests", dependencies: ["BAMPersistence", "BAMModels", "BAMCore", .product(name: "GRDB", package: "GRDB.swift")], path: "Packages/BAMPersistence/Tests/BAMPersistenceTests"),
@@ -122,6 +135,11 @@ let package = Package(
             name: "BAMAudioFXTests",
             dependencies: ["BAMAudioFX"],
             path: "Packages/BAMAudioFX/Tests/BAMAudioFXTests"
+        ),
+        .testTarget(
+            name: "BAMControlPlaneTests",
+            dependencies: ["BAMControlPlane"],
+            path: "Packages/BAMControlPlane/Tests/BAMControlPlaneTests"
         ),
     ]
 )

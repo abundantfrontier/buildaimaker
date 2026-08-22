@@ -9,6 +9,7 @@ final class CreatureFXRendererTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         var params = CreatureFXParams.fromPreset(.robot)
+        XCTAssertTrue(params.textures.isEmpty, "Presets must not dump SFX beds")
         params.textures = [.buzzSaw, .servo]
         let result = try CreatureFXRenderer.renderPreview(
             params: params,
@@ -55,8 +56,22 @@ final class CreatureFXRendererTests: XCTestCase {
         XCTAssertEqual(result.spokenText?.contains("Mr. Z"), true)
         // Profile must record TTS usage for debugging user reports.
         let profile = try String(contentsOf: result.profileURL, encoding: .utf8)
-        XCTAssertTrue(profile.contains("creature-fx-tts-v1"))
+        XCTAssertTrue(
+            profile.contains("creature-fx-tts-v1") || profile.contains("kokoro-catalog-v1"),
+            "Expected system or catalog engine id in profile"
+        )
         XCTAssertTrue(profile.contains("usedSystemTTS"))
+    }
+
+    func testCatalogVoiceIdsAreUniquePerPreset() {
+        let defaults = CreatureVoicePreset.allCases.map(\.defaultCatalogVoiceId)
+        XCTAssertEqual(Set(defaults).count, defaults.count, "Each preset needs its own default speaker")
+        XCTAssertEqual(CreatureVoicePreset.sultry.defaultCatalogVoiceId, "af_nicole")
+        XCTAssertEqual(CreatureVoicePreset.fairy.defaultCatalogVoiceId, "af_heart")
+        XCTAssertNotEqual(
+            CreatureVoicePreset.sultry.catalogVoiceId(register: .higher),
+            CreatureVoicePreset.pirate.catalogVoiceId(register: .lower)
+        )
     }
 
     func testExtractMonoFromInt16Buffer() throws {
@@ -96,15 +111,119 @@ final class CreatureFXRendererTests: XCTestCase {
     func testRobotAndFairyPresetsDifferStrongly() {
         let robot = CreatureFXParams.fromPreset(.robot)
         let fairy = CreatureFXParams.fromPreset(.fairy)
-        // Pitch should be far apart (deep robot-ish vs high fairy).
-        XCTAssertLessThan(robot.size, 0.55)
-        XCTAssertGreaterThan(fairy.size, 0.7)
-        XCTAssertGreaterThan(abs(robot.pitchRate - fairy.pitchRate), 0.4)
-        // Machine vs organic
-        XCTAssertGreaterThan(robot.robotize, 0.5)
+        // Cards start slider-neutral; identity is speaker + signature, not pitch stretch.
+        XCTAssertEqual(robot.size, 0.5, accuracy: 0.01)
+        XCTAssertEqual(fairy.size, 0.5, accuracy: 0.01)
+        XCTAssertEqual(robot.robotize, 0, accuracy: 0.01)
         XCTAssertEqual(fairy.robotize, 0, accuracy: 0.01)
-        XCTAssertGreaterThan(robot.metallic, fairy.metallic)
-        XCTAssertGreaterThan(fairy.formant, robot.formant)
+        XCTAssertTrue(robot.textures.isEmpty)
+        XCTAssertTrue(fairy.textures.isEmpty)
+        XCTAssertNotEqual(robot.catalogVoiceId, fairy.catalogVoiceId)
+        let alien = CreatureFXParams.fromPreset(.alien)
+        XCTAssertEqual(alien.register, .lower)
+        XCTAssertEqual(alien.catalogVoiceId, "am_puck")
+        XCTAssertEqual(alien.speed, 0.22, accuracy: 0.01)
+        XCTAssertEqual(alien.tremble, 0.08, accuracy: 0.01)
+        XCTAssertEqual(alien.grit, 0, accuracy: 0.01)
+        XCTAssertEqual(alien.metallic, 0, accuracy: 0.01)
+        XCTAssertTrue(alien.textures.contains(.chime))
+        XCTAssertTrue(alien.textures.contains(.crystal))
+        XCTAssertGreaterThan(alien.textureMix["chime"] ?? 0, 0.2)
+        XCTAssertEqual(CreatureVoicePreset.alien.catalogActingSpeed, 0.80, accuracy: 0.01)
+        XCTAssertEqual(alien.catalogActingDeliverySpeed, 0.80, accuracy: 0.02)
+        var faster = alien
+        faster.speed = 1.0
+        XCTAssertGreaterThan(faster.catalogActingDeliverySpeed, alien.catalogActingDeliverySpeed + 0.25)
+        var slower = alien
+        slower.speed = 0
+        XCTAssertLessThan(slower.catalogActingDeliverySpeed, alien.catalogActingDeliverySpeed - 0.12)
+        XCTAssertTrue(
+            CreatureVoicePreset.alien.spokenPreviewLine(characterName: "Rocky").contains("question?")
+        )
+        XCTAssertNotEqual(robot.preset.speechVoiceHint, fairy.preset.speechVoiceHint)
+        XCTAssertEqual(CreatureVoicePreset.sultry.defaultRegister, .higher)
+        XCTAssertEqual(CreatureVoicePreset.sultry.title, "Warm")
+        XCTAssertEqual(CreatureVoicePreset.deep.title, "Deep")
+        XCTAssertEqual(CreatureVoicePreset.deep.defaultRegister, .lower)
+        XCTAssertTrue(CreatureVoicePreset.deep.isHumanLeaning)
+        XCTAssertEqual(CreatureVoicePreset.deep.defaultCatalogVoiceId, "am_michael")
+        XCTAssertEqual(CreatureVoicePreset.alien.defaultCatalogVoiceId, "am_puck")
+        XCTAssertEqual(CreatureVoicePreset.alien.defaultRegister, .lower)
+        XCTAssertEqual(CreatureVoicePreset.alien.catalogVoiceId(register: .higher), "af_bella")
+        XCTAssertNotEqual(CreatureVoicePreset.sultry.defaultCatalogVoiceId, CreatureVoicePreset.deep.defaultCatalogVoiceId)
+        XCTAssertNotEqual(
+            CreatureVoicePreset.alien.defaultCatalogVoiceId,
+            CreatureVoicePreset.goblin.defaultCatalogVoiceId
+        )
+        XCTAssertGreaterThanOrEqual(CreatureFXParams.fromPreset(.sultry).breath, 0)
+        XCTAssertFalse(CreatureVoicePreset.sultry.usesMouthSizeFormant)
+        XCTAssertTrue(CreatureVoicePreset.sultry.isHumanLeaning)
+        XCTAssertTrue(CreatureVoicePreset.dragon.usesMouthSizeFormant)
+        let sultry = CreatureFXParams.fromPreset(.sultry)
+        XCTAssertEqual(sultry.pitchRate, 1.0, accuracy: 0.08)
+        XCTAssertLessThan(sultry.atmosphere, 0.12)
+        XCTAssertEqual(sultry.tremble, 0, accuracy: 0.01)
+        XCTAssertEqual(sultry.grit, 0, accuracy: 0.01)
+    }
+
+    func testWarmPresenceKeepsFiniteSignal() {
+        var samples = [Float](repeating: 0, count: 6_000)
+        for i in samples.indices {
+            samples[i] = Float(sin(2 * .pi * 220 * Double(i) / 24_000) * 0.4)
+        }
+        CreatureFXRenderer.applyWarmPresence(&samples, sampleRate: 24_000)
+        CreatureFXRenderer.applyIntimateBreath(&samples, amount: 0.28, sampleRate: 24_000)
+        XCTAssertFalse(samples.contains { $0.isNaN || $0.isInfinite })
+        XCTAssertFalse(samples.allSatisfy { $0 == 0 })
+    }
+
+    func testSultryChainIsNotADelayIdentity() {
+        var sultry = [Float](repeating: 0, count: 4_000)
+        for i in sultry.indices {
+            let t = Double(i) / 24_000
+            sultry[i] = Float(sin(2 * .pi * 220 * t) * 0.5)
+        }
+        var ghost = sultry
+        var robot = sultry
+        CreatureFXRenderer.applyCharacterVoice(
+            &sultry,
+            params: .fromPreset(.sultry),
+            sampleRate: 24_000
+        )
+        CreatureFXRenderer.applyCharacterVoice(
+            &ghost,
+            params: .fromPreset(.ghost),
+            sampleRate: 24_000
+        )
+        CreatureFXRenderer.applyCharacterVoice(
+            &robot,
+            params: .fromPreset(.robot),
+            sampleRate: 24_000
+        )
+        XCTAssertFalse(zip(sultry, ghost).allSatisfy { abs($0 - $1) < 1e-5 })
+        XCTAssertFalse(zip(sultry, robot).allSatisfy { abs($0 - $1) < 1e-5 })
+        XCTAssertFalse(sultry.contains { $0.isNaN || $0.isInfinite })
+    }
+
+    func testLoudnessMatchBringsQuietSignalUp() {
+        var quiet = [Float](repeating: 0.02, count: 4_000)
+        for i in quiet.indices {
+            quiet[i] = Float(sin(2 * .pi * 400 * Double(i) / 24_000) * 0.02)
+        }
+        CreatureFXRenderer.applyLoudnessMatch(&quiet, size: 0.9, formant: 0.85)
+        let peak = quiet.map { abs($0) }.max() ?? 0
+        XCTAssertGreaterThan(peak, 0.08)
+        XCTAssertLessThan(peak, 0.95)
+    }
+
+    func testFormantShiftChangesWaveWithoutNaN() {
+        var samples = [Float](repeating: 0, count: 8_000)
+        for i in samples.indices {
+            samples[i] = Float(sin(2 * .pi * 180 * Double(i) / 24_000) * 0.4)
+        }
+        CreatureFXRenderer.applyFormantShift(&samples, ratio: 1.28)
+        XCTAssertFalse(samples.contains { $0.isNaN || $0.isInfinite })
+        XCTAssertFalse(samples.allSatisfy { $0 == 0 })
     }
 
     func testCharacterVoiceChangesEnergyVsIdentity() {

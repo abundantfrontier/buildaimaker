@@ -446,8 +446,15 @@ public actor JobQueueController {
                         errorMessage = message ?? "Cancelled"
                     case "failed":
                         terminalStatus = .failed
-                        errorCode = BAMErrorCode.workerCrash.rawValue
-                        errorMessage = message ?? "Failed"
+                        // Keep a more specific code from a prior error event.
+                        if errorCode == nil {
+                            errorCode = BAMErrorCode.workerCrash.rawValue
+                        }
+                        if let message, !message.isEmpty {
+                            errorMessage = message
+                        } else if errorMessage == nil {
+                            errorMessage = "Failed"
+                        }
                     default:
                         terminalStatus = .failed
                         errorCode = BAMErrorCode.schemaInvalid.rawValue

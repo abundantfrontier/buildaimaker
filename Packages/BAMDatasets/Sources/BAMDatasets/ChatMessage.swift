@@ -20,6 +20,21 @@ public struct ChatExample: Codable, Sendable, Equatable, Hashable {
     public init(messages: [ChatMessage]) {
         self.messages = messages
     }
+
+    /// First system turn, if any.
+    public var systemPrompt: String? {
+        messages.first(where: { $0.role == "system" })?.content
+    }
+
+    /// Last user/assistant pair for wizard preview rows.
+    public var lastUserAssistant: (user: String, assistant: String)? {
+        let user = messages.last(where: { $0.role == "user" })?.content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let assistant = messages.last(where: { $0.role == "assistant" })?.content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let user, let assistant, !user.isEmpty, !assistant.isEmpty else { return nil }
+        return (user, assistant)
+    }
 }
 
 /// Detected JSONL chat format for a dataset file.

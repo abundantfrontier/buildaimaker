@@ -69,15 +69,29 @@ final class OnboardingChecklistTests: XCTestCase {
     }
 
     func testStepMetadataStable() {
-        XCTAssertEqual(OnboardingStep.importDataset.destinationHint, "datasets")
+        XCTAssertEqual(OnboardingStep.importDataset.destinationHint, "characters")
         XCTAssertEqual(OnboardingStep.installFixture.destinationHint, "models")
         XCTAssertEqual(OnboardingStep.dryRunOrTrain.destinationHint, "train")
         XCTAssertEqual(OnboardingStep.playgroundChat.destinationHint, "playground")
+        XCTAssertEqual(OnboardingStep.importDataset.title, "Teach a character")
+        XCTAssertEqual(OnboardingStep.installFixture.title, "Have a chat model")
+        XCTAssertTrue(OnboardingStep.installFixture.detail.contains("Apple"))
         for step in OnboardingStep.allCases {
             XCTAssertFalse(step.title.isEmpty)
             XCTAssertFalse(step.detail.isEmpty)
             XCTAssertFalse(step.systemImage.isEmpty)
         }
+    }
+
+    func testAppleChatModelCompletesInstallStepWithoutOpenWeights() {
+        let probe = OnboardingLibraryProbe(hasAppleChatModel: true)
+        XCTAssertTrue(probe.hasChatModel)
+        XCTAssertTrue(probe.isComplete(.installFixture))
+        XCTAssertFalse(probe.isComplete(.importDataset))
+        XCTAssertFalse(probe.isComplete(.dryRunOrTrain))
+        let state = OnboardingChecklistEvaluator.evaluate(probe: probe)
+        XCTAssertTrue(state.isComplete(.installFixture))
+        XCTAssertFalse(state.isFullyComplete)
     }
 
     func testOnboardingStoreRoundTrip() {

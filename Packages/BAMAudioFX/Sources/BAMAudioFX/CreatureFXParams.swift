@@ -24,6 +24,10 @@ public struct CreatureFXParams: Codable, Equatable, Sendable {
     /// Extra robotic downsample (0…1)
     public var robotize: Double
     public var textures: Set<CreatureTextureID>
+    /// 0...1 mix per texture id. Missing / 0 = off.
+    public var textureMix: [String: Double]
+    /// Lower / higher speaker range (TTS body + mild size/formant).
+    public var register: VoiceRegister
 
     public init(
         preset: CreatureVoicePreset = .alien,
@@ -36,7 +40,9 @@ public struct CreatureFXParams: Codable, Equatable, Sendable {
         breath: Double = 0.0,
         speed: Double = 0.45,
         robotize: Double = 0.0,
-        textures: Set<CreatureTextureID> = []
+        textures: Set<CreatureTextureID> = [],
+        register: VoiceRegister = .higher,
+        textureMix: [String: Double] = [:]
     ) {
         self.preset = preset
         self.size = clamp01(size)
@@ -49,25 +55,73 @@ public struct CreatureFXParams: Codable, Equatable, Sendable {
         self.speed = clamp01(speed)
         self.robotize = clamp01(robotize)
         self.textures = textures
+        self.register = register
+        self.textureMix = textureMix
     }
 
-    public static func fromPreset(_ preset: CreatureVoicePreset) -> CreatureFXParams {
-        CreatureFXParams(
+    public static func fromPreset(
+        _ preset: CreatureVoicePreset,
+        register: VoiceRegister? = nil
+    ) -> CreatureFXParams {
+        let reg = register ?? preset.defaultRegister
+        // Most cards start neutral so sliders are opt-in. Alien is the
+        // chord-friend starting mix (slow + light tremble + chimes in the voice).
+        if preset == .alien {
+            return CreatureFXParams(
+                preset: preset,
+                size: 0.5,
+                grit: 0,
+                atmosphere: preset.defaultAtmosphere,
+                formant: 0.5,
+                metallic: 0,
+                tremble: preset.defaultTremble,
+                breath: 0,
+                speed: preset.defaultSpeed,
+                robotize: 0,
+                textures: defaultTextures(for: preset),
+                register: reg,
+                textureMix: defaultTextureMix(for: preset)
+            )
+        }
+        return CreatureFXParams(
             preset: preset,
-            size: preset.defaultSize,
-            grit: preset.defaultGrit,
-            atmosphere: preset.defaultAtmosphere,
-            formant: preset.defaultFormant,
-            metallic: preset.defaultMetallic,
-            tremble: preset.defaultTremble,
-            breath: preset.defaultBreath,
-            speed: preset.defaultSpeed,
-            robotize: preset.defaultRobotize,
-            textures: defaultTextures(for: preset)
+            size: 0.5,
+            grit: 0,
+            atmosphere: 0,
+            formant: 0.5,
+            metallic: 0,
+            tremble: 0,
+            breath: 0,
+            speed: 0.5,
+            robotize: 0,
+            textures: defaultTextures(for: preset),
+            register: reg
         )
     }
 
+    /// Presets no longer dump SFX beds under every line. Alien imprints chimes.
     public static func defaultTextures(for preset: CreatureVoicePreset) -> Set<CreatureTextureID> {
+        switch preset {
+        case .alien: return [.chime, .crystal]
+        default: return []
+        }
+    }
+
+    /// Mix levels for preset-owned textures (0 = omit).
+    public static func defaultTextureMix(for preset: CreatureVoicePreset) -> [String: Double] {
+        switch preset {
+        case .alien:
+            return [
+                CreatureTextureID.chime.rawValue: 0.30,
+                CreatureTextureID.crystal.rawValue: 0.18,
+            ]
+        default:
+            return [:]
+        }
+    }
+
+    /// Old preset → bed mapping (strip on load so existing characters lose the noise stack).
+    public static func legacyDefaultTextures(for preset: CreatureVoicePreset) -> Set<CreatureTextureID> {
         switch preset {
         case .robot: return [.servo, .buzzSaw]
         case .alien: return [.radioStatic]
@@ -83,19 +137,68 @@ public struct CreatureFXParams: Codable, Equatable, Sendable {
         case .wizard: return [.crystal, .chime]
         case .pirate: return [.ropeCreak]
         case .insect: return [.insectClick]
+        case .sultry, .deep: return []
         }
     }
 
-    /// Pitch ratio applied to speech (lower = deeper). Wide range so presets differ.
-    /// size 0 → ~0.48 (very deep), size 1 → ~2.05 (chipmunk-high)
+    /// TTS body after applying Lower / Higher.
+    public var resolvedSpeechHint: SpeechVoiceHint {
+        switch register {
+        case .lower:
+            switch preset.speechVoiceHint {
+            case .noveltyRobot: return .noveltyRobot
+            case .whisper: return .whisper
+            default: return .deepMale
+            }
+        case .higher:
+            switch preset.speechVoiceHint {
+            case .noveltyRobot: return .female
+            case .sultry: return .sultry
+            case .child: return .child
+            default: return .female
+            }
+        }
+    }
+
+    /// Pitch ratio applied to speech (lower = deeper).
+    /// Human-leaning stays near the TTS larynx; creatures get a wide stretch.
     public var pitchRate: Double {
-        0.48 + size * 1.57
+        if preset.isHumanLeaning {
+            return 0.88 + size * 0.28
+        }
+        return 0.48 + size * 1.57
+    }
+
+    /// Nudge the *source* TTS toward the body before FX (0.75…1.25).
+    public var ttsPitchMultiplier: Float {
+        Float(0.75 + size * 0.5)
+    }
+
+    /// Formant scale independent of pitch: 0 → 0.72 (large body), 1 → 1.38 (tiny).
+    public var formantRatio: Double {
+        0.72 + formant * 0.66
     }
 
     /// TTS utterance rate hint (AVSpeech scale-ish + say -r mapping).
     public var speechRateFactor: Float {
         // 0 → ~0.32 (slow), 0.45 → mid, 1 → ~0.78 (fast clipped)
-        Float(0.32 + speed * 0.46)
+        var r = 0.32 + speed * 0.46
+        if preset == .sultry || preset == .deep || preset == .alien { r *= 0.78 }
+        return Float(r)
+    }
+
+    /// Kokoro speaker for this preset + register.
+    public var catalogVoiceId: String {
+        preset.catalogVoiceId(register: register)
+    }
+
+    public var catalogLang: String {
+        preset.catalogLang(register: register)
+    }
+
+    /// Kokoro speed (0.75…1.20). Identity lives in the speaker, not time-stretch.
+    public var catalogSpeed: Double {
+        0.75 + speed * 0.45
     }
 
     public var sizeLabel: String {

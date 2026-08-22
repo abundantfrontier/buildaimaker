@@ -278,27 +278,34 @@ public actor MLXWorkerClient {
         environment: [String: String],
         fileManager: FileManager
     ) -> URL? {
-        let cwd = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
-        var dir = cwd
-        for _ in 0 ..< 10 {
-            for config in ["debug", "release"] {
-                let candidates = [
-                    dir.appendingPathComponent(".build/\(config)/\(name)"),
-                    dir.appendingPathComponent(".build/arm64-apple-macosx/\(config)/\(name)"),
-                    dir.appendingPathComponent(".build/x86_64-apple-macosx/\(config)/\(name)"),
-                ]
-                for c in candidates
-                where fileManager.isExecutableFile(atPath: c.path)
-                    || fileManager.fileExists(atPath: c.path)
-                {
-                    return c
-                }
-            }
-            let parent = dir.deletingLastPathComponent()
-            if parent.path == dir.path { break }
-            dir = parent
-        }
         _ = environment
+        for start in RuntimePaths.processSearchRoots(fileManager: fileManager) {
+            let sibling = start.appendingPathComponent(name)
+            if fileManager.isExecutableFile(atPath: sibling.path)
+                || fileManager.fileExists(atPath: sibling.path)
+            {
+                return sibling
+            }
+            var dir = start
+            for _ in 0 ..< 10 {
+                for config in ["debug", "release"] {
+                    let candidates = [
+                        dir.appendingPathComponent(".build/\(config)/\(name)"),
+                        dir.appendingPathComponent(".build/arm64-apple-macosx/\(config)/\(name)"),
+                        dir.appendingPathComponent(".build/x86_64-apple-macosx/\(config)/\(name)"),
+                    ]
+                    for c in candidates
+                    where fileManager.isExecutableFile(atPath: c.path)
+                        || fileManager.fileExists(atPath: c.path)
+                    {
+                        return c
+                    }
+                }
+                let parent = dir.deletingLastPathComponent()
+                if parent.path == dir.path { break }
+                dir = parent
+            }
+        }
         return nil
     }
 }

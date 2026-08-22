@@ -42,7 +42,7 @@ public enum CreatureSpeciesPreset: String, CaseIterable, Identifiable, Codable, 
     public var suggestedVibe: String {
         switch self {
         case .robot: return "precise, curious about flesh-creatures"
-        case .alien: return "polite outsider with strange metaphors"
+        case .alien: return "eager, clipped sentences, asks question?"
         case .lagoon: return "wet, ancient, patient"
         case .ghost: return "wistful, unfinished business"
         case .beast: return "proud, territorial, surprisingly gentle"
@@ -78,6 +78,8 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     public var styleTags: [StyleTag]
     public var riffCount: Int
     public var voicePreset: String
+    /// "lower" or "higher" — overall speaker range. Missing on old saves.
+    public var voiceRegister: String
     /// Pitch: 0 = deep/huge, 1 = high/tiny
     public var size: Double
     public var grit: Double
@@ -100,6 +102,8 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     public var textureServo: Bool
     /// Extra / full texture id list (raw `CreatureTextureID` values). Preferred over bools.
     public var textureIds: [String]
+    /// 0...1 mix for each background noise. 0 / missing = off.
+    public var textureLevels: [String: Double]
     public var bible: CharacterBible?
     public var examples: [DialogueExample]
     public var datasetId: String?
@@ -113,6 +117,12 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
     public var baseModelName: String?
     /// Catalog / hub `sourceKey` for the chosen base model.
     public var baseModelSourceKey: String?
+    /// Published LoRA / Foundation adapter library id (`models/adapters/<id>`).
+    public var adapterId: String?
+    /// Absolute path to the adapter directory, when known.
+    public var adapterPath: String?
+    /// Display name of the pinned adapter.
+    public var adapterName: String?
     /// Wizard step raw value (0=meet, 1=model, 2=mind, 3=voice, 4=done). Used to resume.
     public var wizardStepRaw: Int
     /// True after user hits Finish & save.
@@ -130,20 +140,22 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         styleTags: [StyleTag] = [],
         riffCount: Int = 2,
         voicePreset: String = CreatureSpeciesPreset.alien.voicePresetRawValue,
-        size: Double = 0.55,
-        grit: Double = 0.22,
-        atmosphere: Double = 0.45,
-        formant: Double = 0.48,
-        metallic: Double = 0.25,
-        tremble: Double = 0.2,
-        breath: Double = 0.08,
-        speed: Double = 0.45,
+        voiceRegister: String = "lower",
+        size: Double = 0.5,
+        grit: Double = 0,
+        atmosphere: Double = 0.12,
+        formant: Double = 0.5,
+        metallic: Double = 0,
+        tremble: Double = 0.08,
+        breath: Double = 0,
+        speed: Double = 0.22,
         robotize: Double = 0.0,
         textureBuzzSaw: Bool = false,
         textureSongbird: Bool = false,
         textureDrip: Bool = false,
         textureServo: Bool = false,
-        textureIds: [String] = [],
+        textureIds: [String] = ["chime", "crystal"],
+        textureLevels: [String: Double] = ["chime": 0.30, "crystal": 0.18],
         bible: CharacterBible? = nil,
         examples: [DialogueExample] = [],
         datasetId: String? = nil,
@@ -153,6 +165,9 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         baseModelPath: String? = nil,
         baseModelName: String? = nil,
         baseModelSourceKey: String? = nil,
+        adapterId: String? = nil,
+        adapterPath: String? = nil,
+        adapterName: String? = nil,
         wizardStepRaw: Int = 0,
         isComplete: Bool = false,
         createdAt: String = ISO8601DateFormatter().string(from: Date()),
@@ -167,6 +182,7 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         self.styleTags = styleTags
         self.riffCount = riffCount
         self.voicePreset = voicePreset
+        self.voiceRegister = voiceRegister
         self.size = size
         self.grit = grit
         self.atmosphere = atmosphere
@@ -181,6 +197,7 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         self.textureDrip = textureDrip
         self.textureServo = textureServo
         self.textureIds = textureIds
+        self.textureLevels = textureLevels
         self.bible = bible
         self.examples = examples
         self.datasetId = datasetId
@@ -190,6 +207,9 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         self.baseModelPath = baseModelPath
         self.baseModelName = baseModelName
         self.baseModelSourceKey = baseModelSourceKey
+        self.adapterId = adapterId
+        self.adapterPath = adapterPath
+        self.adapterName = adapterName
         self.wizardStepRaw = wizardStepRaw
         self.isComplete = isComplete
         self.createdAt = createdAt
@@ -206,6 +226,23 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
             textureSongbird = newValue.contains("songbird")
             textureDrip = newValue.contains("drip")
             textureServo = newValue.contains("servo")
+        }
+    }
+
+
+    public func textureLevel(_ id: String) -> Double {
+        if let v = textureLevels[id] { return min(1, max(0, v)) }
+        return textureIdSet.contains(id) ? 0.4 : 0
+    }
+
+    public mutating func setTextureLevel(_ id: String, _ value: Double) {
+        let v = min(1, max(0, value))
+        if v < 0.02 {
+            textureLevels[id] = nil
+            setTexture(id, enabled: false)
+        } else {
+            textureLevels[id] = v
+            setTexture(id, enabled: true)
         }
     }
 
@@ -251,11 +288,12 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, speciesPreset, customSpecies, vibe, storyPaste, styleTags, riffCount
-        case voicePreset, size, grit, atmosphere
+        case voicePreset, voiceRegister, size, grit, atmosphere
         case formant, metallic, tremble, breath, speed, robotize
-        case textureBuzzSaw, textureSongbird, textureDrip, textureServo, textureIds
+        case textureBuzzSaw, textureSongbird, textureDrip, textureServo, textureIds, textureLevels
         case bible, examples, datasetId, voiceProfilePath, previewAudioPath
         case baseModelId, baseModelPath, baseModelName, baseModelSourceKey
+        case adapterId, adapterPath, adapterName
         case wizardStepRaw, isComplete, createdAt, updatedAt
     }
 
@@ -270,6 +308,9 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         styleTags = try c.decodeIfPresent([StyleTag].self, forKey: .styleTags) ?? []
         riffCount = try c.decodeIfPresent(Int.self, forKey: .riffCount) ?? 2
         voicePreset = try c.decodeIfPresent(String.self, forKey: .voicePreset) ?? CreatureSpeciesPreset.alien.voicePresetRawValue
+        voiceRegister = try c.decodeIfPresent(String.self, forKey: .voiceRegister)
+            ?? (["deep", "beast", "dragon", "pirate", "wizard", "robot", "android", "lagoon", "coyote"].contains(voicePreset)
+                ? "lower" : "higher")
         size = try c.decodeIfPresent(Double.self, forKey: .size) ?? 0.55
         grit = try c.decodeIfPresent(Double.self, forKey: .grit) ?? 0.22
         atmosphere = try c.decodeIfPresent(Double.self, forKey: .atmosphere) ?? 0.45
@@ -294,6 +335,10 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
             if textureServo { ids.append("servo") }
         }
         textureIds = ids
+        textureLevels = try c.decodeIfPresent([String: Double].self, forKey: .textureLevels) ?? [:]
+        if textureLevels.isEmpty {
+            for id in ids { textureLevels[id] = 0.4 }
+        }
         bible = try c.decodeIfPresent(CharacterBible.self, forKey: .bible)
         examples = try c.decodeIfPresent([DialogueExample].self, forKey: .examples) ?? []
         datasetId = try c.decodeIfPresent(String.self, forKey: .datasetId)
@@ -303,6 +348,9 @@ public struct CharacterDraft: Identifiable, Codable, Equatable, Sendable {
         baseModelPath = try c.decodeIfPresent(String.self, forKey: .baseModelPath)
         baseModelName = try c.decodeIfPresent(String.self, forKey: .baseModelName)
         baseModelSourceKey = try c.decodeIfPresent(String.self, forKey: .baseModelSourceKey)
+        adapterId = try c.decodeIfPresent(String.self, forKey: .adapterId)
+        adapterPath = try c.decodeIfPresent(String.self, forKey: .adapterPath)
+        adapterName = try c.decodeIfPresent(String.self, forKey: .adapterName)
         wizardStepRaw = try c.decodeIfPresent(Int.self, forKey: .wizardStepRaw) ?? 0
         // Older saves without isComplete: treat as complete if they had voice preview.
         if let complete = try c.decodeIfPresent(Bool.self, forKey: .isComplete) {
@@ -383,7 +431,7 @@ private enum VoiceKnobDefaults {
         case "android":
             return Knobs(formant: 0.55, metallic: 0.55, tremble: 0.08, breath: 0.08, speed: 0.5, robotize: 0.4)
         case "alien":
-            return Knobs(formant: 0.48, metallic: 0.25, tremble: 0.2, breath: 0.08, speed: 0.45, robotize: 0.0)
+            return Knobs(formant: 0.5, metallic: 0.0, tremble: 0.08, breath: 0.0, speed: 0.22, robotize: 0.0)
         case "lagoon":
             return Knobs(formant: 0.18, metallic: 0.05, tremble: 0.08, breath: 0.25, speed: 0.35, robotize: 0.0)
         case "ghost":
@@ -402,6 +450,8 @@ private enum VoiceKnobDefaults {
             return Knobs(formant: 0.35, metallic: 0.05, tremble: 0.08, breath: 0.2, speed: 0.28, robotize: 0.0)
         case "pirate":
             return Knobs(formant: 0.48, metallic: 0.05, tremble: 0.08, breath: 0.08, speed: 0.35, robotize: 0.0)
+        case "sultry", "deep":
+            return Knobs(formant: 0.40, metallic: 0.0, tremble: 0.0, breath: 0.30, speed: 0.22, robotize: 0.0)
         default:
             return Knobs(formant: 0.5, metallic: 0.1, tremble: 0.1, breath: 0.1, speed: 0.45, robotize: 0.0)
         }

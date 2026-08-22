@@ -342,7 +342,7 @@ struct HomeOnboardingView: View {
         HStack(spacing: 10) {
             Image(systemName: "checkmark.seal.fill")
                 .foregroundStyle(.green)
-            Text("First-run checklist complete — import, train, and play without leaving the app.")
+            Text("First-run checklist complete — teach, chat, and optionally train without leaving the app.")
                 .font(.callout)
             Spacer()
             Button("Reset") {
@@ -423,6 +423,7 @@ struct HomeOnboardingView: View {
                 linkButton("Models", .models, "cpu")
                 linkButton("Playground", .playground, "bubble.left.and.bubble.right")
                 linkButton("Train", .train, "hammer")
+                linkButton("Actions", .actions, "bolt.horizontal")
                 linkButton("Settings", .settings, "gearshape")
             }
         }
@@ -439,7 +440,7 @@ struct HomeOnboardingView: View {
 
     private func destination(for step: OnboardingStep) -> SidebarDestination {
         switch step {
-        case .importDataset: return .datasets
+        case .importDataset: return .characters
         case .installFixture: return .models
         case .dryRunOrTrain: return .train
         case .playgroundChat: return .playground
@@ -661,6 +662,7 @@ final class HomeOnboardingViewModel: ObservableObject {
         } catch {
             hasBase = ModelInstallService(modelsBaseURL: modelsBase).isFixtureInstalled()
         }
+        let appleUsable = AppleFoundationModelSupport.probeStatus().isUsable
 
         let adaptersRoot = libraryRoot.appendingPathComponent("models/adapters", isDirectory: true)
         var hasAdapter = false
@@ -689,6 +691,7 @@ final class HomeOnboardingViewModel: ObservableObject {
         return OnboardingLibraryProbe(
             hasReadyDataset: hasDataset,
             hasLocalBaseModel: hasBase,
+            hasAppleChatModel: appleUsable,
             hasDryRunOrTrain: hasDryRunOrTrain,
             hasPlaygroundChat: hasPlayground
         )

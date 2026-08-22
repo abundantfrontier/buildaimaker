@@ -204,23 +204,88 @@ public enum RuntimeIntegrity: Sendable {
         fileManager: FileManager = .default
     ) throws {
         let envRoot = managedEnvRoot.standardizedFileURL
-        let interpreter = try resolvedFile(relativePath: relativePath, under: envRoot)
+        // The *link* must live under the venv. CPython always points
+        // `bin/python3` at a system/Homebrew interpreter outside the env.
+        let interpreter = try resolvedLinkLocation(relativePath: relativePath, under: envRoot)
 
-        // Re-check after existence: a race or dangling link must not pass.
-        try assertPathUnderRoot(interpreter, root: envRoot, relativePath: relativePath)
-
+        var isDir: ObjCBool = false
+        let exists = fileManager.fileExists(atPath: interpreter.path, isDirectory: &isDir)
         if requirePresent {
-            var isDir: ObjCBool = false
-            guard fileManager.fileExists(atPath: interpreter.path, isDirectory: &isDir),
-                  !isDir.boolValue
-            else {
+            guard exists, !isDir.boolValue else {
                 throw BAMError(
                     code: .runtimeIntegrity,
                     message: "managed interpreter missing: \(interpreter.path)"
                 )
             }
-            // Existence may have followed a symlink created after the first check.
-            try assertPathUnderRoot(interpreter, root: envRoot, relativePath: relativePath)
         }
+        guard exists else { return }
+        guard !isDir.boolValue else {
+            throw BAMError(
+                code: .runtimeIntegrity,
+                message: "managed interpreter is a directory: \(interpreter.path)"
+            )
+        }
+        try assertAllowedInterpreterTarget(interpreter, envRoot: envRoot)
+    }
+
+    /// Relative path under `root` without following a venv → CPython symlink.
+    public static func resolvedLinkLocation(relativePath: String, under root: URL) throws -> URL {
+        let trimmed = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw BAMError(code: .runtimeIntegrity, message: "empty relative path in pins")
+        }
+        guard !trimmed.hasPrefix("/"), !trimmed.contains("\0") else {
+            throw BAMError(
+                code: .pathEscape,
+                message: "absolute or invalid path in pins: \(trimmed)"
+            )
+        }
+        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        for part in components {
+            if part.isEmpty || part == ".." {
+                throw BAMError(code: .pathEscape, message: "path escape in pins: \(trimmed)")
+            }
+        }
+        var candidate = root.standardizedFileURL
+        for part in components where part != "." {
+            candidate = candidate.appendingPathComponent(part, isDirectory: false)
+        }
+        candidate = candidate.standardizedFileURL
+        guard isPath(candidate, under: root.standardizedFileURL) else {
+            throw BAMError(
+                code: .pathEscape,
+                message: "symlink or path escape outside root: \(trimmed) → \(candidate.path)"
+            )
+        }
+        return candidate
+    }
+
+    /// Venv `python3` may resolve to Apple / Homebrew / official CPython. Not /tmp.
+    public static func assertAllowedInterpreterTarget(_ interpreter: URL, envRoot: URL) throws {
+        let resolved = interpreter.resolvingSymlinksInPath().standardizedFileURL
+        if isPath(resolved, under: envRoot.resolvingSymlinksInPath().standardizedFileURL) {
+            return
+        }
+        let path = resolved.path
+        let name = resolved.lastPathComponent.lowercased()
+        guard name.hasPrefix("python") else {
+            throw BAMError(
+                code: .runtimeIntegrity,
+                message: "managed interpreter target not allowed: \(path)"
+            )
+        }
+        let allowed = [
+            "/usr/bin/",
+            "/usr/local/",
+            "/opt/homebrew/",
+            "/opt/local/",
+            "/Library/Frameworks/Python.framework/",
+        ]
+        if allowed.contains(where: { path.hasPrefix($0) }) { return }
+        if path.contains("/.pyenv/versions/") { return }
+        throw BAMError(
+            code: .runtimeIntegrity,
+            message: "managed interpreter target not allowed: \(path)"
+        )
     }
 }

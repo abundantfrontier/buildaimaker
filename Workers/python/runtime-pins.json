@@ -12,7 +12,7 @@
     {
       "id": "llm_worker.main",
       "relativePath": "llm_worker/main.py",
-      "sha256": "7979d93347a38ab3e43d3235f8afd2c26d8c14dcdda8d00feb9fdea4267e5fee"
+      "sha256": "1167aecda795fde3bf6b0936d1939f135cab16d23e04d60e4f15d5a7e7e138d9"
     },
     {
       "id": "voice_worker.main",

@@ -9,8 +9,11 @@ public enum CreatureFXRenderer {
         public var audioURL: URL
         public var profileURL: URL
         public var durationSeconds: Double
-        /// True when system TTS provided the speech carrier.
+        /// True when system TTS or the Kokoro catalog provided the speech carrier.
         public var usedSystemTTS: Bool
+        /// True when the Kokoro catalog speaker was used (not macOS `say`).
+        public var usedCatalogTTS: Bool
+        public var catalogVoiceId: String?
         /// Line that was spoken (if any).
         public var spokenText: String?
 
@@ -19,12 +22,16 @@ public enum CreatureFXRenderer {
             profileURL: URL,
             durationSeconds: Double,
             usedSystemTTS: Bool = false,
+            usedCatalogTTS: Bool = false,
+            catalogVoiceId: String? = nil,
             spokenText: String? = nil
         ) {
             self.audioURL = audioURL
             self.profileURL = profileURL
             self.durationSeconds = durationSeconds
             self.usedSystemTTS = usedSystemTTS
+            self.usedCatalogTTS = usedCatalogTTS
+            self.catalogVoiceId = catalogVoiceId
             self.spokenText = spokenText
         }
     }
@@ -33,6 +40,8 @@ public enum CreatureFXRenderer {
     public static let engineId = "creature-fx-v1"
     /// Engine id when system TTS is the speech source.
     public static let spokenEngineId = "creature-fx-tts-v1"
+    /// Engine id when Kokoro catalog speakers carry the line.
+    public static let catalogEngineId = CatalogTTSRuntime.engineId
 
     /// Render **spoken** preview: system TTS of `speechText`, then creature FX.
     ///
@@ -51,35 +60,32 @@ public enum CreatureFXRenderer {
 
         if !trimmed.isEmpty {
             do {
-                let speech = try await SystemSpeechSynthesizer.synthesize(
-                    text: trimmed,
-                    rate: params.speechRateFactor
-                )
-                guard !speech.samples.isEmpty, speech.sampleRate > 0 else {
+                let spoken = try await speakLine(trimmed, params: params)
+                guard !spoken.samples.isEmpty, spoken.sampleRate > 0 else {
                     throw CreatureFXError.ttsProducedNoAudio
                 }
 
-                var samples = resample(speech.samples, from: speech.sampleRate, to: targetRate)
+                var samples = resample(spoken.samples, from: spoken.sampleRate, to: targetRate)
 
-                // Strong character chain — presets must sound obviously different.
-                applyCharacterVoice(&samples, params: params, sampleRate: targetRate)
+                if spoken.usedCatalog {
+                    applyCatalogCostume(&samples, params: params, sampleRate: targetRate)
+                } else {
+                    applyCharacterVoice(&samples, params: params, sampleRate: targetRate)
+                }
 
                 var mix = samples
-                // Leave headroom so texture beds stay audible after normalize.
-                if !params.textures.isEmpty {
-                    for i in mix.indices { mix[i] *= 0.72 }
-                }
-                for texture in params.textures {
+                for (texture, level) in params.resolvedTextureLevels {
                     let bed = synthesizeTexture(
                         texture,
                         sampleCount: mix.count,
                         sampleRate: targetRate
                     )
-                    mix = mixLayers(
+                    mix = imprintTextureOnVoice(
                         speech: mix,
                         texture: bed,
-                        textureGain: texture.mixGain,
-                        duckAmount: 0.35
+                        id: texture,
+                        level: level,
+                        sampleRate: targetRate
                     )
                 }
                 normalize(&mix, peak: 0.92)
@@ -90,8 +96,10 @@ public enum CreatureFXRenderer {
                     params: params,
                     characterName: characterName,
                     outputDirectory: outputDirectory,
-                    engineId: spokenEngineId,
+                    engineId: spoken.usedCatalog ? catalogEngineId : spokenEngineId,
                     usedSystemTTS: true,
+                    usedCatalogTTS: spoken.usedCatalog,
+                    catalogVoiceId: spoken.catalogVoiceId,
                     spokenText: trimmed,
                     fileManager: fileManager
                 )
@@ -134,17 +142,18 @@ public enum CreatureFXRenderer {
         if !params.textures.isEmpty {
             for i in mix.indices { mix[i] *= 0.72 }
         }
-        for texture in params.textures {
+        for (texture, level) in params.resolvedTextureLevels {
             let bed = synthesizeTexture(
                 texture,
                 sampleCount: n,
                 sampleRate: sampleRate
             )
-            mix = mixLayers(
+            mix = imprintTextureOnVoice(
                 speech: mix,
                 texture: bed,
-                textureGain: texture.mixGain,
-                duckAmount: 0.35
+                id: texture,
+                level: level,
+                sampleRate: sampleRate
             )
         }
 
@@ -171,6 +180,8 @@ public enum CreatureFXRenderer {
         outputDirectory: URL,
         engineId: String,
         usedSystemTTS: Bool,
+        usedCatalogTTS: Bool = false,
+        catalogVoiceId: String? = nil,
         spokenText: String?,
         fileManager: FileManager
     ) throws -> RenderResult {
@@ -202,6 +213,7 @@ public enum CreatureFXRenderer {
             "pitchRate": params.pitchRate,
             "textures": params.textures.map(\.rawValue).sorted(),
             "usedSystemTTS": usedSystemTTS,
+            "usedCatalogTTS": usedCatalogTTS,
             "teachTips": [
                 params.preset.teachTip,
                 "Pitch: \(params.sizeLabel)",
@@ -211,7 +223,9 @@ public enum CreatureFXRenderer {
                 "Grit: \(params.gritLabel)",
                 "Speed: \(params.speedLabel)",
                 "Space: \(params.atmosphereLabel)",
-                usedSystemTTS
+                usedCatalogTTS
+                    ? "Speech from Kokoro catalog speaker \(catalogVoiceId ?? params.catalogVoiceId)."
+                    : usedSystemTTS
                     ? "Speech from system TTS, then creature FX."
                     : "Buzz carrier (TTS unavailable).",
             ],
@@ -219,6 +233,9 @@ public enum CreatureFXRenderer {
         ]
         if let spokenText {
             profile["spokenText"] = spokenText
+        }
+        if let catalogVoiceId, !catalogVoiceId.isEmpty {
+            profile["catalogVoiceId"] = catalogVoiceId
         }
         let profileURL = outputDirectory.appendingPathComponent("voice_profile.json")
         let data = try JSONSerialization.data(withJSONObject: profile, options: [.prettyPrinted, .sortedKeys])
@@ -230,8 +247,63 @@ public enum CreatureFXRenderer {
             profileURL: profileURL,
             durationSeconds: duration,
             usedSystemTTS: usedSystemTTS,
+            usedCatalogTTS: usedCatalogTTS,
+            catalogVoiceId: catalogVoiceId,
             spokenText: spokenText
         )
+    }
+
+    private struct SpokenLine {
+        var samples: [Float]
+        var sampleRate: Double
+        var usedCatalog: Bool
+        var catalogVoiceId: String?
+    }
+
+    /// Prefer Kokoro catalog (distinct speakers); fall back to macOS `say`.
+    private static func speakLine(_ text: String, params: CreatureFXParams) async throws -> SpokenLine {
+        if CatalogTTSRuntime.isReady() {
+            do {
+                let audio = try await CatalogTTSRuntime.synthesize(
+                    text: text,
+                    voiceId: params.catalogVoiceId,
+                    speed: params.catalogActingDeliverySpeed,
+                    lang: params.catalogLang
+                )
+                if !audio.samples.isEmpty {
+                    return SpokenLine(
+                        samples: audio.samples,
+                        sampleRate: audio.sampleRate,
+                        usedCatalog: true,
+                        catalogVoiceId: params.catalogVoiceId
+                    )
+                }
+            } catch {
+                // System TTS still speaks.
+            }
+        }
+        let speech = try await SystemSpeechSynthesizer.synthesize(
+            text: text,
+            rate: params.speechRateFactor,
+            voiceHint: params.resolvedSpeechHint,
+            pitchMultiplier: params.ttsPitchMultiplier
+        )
+        return SpokenLine(
+            samples: speech.samples,
+            sampleRate: speech.sampleRate,
+            usedCatalog: false,
+            catalogVoiceId: nil
+        )
+    }
+
+    /// Catalog already picked the larynx. Only costume FX for non-humans.
+    public static func applyCatalogCostume(
+        _ samples: inout [Float],
+        params: CreatureFXParams,
+        sampleRate: Double
+    ) {
+        guard !samples.isEmpty else { return }
+        applyCatalogSliderFX(&samples, params: params, sampleRate: sampleRate)
     }
 
     // MARK: - Sample processing
@@ -268,7 +340,10 @@ public enum CreatureFXRenderer {
         }
     }
 
-    /// Full spoken-character processing (pitch, formant, metal, robot, tremble, breath, space).
+    /// Speech identity: pitch (if needed) + one formant path + **one** signature.
+    ///
+    /// Human-leaning presets skip OLA formant and delay. Comb / 12 ms chorus is
+    /// the C-3PO / whirly-tube sound — keep it on robots and ghosts, not Warm / Deep.
     public static func applyCharacterVoice(
         _ samples: inout [Float],
         params: CreatureFXParams,
@@ -276,33 +351,239 @@ public enum CreatureFXRenderer {
     ) {
         guard !samples.isEmpty else { return }
 
-        // 1) Pitch (deep ↔ high) — wide range so deep beast ≠ high fairy.
         let pitch = max(0.45, min(2.15, params.pitchRate))
-        samples = resample(samples, from: 1.0, to: 1.0 / pitch)
+        if abs(pitch - 1) > 0.04 {
+            samples = resample(samples, from: 1.0, to: 1.0 / pitch)
+        }
 
-        // 2) Formant / tone color (dark ↔ bright).
-        applyFormant(&samples, formant: params.formant)
+        if params.preset.usesMouthSizeFormant {
+            applyFormantShift(&samples, ratio: params.formantRatio)
+        } else if params.preset != .sultry && params.preset != .deep {
+            applyFormant(&samples, formant: params.formant)
+        }
 
-        // 3) Metallic ring modulation.
-        applyMetallic(&samples, amount: params.metallic, sampleRate: sampleRate)
+        applyIdentity(params.preset, to: &samples, sampleRate: sampleRate)
 
-        // 4) Robotize: downsample + crush.
-        applyRobotize(&samples, amount: params.robotize, sampleRate: sampleRate)
+        if params.preset.isHumanLeaning {
+            applyHumanTweaks(&samples, params: params, sampleRate: sampleRate)
+        } else {
+            if params.grit > 0.1 { applyGrit(&samples, grit: params.grit * 0.65) }
+            if params.metallic > 0.08 {
+                applyMetallic(&samples, amount: params.metallic * 0.5, sampleRate: sampleRate)
+            }
+            if params.robotize > 0.08 {
+                applyRobotize(&samples, amount: params.robotize * 0.5, sampleRate: sampleRate)
+            }
+            if params.tremble > 0.08 { applyTremble(&samples, amount: params.tremble, sampleRate: sampleRate) }
+            if params.breath > 0.08 { applyBreath(&samples, amount: params.breath * 0.55) }
+            if params.atmosphere > 0.12 {
+                applyAtmosphere(&samples, amount: params.atmosphere, sampleRate: sampleRate)
+            }
+        }
 
-        // 5) Grit / distortion.
-        applyGrit(&samples, grit: params.grit)
+        applyLoudnessMatch(&samples, size: params.size, formant: params.formant)
+    }
 
-        // 6) Tremble (AM vibrato).
-        applyTremble(&samples, amount: params.tremble, sampleRate: sampleRate)
+    /// Extra sliders on a human voice. Never add chorus/comb here.
+    private static func applyHumanTweaks(
+        _ samples: inout [Float],
+        params: CreatureFXParams,
+        sampleRate: Double
+    ) {
+        if params.grit > 0.1 { applyGrit(&samples, grit: params.grit * 0.55) }
+        if params.preset == .sultry || params.preset == .deep {
+            if params.breath > 0.22 {
+                applyIntimateBreath(
+                    &samples,
+                    amount: (params.breath - 0.18) * 0.45,
+                    sampleRate: sampleRate
+                )
+            }
+            if params.atmosphere > 0.35 {
+                applyAtmosphere(
+                    &samples,
+                    amount: (params.atmosphere - 0.28) * 0.5,
+                    sampleRate: sampleRate
+                )
+            }
+            return
+        }
+        if params.tremble > 0.15 { applyTremble(&samples, amount: params.tremble, sampleRate: sampleRate) }
+        if params.breath > 0.12 { applyBreath(&samples, amount: params.breath * 0.4) }
+        if params.atmosphere > 0.18 {
+            applyAtmosphere(&samples, amount: params.atmosphere, sampleRate: sampleRate)
+        }
+        if params.metallic > 0.2 {
+            applyMetallic(&samples, amount: params.metallic * 0.4, sampleRate: sampleRate)
+        }
+        if params.robotize > 0.2 {
+            applyRobotize(&samples, amount: params.robotize * 0.4, sampleRate: sampleRate)
+        }
+    }
 
-        // 7) Breath / air noise.
-        applyBreath(&samples, amount: params.breath)
+    /// Match perceived loudness: high/thin voices get a boost, deep ones a cut.
+    public static func applyLoudnessMatch(
+        _ samples: inout [Float],
+        size: Double,
+        formant: Double
+    ) {
+        guard !samples.isEmpty else { return }
+        var sum = 0.0
+        for s in samples { sum += Double(s) * Double(s) }
+        let rms = sqrt(sum / Double(samples.count))
+        let targetRMS = 0.155
+        var gain = rms > 1e-6 ? Float(targetRMS / rms) : 1
+        let bright = Float(0.62 * size + 0.28 * formant)
+        gain *= 0.88 + 0.72 * bright
+        if size < 0.32 {
+            gain *= Float(0.72 + size * 0.7)
+        }
+        gain = min(max(gain, 0.35), 7.0)
+        for i in samples.indices {
+            let x = Double(samples[i]) * Double(gain)
+            samples[i] = Float(tanh(x * 1.12)) * 0.90
+        }
+    }
 
-        // 8) Atmosphere / space last.
-        applyAtmosphere(&samples, amount: params.atmosphere, sampleRate: sampleRate)
+    /// One signature effect per creature (not a full stack + beds).
+    public static func applyIdentity(
+        _ preset: CreatureVoicePreset,
+        to samples: inout [Float],
+        sampleRate: Double
+    ) {
+        switch preset {
+        case .robot:
+            applyCombFilter(&samples, delayMs: 4.2, wet: 0.48, sampleRate: sampleRate)
+        case .android:
+            applyCombFilter(&samples, delayMs: 3.1, wet: 0.28, sampleRate: sampleRate)
+        case .alien:
+            applyDetuneChorus(&samples, amount: 0.32, sampleRate: sampleRate)
+        case .ghost:
+            applyDetuneChorus(&samples, amount: 0.42, sampleRate: sampleRate)
+        case .lagoon:
+            applyFormant(&samples, formant: 0.18)
+        case .beast, .dragon:
+            applyGrit(&samples, grit: 0.2)
+        case .goblin, .pirate, .coyote:
+            applyGrit(&samples, grit: 0.16)
+        case .fairy, .birdish:
+            applyDetuneChorus(&samples, amount: 0.14, sampleRate: sampleRate)
+        case .insect:
+            applyRobotize(&samples, amount: 0.12, sampleRate: sampleRate)
+        case .wizard:
+            applyAtmosphere(&samples, amount: 0.22, sampleRate: sampleRate)
+        case .sultry, .deep:
+            applyWarmPresence(&samples, sampleRate: sampleRate)
+            applyIntimateBreath(&samples, amount: 0.28, sampleRate: sampleRate)
+        }
+    }
 
-        // Preset-specific accent (extra identity on top of sliders).
-        applyPresetAccent(&samples, preset: params.preset, sampleRate: sampleRate)
+    /// Close-mic vocal: proximity warmth, less box, a little air. No delay.
+    public static func applyWarmPresence(_ samples: inout [Float], sampleRate: Double) {
+        guard samples.count > 8, sampleRate > 0 else { return }
+        let warmthA = onePoleAlpha(hz: 180, sampleRate: sampleRate)
+        let boxA = onePoleAlpha(hz: 420, sampleRate: sampleRate)
+        let airA = onePoleAlpha(hz: 6800, sampleRate: sampleRate)
+        var yW: Float = 0
+        var yB: Float = 0
+        var yA: Float = 0
+        for i in samples.indices {
+            let x = samples[i]
+            yW += warmthA * (x - yW)
+            yB += boxA * (x - yB)
+            yA += airA * (x - yA)
+            let warmth = yW
+            let box = yB - yW
+            let air = x - yA
+            samples[i] = x + warmth * 0.40 - box * 0.30 + air * 0.16
+        }
+    }
+
+    /// Breathy air: highpassed noise that rides the speech envelope (not white hiss).
+    public static func applyIntimateBreath(
+        _ samples: inout [Float],
+        amount: Double,
+        sampleRate: Double
+    ) {
+        guard amount > 0.03, samples.count > 8, sampleRate > 0 else { return }
+        let wet = Float(min(0.38, amount * 0.50))
+        let hp = onePoleAlpha(hz: 3400, sampleRate: sampleRate)
+        var y: Float = 0
+        var env: Float = 0
+        var pink: Float = 0
+        for i in samples.indices {
+            pink = pink * 0.72 + Float.random(in: -1...1) * 0.28
+            y += hp * (pink - y)
+            let air = pink - y
+            let inst = abs(samples[i])
+            env = env * 0.96 + inst * 0.04
+            let ride = min(1, env * 2.1 + 0.08)
+            samples[i] += air * wet * ride
+        }
+    }
+
+    private static func onePoleAlpha(hz: Double, sampleRate: Double) -> Float {
+        let freq = min(max(hz, 1), sampleRate * 0.45)
+        return Float(1 - exp(-2 * Double.pi * freq / sampleRate))
+    }
+
+    /// Independent formant: resample (pitch+formant) then OLA stretch to restore pitch.
+    public static func applyFormantShift(_ samples: inout [Float], ratio: Double) {
+        let r = min(1.45, max(0.68, ratio))
+        guard abs(r - 1) > 0.03, samples.count > 64 else { return }
+        let warped = resample(samples, from: 1.0, to: 1.0 / r)
+        samples = timeStretchOLA(warped, factor: r)
+    }
+
+    /// Overlap-add time stretch. `factor` > 1 lengthens (restores pitch after resample).
+    public static func timeStretchOLA(_ input: [Float], factor: Double) -> [Float] {
+        guard !input.isEmpty, factor > 0.25, factor < 4 else { return input }
+        if abs(factor - 1) < 0.02 { return input }
+        let grain = 768
+        let hopIn = 192
+        let hopOut = max(1, Int((Double(hopIn) * factor).rounded()))
+        guard input.count > grain else { return input }
+        var window = [Float](repeating: 0, count: grain)
+        for k in 0..<grain {
+            window[k] = 0.5 - 0.5 * Float(cos(2 * Double.pi * Double(k) / Double(grain - 1)))
+        }
+        let outLen = max(grain, Int(Double(input.count) * factor) + grain)
+        var out = [Float](repeating: 0, count: outLen)
+        var norm = [Float](repeating: 0, count: outLen)
+        var inPos = 0
+        var outPos = 0
+        while inPos + grain < input.count, outPos + grain < outLen {
+            for k in 0..<grain {
+                let w = window[k]
+                out[outPos + k] += input[inPos + k] * w
+                norm[outPos + k] += w * w
+            }
+            inPos += hopIn
+            outPos += hopOut
+        }
+        for i in 0..<out.count where norm[i] > 1e-5 {
+            out[i] /= norm[i]
+        }
+        let target = max(1, Int(Double(input.count) * factor))
+        if out.count > target { return Array(out.prefix(target)) }
+        return out
+    }
+
+    /// C-3PO-style comb: delayed copy added to self.
+    public static func applyCombFilter(
+        _ samples: inout [Float],
+        delayMs: Double,
+        wet: Double,
+        sampleRate: Double
+    ) {
+        let delay = max(1, Int(delayMs * 0.001 * sampleRate))
+        guard delay < samples.count, wet > 0.04 else { return }
+        let mix = Float(min(0.7, wet))
+        var out = samples
+        for i in delay..<samples.count {
+            out[i] = samples[i] * (1 - mix * 0.55) + samples[i - delay] * mix
+        }
+        samples = out
     }
 
     /// Spectral tilt: low formant = lowpass emphasis, high = highpass + presence.
@@ -392,44 +673,13 @@ public enum CreatureFXRenderer {
         }
     }
 
-    /// Extra signature so robot vs alien vs ghost is obvious even with default sliders.
+    /// Kept for tests / callers; identity now lives in `applyIdentity`.
     public static func applyPresetAccent(
         _ samples: inout [Float],
         preset: CreatureVoicePreset,
         sampleRate: Double
     ) {
-        switch preset {
-        case .robot, .android:
-            applyRobotize(&samples, amount: preset == .robot ? 0.35 : 0.18, sampleRate: sampleRate)
-            applyMetallic(&samples, amount: preset == .robot ? 0.25 : 0.15, sampleRate: sampleRate)
-        case .alien:
-            // Slight dual-delay phasing
-            applyDetuneChorus(&samples, amount: 0.35, sampleRate: sampleRate)
-        case .lagoon:
-            applyFormant(&samples, formant: 0.15)
-            applyAtmosphere(&samples, amount: 0.35, sampleRate: sampleRate)
-        case .ghost:
-            applyDetuneChorus(&samples, amount: 0.5, sampleRate: sampleRate)
-            applyAtmosphere(&samples, amount: 0.4, sampleRate: sampleRate)
-            applyTremble(&samples, amount: 0.2, sampleRate: sampleRate)
-        case .beast, .dragon:
-            // Already deep via size; add harmonic grit
-            applyGrit(&samples, grit: 0.25)
-        case .birdish, .fairy, .insect:
-            applyFormant(&samples, formant: 0.9)
-        case .goblin:
-            applyFormant(&samples, formant: 0.75)
-            applyGrit(&samples, grit: 0.2)
-        case .coyote:
-            applyGrit(&samples, grit: 0.18)
-            applyBreath(&samples, amount: 0.2)
-        case .wizard:
-            applyAtmosphere(&samples, amount: 0.3, sampleRate: sampleRate)
-            applyFormant(&samples, formant: 0.35)
-        case .pirate:
-            applyGrit(&samples, grit: 0.28)
-            applyFormant(&samples, formant: 0.4)
-        }
+        applyIdentity(preset, to: &samples, sampleRate: sampleRate)
     }
 
     /// Cheap chorus/detune for alien/ghost identity.

@@ -42,9 +42,9 @@ Closing the **last window quits** the app.
 
 1. **Home** — if Apple on-device chat is ready, you can go to Playground.
 2. **Characters** — create someone. Pick a starting model, paste how they should talk, hear a voice.
-3. **Playground** — chat. Turn on **Speak replies** to hear them. For the model you taught, choose **Local MLX** in chat settings (not Apple), or you will hear Apple’s general model instead.
-4. **Teach** (Advanced → Train) — they reread their stories. This takes a while and warms up the Mac.
-5. **Settings → Repair** — install the local teaching tools (large download). Skip this if you only want Apple on-device chat.
+3. **Playground** — chat. Turn on **Speak replies** to hear them. If you taught them on a local starting model, pick **Local MLX** in chat settings (not Apple), or you’ll get Apple’s general model instead.
+4. **Teach** (Advanced → Train) — they reread their stories (a **LoRA**: a small add-on, not a whole new brain). This takes a while and warms up the Mac.
+5. **Settings → Repair** — install the local teaching tools (**mlx-lm** and a Python helper; several GB). Skip this if you only want Apple on-device chat.
 
 ## What you should see in the sidebar
 
@@ -56,11 +56,30 @@ Some older ideas (copying a real person’s voice, “persona packs,” talking 
 
 ## Honest limits (so you are not surprised)
 
-- Teaching “how much they can change” in the UI does **not** fully apply yet; the teacher uses a small built-in setting.
+- Teaching “how much they can change” in the UI does **not** fully apply yet; the teacher uses a small built-in setting (LoRA **rank 8**).
 - Numbers on the Jobs page after teaching are **placeholders**, not a real grade.
 - There is no “hold the mic and talk” mode yet. Typed chat + spoken replies is the path.
 - Apple chat and the local taught model are **different**. Pick the local one in Playground if you taught them.
 - A tiny **practice model** in the app is only for testing the screens. Real teaching needs a real starting model and Repair.
+
+## Words you’ll see
+
+Plain meaning first; the usual name in parentheses so you can learn it.
+
+| In this app | Also called |
+|---|---|
+| Starting model (the brain you download) | Base model. **MLX** is Apple’s format for running that brain on a Mac. **Gemma 4** is one such model. |
+| Small add-on from teaching | **LoRA** / adapter — a thin set of extra weights, not a full copy of the model |
+| Teaching tools | **mlx-lm** — the program that actually updates the add-on |
+| Repair in Settings | Installs those tools in a private Python folder on your Mac |
+| Local MLX in Playground | Chat using the starting model + add-on on this Mac |
+| Apple on-device | Apple Intelligence / Foundation Models |
+| Speak replies | Reads answers aloud (catalog voices, not a clone of a famous actor) |
+| Stories / mind | Practice lines saved as chat examples (**JSONL**) |
+| Jobs | The teach queue (one at a time) |
+| Agents | Another program driving the app (**MCP**). Big steps still need your Allow tap. |
+
+You don’t need those names to start. They help when you read logs, model cards, or builder docs.
 
 ## Where your characters live
 

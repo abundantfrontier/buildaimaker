@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted (spike) |
+| Status | Accepted (spike). **Alpha 2026-08:** Settings Repair installs mlx-lm; Gemma 4 `gemma4_unified` is aliased for train + generate. |
 | Date | 2026-07-19 |
 | Decision owners | BuildAIMaker engineering |
 | Related | K3, K4, K14, K21, K24; PR-PyEnv |

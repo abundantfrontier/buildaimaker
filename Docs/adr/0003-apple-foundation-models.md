@@ -2,7 +2,7 @@
 
 **Status:** Accepted (strategy) — **Phase 1 + Phase 2 landed**  
 **Date:** 2026-07-19  
-**Updated:** 2026-07-21  
+**Updated:** 2026-08-25 — Playground still **Apple-first** on Automatic; pick **Local MLX** for Gemma + LoRA. MCP `chat_send` prefers Apple when available.  
 **Context:** macOS / Apple Intelligence era APIs for on-device LLMs and developer adapters
 
 ### Implementation status

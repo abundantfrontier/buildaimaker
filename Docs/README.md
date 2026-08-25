@@ -1,22 +1,28 @@
 # BuildAIMaker documentation
 
-| Document | Purpose |
-|----------|---------|
-| [design-buildaimaker.md](./design-buildaimaker.md) | System design, PR plan, key decisions (K1–K26) |
-| [distribution-and-app-store.md](./distribution-and-app-store.md) | Developer ID vs Mac App Store, monetization, packaging |
-| [native-vs-python-backends.md](./native-vs-python-backends.md) | When to keep Python, when to go Swift/native |
-| [adr/0001-llm-runtime.md](./adr/0001-llm-runtime.md) | Managed Python + mlx-lm train path |
-| [adr/0002-voice-engine.md](./adr/0002-voice-engine.md) | F5-TTS voice clone engine |
-| [adr/0003-apple-foundation-models.md](./adr/0003-apple-foundation-models.md) | Apple on-device LLM + LoRA adapters vs open MLX |
-| [dogfood-test-data.md](./dogfood-test-data.md) | Public + in-repo datasets/models/voice for testing |
-| [creature-voice-pipeline.md](./creature-voice-pipeline.md) | Creature FX, SFX layers, later voice fine-tune |
-| [character-studio-ux.md](./character-studio-ux.md) | One-stop Character Studio UX (toy + research) |
-| [design-native-app-action-api-mcp.md](./design-native-app-action-api-mcp.md) | Native Action API + MCP control plane |
-| [mcp-bridge.md](./mcp-bridge.md) | `buildaimaker-mcp` stdio bridge + Grok snippet |
+**Alpha (2026-08):** shipping loop is Character → Teach (mlx-lm LoRA) → Playground (Apple or Local MLX + LoRA) → Kokoro Speak. Voices clone, persona packs, and Talk mode are **not** in the sidebar.
 
-## Architecture snapshot
+| Document | Role |
+|----------|------|
+| [../README.md](../README.md) | Public product README (start here) |
+| [mcp-bridge.md](./mcp-bridge.md) | `buildaimaker-mcp` tools (keep in sync with the app) |
+| [character-studio-ux.md](./character-studio-ux.md) | UX north star; header notes what alpha actually shows |
+| [creature-voice-pipeline.md](./creature-voice-pipeline.md) | Voice stages A/B (shipping) vs C / F5 (later) |
+| [design-buildaimaker.md](./design-buildaimaker.md) | July 2026 system design (historical + still the long-term map) |
+| [design-native-app-action-api-mcp.md](./design-native-app-action-api-mcp.md) | Action API + confirmation gate |
+| [adr/0001-llm-runtime.md](./adr/0001-llm-runtime.md) | Managed Python + mlx-lm |
+| [adr/0002-voice-engine.md](./adr/0002-voice-engine.md) | F5-TTS **plan**; alpha voice is Kokoro, not F5 |
+| [adr/0003-apple-foundation-models.md](./adr/0003-apple-foundation-models.md) | Apple on-device + adapters |
+| [native-vs-python-backends.md](./native-vs-python-backends.md) | Swift shell vs managed Python |
+| [distribution-and-app-store.md](./distribution-and-app-store.md) | Developer ID vs Store (no `.app` in-repo yet) |
+| [dogfood-test-data.md](./dogfood-test-data.md) | Fixtures and import formats |
+| [review-project-2026-08.md](./review-project-2026-08.md) | **Historical** 2026-08-12 review — several claims are obsolete |
+| [pushing-to-github.md](./pushing-to-github.md) | Clone / remote after the abundantfrontier transfer |
 
-- **UI / domain:** SwiftUI + SPM packages (`BAMCore`, `BAMModels`, …)
-- **Training (v1):** signed helpers → managed Python (mlx-lm LoRA, F5-TTS clone)
-- **Distribution (v1):** Developer ID + notarization (direct download); App Store deferred
-- **Future option:** Apple Foundation Models adapters as an additional backend (not a replacement for open-model train)
+## Architecture snapshot (alpha)
+
+- **UI / domain:** SwiftUI + SPM (`BAMCore`, `BAMInference`, `BAMControlPlane`, …)
+- **Teach:** `bam-llm-worker` → managed venv `mlx-lm` LoRA (Gemma 4 unified aliased to `gemma4`)
+- **Chat:** Apple Foundation Models **or** `generate_cli.py` (full history, thinking off)
+- **Voice:** Kokoro catalog + creature FX; F5 clone runner is a stub and hidden
+- **Distribution:** source + `swift run`; notarized `.app` not in this repository

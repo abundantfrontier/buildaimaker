@@ -2,7 +2,9 @@
 
 Public and in-repo data you can use to exercise BuildAIMaker without inventing files from scratch.
 
-**Last updated:** 2026-07-19
+**Last updated:** 2026-08-25
+
+**Alpha:** **Install fixture** is still a stub (fake teach). **Real mlx-lm** after Settings → Repair + a full MLX checkpoint. Playground: Apple or Local MLX + LoRA, full history; **Speak replies** (Kokoro). Talk mode off. Voice clone samples apply only if you re-enable the hidden Voices UI (stub).
 
 ## What the app accepts today
 

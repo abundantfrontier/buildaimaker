@@ -1,8 +1,10 @@
 # Character Studio UX — one-stop shop (toy + research)
 
 **Status:** Product / UX direction  
-**Last updated:** 2026-07-19  
+**Last updated:** 2026-08-25 (alpha note)  
 **Tone:** Fun to use first; power tools and research paths stay reachable, not front-and-center.
+
+**Alpha (what ships now):** Create character → model → story/mind → Kokoro voice → Playground chat (Apple or Local MLX + LoRA, full history) + Speak replies → Teach on the shared job queue. Sidebar **Studio** is Home, Characters, Playground, Settings. **Advanced** is Datasets, Models, Train, Jobs, Actions. Voices clone, persona packs, and Talk mode are **not** shown. The sections below are the north star; ignore “Talk” / “persona pack save” / “Advanced Voices” until those paths are real.
 
 ## Product framing
 

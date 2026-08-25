@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted (spike) |
+| Status | Accepted (spike). **Alpha 2026-08:** shipping voice is **Kokoro catalog + FX**, not F5. Clone UI hidden; stub runner remains in-tree. |
 | Date | 2026-07-19 |
 | Decision owners | BuildAIMaker engineering |
 | Related | K7, K7b, K11, K21, K24; PR-VoiceSpike; ADR 0001 |

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Status** | Draft (rev 2.2 — product decisions closed) |
+| **Status** | Draft (rev 2.2). **Alpha:** control plane + `buildaimaker-mcp` are live; keep [mcp-bridge.md](./mcp-bridge.md) as the tool list. |
 | **Date** | 2026-08-09 |
 | **Revision** | 2.2 |
 | **Authors** | BuildAIMaker / systems architecture |

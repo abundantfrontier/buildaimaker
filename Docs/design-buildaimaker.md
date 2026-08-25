@@ -3,11 +3,11 @@
 | Field | Value |
 |-------|-------|
 | **Document** | BuildAIMaker Architecture & Product Design |
-| **Project** | `buildaimaker` (`github-buildaimaker/buildaimaker`) |
+| **Project** | `buildaimaker` ([abundantfrontier/buildaimaker](https://github.com/abundantfrontier/buildaimaker)) |
 | **Author** | Engineering (interim); product owner TBD |
 | **Date** | 2026-07-18 |
-| **Revised** | 2026-07-19 (founder decisions incorporated) |
-| **Status** | Approved for implementation |
+| **Revised** | 2026-07-19 (founder decisions incorporated); **alpha note 2026-08-25** |
+| **Status** | Approved for implementation. **Public 0.1 alpha** implements the character + mlx-lm teach + Playground loop; persona packs, F5 clone, and Talk are deferred (see [README](../README.md)). |
 | **Audience** | Founders, senior engineers, early implementers |
 | **Schema versions pinned here** | `runnerProtocolVersion: 1`, `personaPackFormat: 1`, `librarySchemaVersion: 1` |
 

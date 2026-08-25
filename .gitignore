@@ -2,8 +2,25 @@
 #
 # gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
 
+.DS_Store
+**/.DS_Store
+
+## Secrets / local env (never commit)
+.env
+.env.*
+*.pem
+*.p12
+*.p8
+mcp.token
+*.token
+id_rsa
+id_rsa.pub
+*.key
+
 ## User settings
 xcuserdata/
+*.xcuserstate
+DerivedData/
 
 ## Obj-C/Swift specific
 *.hmap

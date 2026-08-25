@@ -1,9 +1,11 @@
 # BuildAIMaker project review (August 2026)
 
+> **Historical.** Written **2026-08-12**. Several verdicts are **obsolete**: Teach now uses the shared job queue and real mlx-lm (Gemma 4 unified helper); Settings Repair installs mlx-lm; Playground can chat Local MLX with full history and Kokoro Speak; Voices/Personas/Talk are hidden. Keep this file as an audit trail, not as a description of the public alpha. Current product surface: [README.md](../README.md).
+
 | Field | Value |
 |-------|-------|
 | **Date** | 2026-08-12 |
-| **Scope** | Whole repo at `/Users/kb/Documents/GitHub/buildaimaker` (not a git diff) |
+| **Scope** | Whole repo (local clone; not a git diff) |
 | **Method** | Read design docs, `Package.swift`, app shell, control plane, character wizard, Home, MCP bridge, job/train paths |
 | **Code changed** | None (review only) |
 

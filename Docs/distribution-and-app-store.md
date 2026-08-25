@@ -1,7 +1,9 @@
 # Distribution: Developer ID vs Mac App Store
 
 **Status:** Product guidance (aligns with design K14, K21, K23)  
-**Last updated:** 2026-07-19
+**Last updated:** 2026-08-25
+
+**Alpha:** this repository ships **source** (`swift run BuildAIMaker`). There is **no** notarized `.app` or license-key check in-tree yet. K14 (Developer ID first) still stands.
 
 ## Summary
 

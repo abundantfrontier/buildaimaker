@@ -1,7 +1,9 @@
 # Creature voice pipeline: FX, layers, and fine-tune
 
 **Status:** Product / technical direction (fictional characters first)  
-**Last updated:** 2026-07-19
+**Last updated:** 2026-08-25
+
+**Alpha:** Stage **A+B** ship via **Kokoro catalog** speakers (`kokoro-catalog-v1`) plus slider FX and texture **imprint** (not ducked beds). Character → Voice and Playground Speak. **How-fast** is passed through to Kokoro. F5-TTS few-shot clone (ADR 0002) remains a **stub runner**; the Voices sidebar is hidden. Stage C TTS adapters are not started. No celebrity catalog.
 
 ## Vision
 

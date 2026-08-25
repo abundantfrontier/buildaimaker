@@ -1,7 +1,7 @@
 # Native Swift vs managed Python backends
 
 **Status:** Architecture guidance  
-**Last updated:** 2026-07-19
+**Last updated:** 2026-08-25 — Alpha still uses managed Python for mlx-lm teach/generate and Kokoro; SwiftUI shell is native.
 
 ## Summary
 

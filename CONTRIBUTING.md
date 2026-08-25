@@ -1,11 +1,11 @@
 # Contributing
 
-This is an **early alpha**. Small, focused changes beat large unrelated refactors.
+This is an **early test build**. Small, focused changes are better than big unrelated rewrites.
 
-1. `swift test` and `swift build --product BuildAIMaker` locally.
-2. Keep UI copy novice-friendly (Teach, stories, starting model).
-3. Do not re-enable Voices / Personas / Talk in the sidebar without a working path.
-4. Do not add celebrity clone, audiobook rips, or non-consensual voice work.
-5. Do not commit Application Support libraries or tokens.
+1. On your Mac, run the tests and build the app before you send a change.
+2. Keep words on screen simple: Teach, stories, starting model — not lab slang.
+3. Do not put copy-a-voice, persona packs, or mic Talk back in the sidebar until that path actually works.
+4. Do not add celebrity voices, stolen audiobooks, or cloning someone without permission.
+5. Do not commit your private library folder or tokens.
 
-Issues and PRs: [github.com/abundantfrontier/buildaimaker](https://github.com/abundantfrontier/buildaimaker).
+Questions and changes: [github.com/abundantfrontier/buildaimaker](https://github.com/abundantfrontier/buildaimaker).

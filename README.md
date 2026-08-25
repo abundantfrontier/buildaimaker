@@ -1,31 +1,28 @@
 # BuildAIMaker
 
-**0.1.0 alpha** — local macOS studio for **fictional** characters: name them, teach how they talk, chat, and hear a creature voice. No cloud account required.
+Make a **fictional** character on your Mac: give them a name and a story, hear a voice, then chat with them. Teaching from their stories is optional. Nothing is uploaded to a company chat service.
 
-| | |
+This is an **early test build** (0.1). It works as a small studio. It is **not** an App Store app, and there is **no file you can download and double-click**. You open the project on your Mac and run it from there.
+
+| You need | |
 |---|---|
-| Platform | macOS 14+ (Apple Silicon recommended) |
-| Chat | Apple on-device **or** local MLX (e.g. Gemma 4) + optional LoRA |
-| Teach | Real **mlx-lm LoRA** after Settings → Repair (or a labeled practice run on the fixture) |
-| Voice | **Kokoro catalog** speakers + FX (Character → Voice). Clone UI is not in the sidebar. |
-| Memory | **≥ 16 GB** unified for open-model teach (12B 4-bit is hungry) |
-| License | [MIT](LICENSE) |
-| Repo | [github.com/abundantfrontier/buildaimaker](https://github.com/abundantfrontier/buildaimaker) |
+| Computer | A **Mac with Apple silicon** (M1, M2, M3, …), macOS 14 or newer |
+| To chat | Often just **Apple Intelligence** on, if your Mac supports it |
+| To teach them from stories | Extra free space (several GB), and **16 GB of memory or more** if the starting model is large |
+| License | [MIT](LICENSE) — free to use and share |
 
-**How you use it:** Create a character → pick a model → paste a story → hear a voice → chat in Playground → Teach when you want them to learn the stories.
+**The loop:** create a character → pick how they think → paste a story → pick a voice → talk in Playground → Teach if you want them to learn those stories.
 
-This is a **dogfood alpha**. There is **no downloadable `.app`**. You build it on your Mac, then run it. Closing the last window quits.
+## How to run it
 
-## Run it (human path)
-
-You need a **Mac with Apple Silicon**, **macOS 14+**, and **[Xcode](https://developer.apple.com/xcode/)** from the App Store (free). Open Xcode once so it finishes installing the tools.
+Install **[Xcode](https://developer.apple.com/xcode/)** from the Mac App Store (free) and open it once so Mac tools finish installing.
 
 ### Easiest: Xcode
 
-1. Download this repo (GitHub **Code → Download ZIP**, or `git clone` below).
-2. Double-click **`Package.swift`** in the folder (or in Terminal: `open Package.swift`).
-3. At the top of Xcode, choose the scheme **BuildAIMaker**.
-4. Press **Run** (▶ or ⌘R). Wait for the first compile; later runs are faster.
+1. Get this project: on GitHub click **Code → Download ZIP**, or clone it with git.
+2. Open the folder and double-click **`Package.swift`**.
+3. At the top of Xcode, set the scheme to **BuildAIMaker**.
+4. Press the **Run** button (▶) or **⌘R**. The first time can take a few minutes.
 
 ### Or: Terminal
 
@@ -35,111 +32,55 @@ cd buildaimaker
 swift run BuildAIMaker
 ```
 
-The first `swift run` compiles, then the window should open. Later:
+The first run compiles, then a window should open. After that, the same `swift run BuildAIMaker` command is enough.
 
-```bash
-swift run BuildAIMaker
-```
+Closing the **last window quits** the app.
 
-or run the binary it already built:
+**You cannot email a friend a single BuildAIMaker file.** It has to live next to this project folder. A normal Mac app icon for download is later work.
 
-```bash
-.build/arm64-apple-macosx/debug/BuildAIMaker
-```
+### Once the window is open
 
-**After it’s open:** Home → create a character. For **real teaching** (not a practice stub), Settings → **Repair** (downloads a local Python + mlx-lm, several GB). Playground can chat with Apple on-device without that. Gemma-sized models need **lots of disk** and **≥ 16 GB** memory.
+1. **Home** — if Apple on-device chat is ready, you can go to Playground.
+2. **Characters** — create someone. Pick a starting model, paste how they should talk, hear a voice.
+3. **Playground** — chat. Turn on **Speak replies** to hear them. For the model you taught, choose **Local MLX** in chat settings (not Apple), or you will hear Apple’s general model instead.
+4. **Teach** (Advanced → Train) — they reread their stories. This takes a while and warms up the Mac.
+5. **Settings → Repair** — install the local teaching tools (large download). Skip this if you only want Apple on-device chat.
 
-You cannot mail friends a single `BuildAIMaker` file. It has to sit next to this repo (helpers + Python workers). A signed Mac app is future work.
-
-## What you should see
+## What you should see in the sidebar
 
 **Studio:** Home, Characters, Playground, Settings  
-**Advanced:** Datasets, Models, Train (Teach), Jobs, Actions
 
-**Not in the sidebar (code kept for later):** Voices (clone stub), Personas (pack zip), Talk mode (mic). Hear them from the character **Voice** step or Playground **Speak replies**.
+**Advanced:** Datasets, Models, Train (this is Teach), Jobs, Actions  
 
-## Repository layout
+Some older ideas (copying a real person’s voice, “persona packs,” talking with the mic) are **not shown**. Use the character **Voice** step or Playground **Speak replies**.
 
-```text
-buildaimaker/
-├── Apps/BuildAIMaker/       # macOS SwiftUI app
-├── Packages/                # BAM* libraries (core, jobs, inference, audio, MCP types, …)
-├── Workers/
-│   ├── bam-llm-worker / bam-echo-worker / bam-voice-worker
-│   ├── python/              # llm_worker, generate_cli, catalog TTS, runtime-pins
-│   └── buildaimaker-mcp     # stdio MCP → Unix socket
-├── Docs/                    # Design ADRs + alpha notes
-└── Package.swift
-```
+## Honest limits (so you are not surprised)
 
-Library data (characters, models, jobs, MCP socket) stays in:
+- Teaching “how much they can change” in the UI does **not** fully apply yet; the teacher uses a small built-in setting.
+- Numbers on the Jobs page after teaching are **placeholders**, not a real grade.
+- There is no “hold the mic and talk” mode yet. Typed chat + spoken replies is the path.
+- Apple chat and the local taught model are **different**. Pick the local one in Playground if you taught them.
+- A tiny **practice model** in the app is only for testing the screens. Real teaching needs a real starting model and Repair.
+
+## Where your characters live
+
+On your Mac only:
 
 ```text
 ~/Library/Application Support/BuildAIMaker/
 ```
 
-Do not commit that folder.
+Stories, voices, and jobs stay there. Do not put that folder in git.
 
-## Teach & Playground (alpha)
+## For builders
 
-- **Teach** enqueues the same job queue as MCP `finetune.start`. Gemma 4 “unified” checkpoints are remapped for mlx-lm; vision weights are dropped for text LoRA.
-- **Playground → Local MLX** uses the same compatibility helper, **full chat history** (system + turns), thinking off. Caption **Local MLX** vs **Apple on-device**.
-- Speak replies uses the bound character’s Kokoro speaker + FX. **How-fast** drives Kokoro speed.
-- **MCP `chat_send`** still prefers Apple when it is available; use the Playground UI for Gemma + LoRA.
+Folder layout, agent/MCP tools, and design notes: [Docs/README.md](Docs/README.md).  
+How agents connect: [Docs/mcp-bridge.md](Docs/mcp-bridge.md).  
+How to send a change: [CONTRIBUTING.md](CONTRIBUTING.md).  
+Tokens and private files: [SECURITY.md](SECURITY.md).
 
-### Known limitations
+GitHub Actions compiles and runs tests on a Mac. There is no signed app in CI.
 
-| Item | Reality |
-|------|---------|
-| LoRA “how much they can change” | UI rank is **not** passed through; mlx-lm default **rank 8** |
-| Jobs loss / hold-out | Placeholder numbers after mlx-lm; not parsed from the trainer |
-| Talk mode | Off. Speak replies is the spoken path |
-| Voice clone / persona packs | Hidden; clone runner is a stub |
-| Apple adapter toolkit | Optional second path; not required for Gemma teach |
-| Packaging | No notarized `.app` |
+## Please don’t
 
-## Control plane + MCP
-
-UI and agents share one Action API. The **running app** owns `mcp.sock` + `mcp.token`. `buildaimaker-mcp` is a stdio bridge. See [Docs/mcp-bridge.md](Docs/mcp-bridge.md).
-
-Expensive (`finetune.start`) and live-destructive (`minds.dedupe` with `dryRun: false`) actions from MCP wait on an orange **Allow / Deny** in the app. Agents cannot self-confirm.
-
-```bash
-swift build --product buildaimaker-mcp
-```
-
-## Offline fixture
-
-CI uses a **tiny bundled stub model**, not multi-GB weights (`Workers/fixtures/models/tiny-qwen-mlx/`). **Install fixture** is for UI/CI. Teach will say **practice run** until mlx-lm + real weights are present.
-
-## Feature flags
-
-| Key | Default | Notes |
-|-----|---------|--------|
-| `ff.llmTraining` | on | Open LoRA teach |
-| `ff.playground` | on | Text playground |
-| `ff.foundationModels` | on | Apple on-device chat |
-| `ff.controlPlane` | on | Action API + MCP |
-| `ff.voiceClone` / `ff.personaPacks` | on in code | **Sidebar hidden**; not a shipping studio path |
-| `ff.talkMode` | **off** | Mic Talk pane |
-| `ff.hfHubDownload` | **off** | CI stays offline |
-| `ff.voiceFinetune` / `ff.cloudRunner` / `ff.knowledgePacks` | off | Future |
-
-## Documentation
-
-| Doc | Role |
-|-----|------|
-| [Docs/README.md](Docs/README.md) | Index + what is historical |
-| [Docs/mcp-bridge.md](Docs/mcp-bridge.md) | MCP tools (current) |
-| [Docs/character-studio-ux.md](Docs/character-studio-ux.md) | UX north star vs alpha |
-| [Docs/creature-voice-pipeline.md](Docs/creature-voice-pipeline.md) | Kokoro + FX; clone later |
-| [Docs/design-buildaimaker.md](Docs/design-buildaimaker.md) | Original system design (July 2026) |
-| [SECURITY.md](SECURITY.md) | Tokens, MCP, reporting |
-
-## CI
-
-GitHub Actions (`.github/workflows/ci.yml`) on macOS: `swift build` and `swift test`. No codesign.
-
-## Ethics
-
-Fictional characters only. No celebrity catalog, no non-consensual clone, no scraped audiobook as a voice target.
+This is for **made-up** creatures and original characters. Do not ship a catalog of celebrity voices, clone someone without permission, or rip an audiobook as a voice.

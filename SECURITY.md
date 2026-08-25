@@ -1,21 +1,21 @@
 # Security
 
-BuildAIMaker is a **local-first** macOS app. Training weights, minds, adapters, and MCP tokens live under:
+BuildAIMaker keeps your characters **on this Mac**. Stories, starting models, taught add-ons, and the small key used by helper programs live in:
 
 ```text
 ~/Library/Application Support/BuildAIMaker/
 ```
 
-That directory is **not** part of this git repository. Do not commit copies of `mcp.token`, Hugging Face tokens, or library databases.
+That folder is **not** in this git project. Do not copy `mcp.token`, Hugging Face tokens, or the library database into a pull request.
 
-## Hugging Face tokens
+## Hugging Face (optional downloads)
 
-Optional Hub downloads store the token in the **macOS Keychain** (`HFTokenStore`), not in the repo or in Application Support as plaintext source.
+If you sign in to download models, the app stores that token in the **Mac Keychain**, not in the source tree.
 
-## MCP
+## Helpers that drive the app
 
-The Unix socket and sibling `mcp.token` are created at app launch (`0600`). Agents cannot approve expensive or destructive actions; the running app shows an orange Allow / Deny banner.
+When the app is open, another program can talk to it through a local socket. A matching token file is created with tight permissions. Big or destructive steps (like starting a teach, or deleting datasets for real) wait for **you** to tap Allow in an orange banner. The helper cannot approve those for you.
 
-## Reporting
+## Reporting a problem
 
-If you find a vulnerability in this project, please open a **private** advisory on GitHub (or email the maintainers) rather than filing a public issue with exploit details or leaked tokens.
+Please use a **private** GitHub security advisory (or email the maintainers). Do not paste live tokens or a full how-to-exploit in a public issue.

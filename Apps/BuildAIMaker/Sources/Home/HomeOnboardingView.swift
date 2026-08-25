@@ -63,7 +63,7 @@ struct HomeOnboardingView: View {
             Text(AppIdentity.displayName)
                 .font(.largeTitle.weight(.semibold))
             Text(
-                "Make a fictional creature: name → model → story → voice → save. Then chat in Playground or fine-tune in Train."
+                "Make a fictional character: name, story, and voice. Then chat in Playground, or Teach them from their stories."
             )
             .font(.body)
             .foregroundStyle(BAMColors.secondaryLabel)
@@ -96,8 +96,8 @@ struct HomeOnboardingView: View {
                     Text("Setup required")
                         .font(.title2.weight(.semibold))
                     Text(
-                        "The app needs a local training runtime and at least one base model before real chat or LoRA. "
-                            + "You can install the offline fixture in seconds, or browse Hugging Face for real MLX weights."
+                        "Apple on-device chat can work with no extra download. Teaching from stories needs teaching tools "
+                            + "(Settings → Repair) and a real starting model. A tiny practice model is only for testing screens."
                     )
                     .font(.callout)
                     .foregroundStyle(BAMColors.secondaryLabel)
@@ -126,7 +126,7 @@ struct HomeOnboardingView: View {
                 }
 
                 setupRow(
-                    title: "Open MLX runtime (optional train)",
+                    title: "Teaching tools (optional)",
                     detail: model.setup.runtimeDetail,
                     done: model.setup.runtimeInstalled,
                     systemImage: "terminal"
@@ -148,12 +148,12 @@ struct HomeOnboardingView: View {
                 }
 
                 setupRow(
-                    title: "Open base model (optional train)",
+                    title: "Starting model (optional teach)",
                     detail: model.setup.modelDetail,
                     done: model.setup.hasBaseModel,
                     systemImage: "cpu"
                 ) {
-                    Button("Install fixture") {
+                    Button("Tiny practice model") {
                         model.installFixture()
                     }
                     .buttonStyle(.borderedProminent)
@@ -487,18 +487,18 @@ struct EnvironmentSetupStatus: Equatable, Sendable {
 
     var runtimeDetail: String {
         if runtimeInstalled {
-            return "Managed Python present at \(runtimePath)"
+            return "Teaching tools are installed."
         }
-        return "Optional for open MLX train. Creates a local venv under Application Support."
+        return "Needed only if you want to Teach from stories. Settings → Repair downloads them (large)."
     }
 
     var modelDetail: String {
         if hasBaseModel {
-            var parts = ["\(localModelCount) local open model(s) under models/base"]
-            if fixtureInstalled { parts.append("fixture present") }
+            var parts = ["\(localModelCount) starting model(s) on this Mac"]
+            if fixtureInstalled { parts.append("includes the tiny practice model") }
             return parts.joined(separator: " · ")
         }
-        return "Optional when Apple on-device model is ready. Install fixture or browse HF for open MLX train."
+        return "Optional if Apple on-device chat works. You need a real starting model to Teach; the tiny practice one is only for screens."
     }
 
     var appleDetail: String {
@@ -511,7 +511,7 @@ struct EnvironmentSetupStatus: Equatable, Sendable {
 
     var readySummary: String {
         if appleFoundation.isUsable {
-            return "Apple on-device model ready · Playground defaults to Apple · open MLX optional"
+            return "Apple on-device chat is ready. Playground can use it. Teaching from a local model is optional."
         }
         return "Runtime \(runtimeInstalled ? "OK" : "missing") · \(localModelCount) open model(s)"
             + (fixtureInstalled ? " (fixture)" : "")

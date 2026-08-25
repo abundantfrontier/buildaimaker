@@ -12,37 +12,51 @@
 | License | [MIT](LICENSE) |
 | Repo | [github.com/abundantfrontier/buildaimaker](https://github.com/abundantfrontier/buildaimaker) |
 
-**Novice loop:** Create a character → Model → Story (mind) → Voice → **Playground** (chat + optional Speak) → **Teach** when you have a real MLX model and mlx-lm.
+**How you use it:** Create a character → pick a model → paste a story → hear a voice → chat in Playground → Teach when you want them to learn the stories.
 
-This is a dogfood alpha: the character loop works. It is not a notarized `.app`, Mac App Store build, or celebrity-voice product.
+This is a **dogfood alpha**. There is **no downloadable `.app`**. You build it on your Mac, then run it. Closing the last window quits.
+
+## Run it (human path)
+
+You need a **Mac with Apple Silicon**, **macOS 14+**, and **[Xcode](https://developer.apple.com/xcode/)** from the App Store (free). Open Xcode once so it finishes installing the tools.
+
+### Easiest: Xcode
+
+1. Download this repo (GitHub **Code → Download ZIP**, or `git clone` below).
+2. Double-click **`Package.swift`** in the folder (or in Terminal: `open Package.swift`).
+3. At the top of Xcode, choose the scheme **BuildAIMaker**.
+4. Press **Run** (▶ or ⌘R). Wait for the first compile; later runs are faster.
+
+### Or: Terminal
+
+```bash
+git clone https://github.com/abundantfrontier/buildaimaker.git
+cd buildaimaker
+swift run BuildAIMaker
+```
+
+The first `swift run` compiles, then the window should open. Later:
+
+```bash
+swift run BuildAIMaker
+```
+
+or run the binary it already built:
+
+```bash
+.build/arm64-apple-macosx/debug/BuildAIMaker
+```
+
+**After it’s open:** Home → create a character. For **real teaching** (not a practice stub), Settings → **Repair** (downloads a local Python + mlx-lm, several GB). Playground can chat with Apple on-device without that. Gemma-sized models need **lots of disk** and **≥ 16 GB** memory.
+
+You cannot mail friends a single `BuildAIMaker` file. It has to sit next to this repo (helpers + Python workers). A signed Mac app is future work.
 
 ## What you should see
 
 **Studio:** Home, Characters, Playground, Settings  
 **Advanced:** Datasets, Models, Train (Teach), Jobs, Actions
 
-**Not in the sidebar (code kept for later):** Voices (F5 clone stub), Personas (pack zip), Talk mode (mic loop). Hear a character from **Voice** or Playground **Speak replies**.
-
-## Open & run
-
-```bash
-git clone https://github.com/abundantfrontier/buildaimaker.git
-cd buildaimaker
-swift build
-swift run BuildAIMaker
-```
-
-Or `open Package.swift` in Xcode, scheme **BuildAIMaker**, Run (⌘R).
-
-There is no signed app bundle in this repo. Last window closed quits.
-
-After a first build, the debug binary is:
-
-```text
-.build/arm64-apple-macosx/debug/BuildAIMaker
-```
-
-Settings → **Repair** installs the managed Python env and **mlx-lm** so Teach can be real, not a stub.
+**Not in the sidebar (code kept for later):** Voices (clone stub), Personas (pack zip), Talk mode (mic). Hear them from the character **Voice** step or Playground **Speak replies**.
 
 ## Repository layout
 
